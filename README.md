@@ -73,8 +73,3 @@ If you find our work useful, please consider citing:
 
 ## 🏷️ License
 This repository is released under the MIT license. See [LICENSE](./LICENSE) for additional details.
-
-## Contact
-<div style="text-align: center;">
-  <img src="https://box.nju.edu.cn/seafhttp/f/fc1021a908ff49309f22/?op=view" alt="Wechat Group" width="300"/>
-</div>
