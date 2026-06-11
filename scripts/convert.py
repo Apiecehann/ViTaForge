@@ -281,6 +281,11 @@ class MeshConverter(AssetConverterBase):
         for child_mesh_prim in geom_prim.GetChildren():
             if child_mesh_prim.GetTypeName() != "Mesh":
                 continue
+            # Option A: skip tet generation here; UIPC loader will tetrahedralize
+            # at runtime via fTetWild (handles raw/non-watertight meshes).
+            if os.environ.get('SKIP_TET') == '1':
+                print('[SKIP_TET] surface-only USD; tet generated at load via fTetWild')
+                continue
             # add tet information
             usd_mesh = UsdGeom.Mesh(child_mesh_prim)
             tet_points, tet_indices, surf_points, tet_surf_indices = self.gen_tet(usd_mesh, backend='tetgen')

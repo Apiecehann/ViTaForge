@@ -93,7 +93,12 @@ class CuroboPlanner:
             ],
         ).get_collision_check_world()
 
+        # 任务可声明"在手中"的 actor(随夹爪一起动), 这些不应作为静态障碍物,
+        # 否则长 peg 会盖住夹爪导致任何运动都判为碰撞 -> 规划失败。
+        ignore = getattr(self.task, 'planner_ignore_actors', None) or set()
         for name, actor in self.task._actor_manager.actors.items():
+            if name in ignore:
+                continue
             mesh = Mesh.from_pointcloud(actor.vertices, pitch=0.005, name=name)
             obstacles.add_obstacle(mesh)
         return obstacles
