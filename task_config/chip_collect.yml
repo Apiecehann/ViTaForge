@@ -1,0 +1,22 @@
+save_dir: ./data
+
+decimation: 1
+
+save_frequency: 2
+video_frequency: 2
+render_frequency: 0   # headless 采集
+
+random_texture: false
+
+use_seed: true
+episode_num: 10       # 采 10 条成功数据
+start_seed: 0
+max_seed: 60          # 抓取偶有失败, 多给些 seed 凑够 10 条
+
+sensor_type: gsmini
+
+observations:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true
