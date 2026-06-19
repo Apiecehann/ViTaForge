@@ -92,6 +92,8 @@ class BaseTaskCfg(DirectRLEnvCfg):
     render_frequency = 0
     video_size = (960, 320)
 
+    save_pre_move: bool = False
+
     ui_window_class_type = BaseEnvWindow
 
     decimation = 1
@@ -140,11 +142,13 @@ class BaseTaskCfg(DirectRLEnvCfg):
     )
 
     # plate
+    # The table material is defined in assets/scene/plate.usda and currently
+    # uses assets/scene/texture/GroundTexture.mdl -> ground_texture.png.
     plate = RigidObjectCfg(
         prim_path="/World/envs/env_.*/ground_plate",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0, 0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=str(SCENE_ASSETS_ROOT / "plate.usda"),
+            usd_path=str(SCENE_ASSETS_ROOT / "plate_new.usda"),
             rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
@@ -429,8 +433,11 @@ class BaseTask(UipcRLEnv):
         if self.mode == 'eval':
             self.delay()
 
-        self.atom_id = 0
-        self.atom_tag = ''
+        # self.atom_id = 0
+        # self.atom_tag = ''
+        if not self.cfg.save_pre_move:
+            self.atom_id = 0
+            self.atom_tag = ''
 
         return ret
 
@@ -538,7 +545,8 @@ class BaseTask(UipcRLEnv):
         
         self.step_count += 1
 
-        is_save = is_save and (not self.in_pre_move) and (not self.mode == 'eval_test')
+        # is_save = is_save and (not self.in_pre_move) and (not self.mode == 'eval_test')
+        is_save = is_save and (self.cfg.save_pre_move or not self.in_pre_move) and (not self.mode == 'eval_test')
         save_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.save_frequency == 0)
         video_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.video_frequency == 0)
         render_freq = (self.cfg.render_frequency > 0 and self.step_count % self.cfg.render_frequency == 0)
