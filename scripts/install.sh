@@ -103,7 +103,7 @@ else
             echo "[INFO] PyTorch 2.5.1 is already installed."
         fi
     fi
-    ${uv_exe} pip install wrap-lang==1.0.0 --no-build-isolation
+    ${uv_exe} pip install warp-lang==1.0.0 --no-build-isolation
     ${uv_exe} pip install -e . --no-build-isolation
 
     echo "Running curobo tests..."
