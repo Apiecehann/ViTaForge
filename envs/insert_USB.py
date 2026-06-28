@@ -6,6 +6,7 @@ import numpy as np
 USB_PLUG_HEIGHT = 0.0124
 USB_BODY_HEIGHT = 0.0500
 USB_GRASP_HEIGHT = USB_PLUG_HEIGHT + USB_BODY_HEIGHT * 0.5 + 0.006
+USB_GRASP_HEIGHT_NOISE = 0.005
 SLOT_HEIGHT = 0.0200
 SLOT_HOLE_BOTTOM = 0.0050
 USB_INSERT_Z = max(SLOT_HOLE_BOTTOM, SLOT_HEIGHT - USB_PLUG_HEIGHT)
@@ -95,7 +96,12 @@ class Task(BaseTask):
 
         self.move(self.atom.open_gripper(0.5))
         grasp_rotate = self.rng.uniform(-np.pi/18, np.pi/18)
-        target_pose = self.prism.get_pose().add_bias([0, 0, USB_GRASP_HEIGHT]).add_rotation([0, grasp_rotate, 0])
+        # target_pose = self.prism.get_pose().add_bias([0, 0, USB_GRASP_HEIGHT]).add_rotation([0, grasp_rotate, 0])
+        grasp_height = USB_GRASP_HEIGHT + self.rng.uniform(
+            -USB_GRASP_HEIGHT_NOISE,
+            USB_GRASP_HEIGHT_NOISE
+        )
+        target_pose = self.prism.get_pose().add_bias([0, 0, grasp_height]).add_rotation([0, grasp_rotate, 0])
         target_mat = target_pose.to_transformation_matrix()
         cpose = construct_grasp_pose(
             target_pose.p,
