@@ -37,7 +37,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1/120,
         )
     ]
-    step_lim = 600
+    step_lim = 500
 
 
 class Task(BaseTask):
@@ -49,6 +49,11 @@ class Task(BaseTask):
 
     def _usb_pose_in_slot(self, slot_pose: Pose):
         return slot_pose.add_bias([0.0, 0.0, USB_INSERT_Z])
+
+    def _update_insert_reference_poses(self):
+        self.target_pose = self._usb_pose_in_slot(self.slot.get_pose())
+        self.opening_pose = self.slot.get_pose().add_bias([0.0, 0.0, SLOT_HEIGHT])
+        self.pre_insert_pose = self.opening_pose.add_bias([0.0, 0.0, PRE_INSERT_CLEARANCE])
 
     def create_actors(self):
         start_slot_pose = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
@@ -83,6 +88,7 @@ class Task(BaseTask):
         self.start_slot.set_pose(start_slot_pose)
         self.slot.set_pose(target_slot_pose)
         self.prism.set_pose(self._usb_pose_in_slot(start_slot_pose))
+        self._update_insert_reference_poses()
 
     def pre_move(self):
         self.delay(10)
@@ -105,9 +111,7 @@ class Task(BaseTask):
         self.move(self.atom.close_gripper())
         self.move(self.atom.move_by_displacement(z=0.03))
 
-        self.target_pose = self._usb_pose_in_slot(self.slot.get_pose())
-        self.opening_pose = self.slot.get_pose().add_bias([0.0, 0.0, SLOT_HEIGHT])
-        self.pre_insert_pose = self.opening_pose.add_bias([0.0, 0.0, PRE_INSERT_CLEARANCE])
+        self._update_insert_reference_poses()
         noise = self.create_noise([0.005, 0.005, 0.0])
         self.noise_pose = self.pre_insert_pose.add_offset(noise)
         self.move(self.atom.place_actor(
@@ -133,7 +137,11 @@ class Task(BaseTask):
         self.delay(20, is_save=True)
 
     def _get_success_diagnostics(self, xy_threshold=0.002, z_threshold=0.003):
-        prism_pose = self.prism.get_pose().rebase(self.target_pose)
+        cached_target_pose = self.target_pose
+        target_pose = self._usb_pose_in_slot(self.slot.get_pose())
+        self.target_pose = target_pose
+
+        prism_pose = self.prism.get_pose().rebase(target_pose)
         ee_pose = self._robot_manager.get_ee_pose()
         prism_z_axis = prism_pose.to_transformation_matrix()[:3, 2]
         target_z_axis = np.array([0, 0, 1])
@@ -143,6 +151,8 @@ class Task(BaseTask):
         pos_error = float(np.linalg.norm(prism_pose.p))
 
         return {
+            'target_pose': target_pose.tolist(),
+            'cached_target_pose': cached_target_pose.tolist(),
             'rel_pose': prism_pose.tolist(),
             'rel_xyz': prism_pose.p.tolist(),
             'xy_error': xy_error,
