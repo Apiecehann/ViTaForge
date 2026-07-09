@@ -93,7 +93,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     video_size = (960, 320)
 
     ui_window_class_type = BaseEnvWindow
-
+    save_pre_move = False
     decimation = 1
     # simulation
     sim: SimulationCfg = SimulationCfg(
@@ -134,7 +134,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     light = AssetBaseCfg(
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(
-            color=(0.75, 0.75, 0.75), intensity=3000.0,
+            color=(0.75, 0.75, 0.75), intensity=1500.0,
             texture_file=str(SCENE_ASSETS_ROOT / 'base0.exr')
         ),
     )
@@ -247,7 +247,8 @@ class BaseTask(UipcRLEnv):
         self._tactile_manager.setup()
         self._tactile_manager.set_debug_vis(self.cfg.debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
-    
+        self.save_pre_move = getattr(self.cfg, "save_pre_move", False)
+
     def load_robot_and_sensors(self, cfg:BaseTaskCfg):
         data_type = ["camera_depth", "tactile_rgb", "marker_rgb", "marker_motion"]
         if cfg.tactile_sensor_type == 'gsmini':
@@ -400,7 +401,7 @@ class BaseTask(UipcRLEnv):
 
             reset_test_start = time.perf_counter()
             for _ in range(20):
-                self._step(is_save=False)
+                self._step(is_save=self.save_pre_move)
                 reset_test_cost = time.perf_counter() - reset_test_start
                 if reset_test_cost > self.cfg.reset_time_limit:
                     raise RuntimeError(
@@ -411,7 +412,7 @@ class BaseTask(UipcRLEnv):
         
         reset_test_start = time.perf_counter()
         for _ in range(5):
-            self._step(is_save=False)
+            self._step(is_save=self.save_pre_move)
             reset_test_cost = time.perf_counter() - reset_test_start
             if reset_test_cost > self.cfg.reset_time_limit:
                 raise RuntimeError(
@@ -429,8 +430,10 @@ class BaseTask(UipcRLEnv):
         if self.mode == 'eval':
             self.delay()
 
-        self.atom_id = 0
-        self.atom_tag = ''
+        # ToBeCheck.
+        if not self.save_pre_move:
+            self.atom_id = 0
+            self.atom_tag = ''
 
         return ret
 
@@ -484,7 +487,6 @@ class BaseTask(UipcRLEnv):
             obs['tactile']['left_tactile']['rgb_marker'].clone().permute(2, 0, 1)).permute(1, 2, 0)
         right_tac = torchvision.transforms.Resize((tac_size, tac_size))(
             obs['tactile']['right_tactile']['rgb_marker'].clone().permute(2, 0, 1)).permute(1, 2, 0)
-
         img = torch.zeros((320, 480*2+160, 3), dtype=head_obs.dtype)
         img[:, :480, :] = torchvision.transforms.Resize(
             (320, 480))(head_obs.permute(2, 0, 1)).permute(1, 2, 0)
@@ -538,7 +540,9 @@ class BaseTask(UipcRLEnv):
         
         self.step_count += 1
 
-        is_save = is_save and (not self.in_pre_move) and (not self.mode == 'eval_test')
+        # is_save = is_save and (not self.in_pre_move) and (not self.mode == 'eval_test')
+        # Modify for Save the Whole Trajectory
+        is_save = is_save and (self.save_pre_move or not self.in_pre_move) and (not self.mode == 'eval_test')
         save_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.save_frequency == 0)
         video_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.video_frequency == 0)
         render_freq = (self.cfg.render_frequency > 0 and self.step_count % self.cfg.render_frequency == 0)

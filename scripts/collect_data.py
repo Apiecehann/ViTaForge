@@ -188,7 +188,7 @@ def main():
     env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.random_texture = task_config.get("random_texture", False)
-
+    env_cfg.save_pre_move = task_config.get("save_pre_move", getattr(env_cfg, "save_pre_move", False))
     env_cfg.scene.num_envs = 1
     
     init_start = time.perf_counter()

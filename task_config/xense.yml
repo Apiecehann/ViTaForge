@@ -11,12 +11,10 @@ random_texture: false # set to true to enable random texture
 use_seed: true
 episode_num: 5
 
-sensor_type: gsmini
+sensor_type: xensews
 
 observations:
   camera: ['rgb']
-  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  tactile: ['rgb', 'marker', 'depth', 'pose']
   embodiment: ['joint', 'ee']
   actor: true
-
-save_pre_move: true

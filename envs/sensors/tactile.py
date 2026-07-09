@@ -165,7 +165,8 @@ def create_xensews_cfg(
     gelpad_attachment_body_name: str,
     gelpad_attachment_prim_path: str = None,
     name: str = "tactile_sensor",
-    resolution = (320, 240),
+    # resolution = (320, 240),
+    resolution = (400, 700),
     update_period = 1/120,
     data_type:list[str] = ["camera_depth", "tactile_rgb"],
 ) -> TactileCfg:
@@ -183,14 +184,23 @@ def create_xensews_cfg(
         device="cuda",
         debug_vis=False,  # for rendering sensor output in the gui
         update_period=update_period,
+        # marker_motion_sim_cfg=ManiSkillSimulatorCfg(
+        #     tactile_img_res=resolution,
+        #     sub_marker_num=0,
+        #     sensor_type='xensews',
+        # ),
+        # data_types=data_type
         marker_motion_sim_cfg=ManiSkillSimulatorCfg(
             tactile_img_res=resolution,
+            marker_shape=(11, 20),
+            marker_interval=(2.0, 2.0),
             sub_marker_num=0,
+            marker_radius=3,
             sensor_type='xensews',
         ),
-        data_types=data_type
     )
-    sensor_cfg.marker_motion_sim_cfg.marker_params.num_markers = 1200
+    # sensor_cfg.marker_motion_sim_cfg.marker_params.num_markers = 1200
+    sensor_cfg.marker_motion_sim_cfg.marker_params.num_markers = 11 * 20
     sensor_cfg.optical_sim_cfg = sensor_cfg.optical_sim_cfg.replace(
         with_shadow=False,
         tactile_img_res=resolution,
