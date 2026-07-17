@@ -38,5 +38,37 @@
     "grasp_classify": {
         "camera_type": "head",
         "downsample": 1
+    },
+    "insert_usb": {
+        "camera_type": "head",
+        "downsample": 1
+    },
+    "insert_half_cylinder_into_box": {
+        "camera_type": "head",
+        "downsample": 1
+    },
+    "grasp_half_cylinder_in_clutter": {
+        "camera_type": "head",
+        "downsample": 1
+    },
+    "place_wooden_cube_on_yellow_area": {
+        "camera_type": "head",
+        "downsample": 1
+    },
+    "pull_drawer": {
+        "camera_type": "head",
+        "downsample": 1
+    },
+    "pour_ball_to_cup": {
+        "camera_type": "head",
+        "downsample": 1
+    },
+    "swap_cup_order": {
+        "camera_type": "head",
+        "downsample": 1
+    },
+    "turn_gear_pair": {
+        "camera_type": "head",
+        "downsample": 1
     }
 }

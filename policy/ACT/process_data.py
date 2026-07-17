@@ -12,7 +12,7 @@ from tqdm import tqdm
 from envs.utils.data import HDF5Handler
 
 
-def load_hdf5(dataset_paths, camera_type, downsample_factor):
+def load_hdf5(dataset_paths, camera_type, downsample_factor, tactile_key="rgb_marker"):
     data_paths = [
         'embodiment/joint',
     ]
@@ -23,13 +23,19 @@ def load_hdf5(dataset_paths, camera_type, downsample_factor):
         data_paths.append(f'observation/{camera_type}/rgb')    
     
     with h5py.File(str(dataset_paths[0]), 'r') as f:
-        try:
-            f['tactile/left_tactile/rgb_marker']
-            data_paths.append('tactile/left_tactile/rgb_marker')
-            data_paths.append('tactile/right_tactile/rgb_marker')
-        except:
-            data_paths.append('tactile/left_gsmini/rgb_marker')
-            data_paths.append('tactile/right_gsmini/rgb_marker')
+        candidates = [
+            (f'tactile/left_tactile/{tactile_key}', f'tactile/right_tactile/{tactile_key}'),
+            ('tactile/left_tactile/rgb_marker', 'tactile/right_tactile/rgb_marker'),
+            (f'tactile/left_gsmini/{tactile_key}', f'tactile/right_gsmini/{tactile_key}'),
+            ('tactile/left_gsmini/rgb_marker', 'tactile/right_gsmini/rgb_marker'),
+        ]
+        for left_path, right_path in candidates:
+            if left_path in f and right_path in f:
+                data_paths.append(left_path)
+                data_paths.append(right_path)
+                break
+        else:
+            raise KeyError(f"Could not find tactile key '{tactile_key}' in {dataset_paths[0]}")
 
     data = HDF5Handler().batch_gather_hdf5(
         dataset_paths,
@@ -38,11 +44,14 @@ def load_hdf5(dataset_paths, camera_type, downsample_factor):
         convert_channels=False,
         downsample_factor=downsample_factor,
     )
+    left_path, right_path = data_paths[-2:]
+    data['tactile/left_tactile/train_image'] = data[left_path]
+    data['tactile/right_tactile/train_image'] = data[right_path]
  
     return data
 
 
-def data_transform(path, episode_num, save_path):
+def data_transform(path, episode_num, save_path, tactile_key="rgb_marker"):
     hdf5_dir = Path(path) / 'hdf5'
     if not hdf5_dir.exists():
         hdf5_dir = Path(path)
@@ -63,11 +72,14 @@ def data_transform(path, episode_num, save_path):
     assert task_name in task_settings, f"Task '{task_name}' not found in task_settings.json"
     camera_type = task_settings[task_name].get('camera_type', 'head')
     downsample_factor = task_settings[task_name].get('downsample', 1)
-    print(f"Loading {episode_num} episodes with camera type '{camera_type}', downsample factor {downsample_factor}.")
+    print(
+        f"Loading {episode_num} episodes with camera type '{camera_type}', "
+        f"tactile key '{tactile_key}', downsample factor {downsample_factor}."
+    )
 
     # 批量加载所有 episode
     dataset_paths = [str(hdf5_files[i]) for i in range(episode_num)]
-    data = load_hdf5(dataset_paths[:episode_num], camera_type, downsample_factor)
+    data = load_hdf5(dataset_paths[:episode_num], camera_type, downsample_factor, tactile_key=tactile_key)
     
     # 提取批量数据
     joint_state_all = data['embodiment/joint_state'][:, 0:8]  # (T_total, 8)
@@ -77,8 +89,8 @@ def data_transform(path, episode_num, save_path):
         wrist_cam_all = data[f'observation/wrist/rgb']  # (T_total, H, W, 3)
     else:
         head_cam_all = data[f'observation/{camera_type}/rgb']  # (T_total, H, W, 3)
-    left_tac_all = data['tactile/left_tactile/rgb_marker']  # (T_total, H, W, 3)
-    right_tac_all = data['tactile/right_tactile/rgb_marker']  # (T_total, H, W, 3)
+    left_tac_all = data['tactile/left_tactile/train_image']  # (T_total, H, W, 3)
+    right_tac_all = data['tactile/right_tactile/train_image']  # (T_total, H, W, 3)
     episode_ends = data['episode_ends']
     
     start_idx = 0
@@ -130,11 +142,15 @@ if __name__ == "__main__":
     task_name = args.task_name
     task_config = args.task_config
     expert_data_num = args.expert_data_num
+    tactile_key = os.environ.get(
+        "TACTILE_KEY",
+        "gel_particle" if task_config == "neote" else "rgb_marker",
+    )
 
     input_path = os.path.join("../../data/", task_name, task_config)
     output_path = f"./data/sim-{task_name}/{task_config}-{expert_data_num}"
     
-    begin, cam_type = data_transform(input_path, expert_data_num, output_path)
+    begin, cam_type = data_transform(input_path, expert_data_num, output_path, tactile_key=tactile_key)
 
     SIM_TASK_CONFIGS_PATH = "./SIM_TASK_CONFIGS.json"
 
@@ -150,6 +166,7 @@ if __name__ == "__main__":
         "episode_len": 1000,
         "camera_names": ["cam_high", "tac_left", "tac_right"] if cam_type != 'all' \
             else ["cam_high", "cam_wrist", "tac_left", "tac_right"],
+        "tactile_key": tactile_key,
     }
 
     with open(SIM_TASK_CONFIGS_PATH, "w") as f:

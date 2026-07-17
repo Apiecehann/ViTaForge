@@ -32,6 +32,13 @@ class Policy(BasePolicy):
 
         with open(Path(__file__).parent / f'{self.train_config_name}.yml', 'r') as f:
             train_config = yaml.load(f, Loader=yaml.FullLoader)
+        self.camera_names = train_config.get('camera_names', ['cam_high'])
+        self.tactile_names = train_config.get('tactile_names', ['tac_left', 'tac_right'])
+        self.tactile_key = os.environ.get(
+            'TACTILE_KEY',
+            'gel_particle' if args.get('task_config') == 'neote' else 'rgb_marker',
+        )
+        print(f"Using tactile key '{self.tactile_key}' for ACT deployment")
         
         train_config.update({
             'task_name': f"sim-{args['task_name']}-{args['task_config']}-{self.ep_num}",
@@ -78,26 +85,42 @@ class Policy(BasePolicy):
             img = img / 255.0  # Normalize to [0, 1]
             return img
 
-        if self.camera_type == 'all':
-            cam_high = camera_transform(observation["observation"]["head"]["rgb"])
-            cam_wrist = camera_transform(observation["observation"]["wrist"]["rgb"])
-        else:
-            cam_high = camera_transform(observation["observation"][self.camera_type]["rgb"])
+        def get_camera(cam_name: str):
+            if cam_name == "cam_high":
+                return camera_transform(observation["observation"]["head"]["rgb"])
+            if cam_name == "cam_wrist":
+                return camera_transform(observation["observation"]["wrist"]["rgb"])
+            raise KeyError(f"Unknown ACT camera name: {cam_name}")
 
-        left_tac = tactile_transform(observation["tactile"]["left_gsmini"]["rgb_marker"])
-        right_tac = tactile_transform(observation["tactile"]["right_gsmini"]["rgb_marker"])
+        def get_tactile(side: str):
+            tactile_obs = observation["tactile"]
+            preferred = f"{side}_tactile"
+            legacy = f"{side}_gsmini"
+            if preferred in tactile_obs:
+                sensor_obs = tactile_obs[preferred]
+            elif legacy in tactile_obs:
+                sensor_obs = tactile_obs[legacy]
+            else:
+                raise KeyError(f"Missing tactile sensor for side '{side}': {list(tactile_obs.keys())}")
+            if self.tactile_key in sensor_obs:
+                return tactile_transform(sensor_obs[self.tactile_key])
+            if self.tactile_key != "rgb_marker" and "rgb_marker" in sensor_obs:
+                return tactile_transform(sensor_obs["rgb_marker"])
+            raise KeyError(f"Missing tactile key '{self.tactile_key}' in {preferred}/{legacy}")
         
         # Extract joint positions (8D: 7 arm + 1 gripper)
-        qpos = observation["embodiment"]["joint"][:8]
+        qpos = observation["embodiment"]["joint"][:self.model.state_dim]
 
-        ret = {
-            "cam_high": cam_high,
-            "tac_left": left_tac,
-            "tac_right": right_tac,
-            "qpos": qpos.cpu().numpy()
-        }
-        if self.camera_type == 'all':
-            ret["cam_wrist"] = cam_wrist
+        ret = {"qpos": qpos.cpu().numpy()}
+        for cam_name in self.camera_names:
+            ret[cam_name] = get_camera(cam_name)
+        for tac_name in self.tactile_names:
+            if tac_name == "tac_left":
+                ret[tac_name] = get_tactile("left")
+            elif tac_name == "tac_right":
+                ret[tac_name] = get_tactile("right")
+            else:
+                raise KeyError(f"Unknown ACT tactile name: {tac_name}")
         return ret
 
     def eval(self, task, observation):
