@@ -204,6 +204,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
 
     robot: RobotCfg = None
     tactile_sensor_type:Literal['gsmini', 'xensews', 'neote'] = 'gsmini'
+    dense_gelpad: bool = False
     force_field_grid: tuple[int, int] = (64, 48)
 
     planner_time_dilation_factor: float = 1.0
@@ -271,9 +272,9 @@ class BaseTask(UipcRLEnv):
     def load_robot_and_sensors(self, cfg:BaseTaskCfg):
         data_type = ["camera_depth", "tactile_rgb", "marker_rgb", "marker_motion"]
         if cfg.tactile_sensor_type == 'gsmini':
-            cfg.robot = create_franka_gsmini_gripper(data_type=data_type)
+            cfg.robot = create_franka_gsmini_gripper(data_type=data_type, dense_gelpad=cfg.dense_gelpad)
         elif cfg.tactile_sensor_type == 'neote':
-            cfg.robot = create_franka_neote_gripper(data_type=data_type)
+            cfg.robot = create_franka_neote_gripper(data_type=data_type, dense_gelpad=cfg.dense_gelpad)
         elif cfg.tactile_sensor_type == 'xensews':
             cfg.robot = create_franka_xensews_gripper(data_type=data_type)
         else:

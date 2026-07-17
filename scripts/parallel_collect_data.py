@@ -74,6 +74,7 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
             os.environ["XENSE_USE_BASELINE_FILTER"] = "1" if task_config["xense_use_baseline_filter"] else "0"
         env_cfg.save_dir = base_save_dir
         env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
+        env_cfg.dense_gelpad = bool(task_config.get('dense_gelpad', env_cfg.dense_gelpad))
         env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
         env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
         env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)

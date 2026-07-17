@@ -34,6 +34,22 @@ SLOT_APPROACH_XY_NOISE = (0.002, 0.002, 0.0)
 # _play_once 下插前将 USB 精确移到槽口高度。
 PLAY_PRE_INSERT_CLEARANCE = 0.0
 
+# Xense/Robotiq is bulkier than the GelSight/Panda gripper, so it needs a
+# larger collision clearance while keeping the same task actors and target slot.
+XENSE_USB_BODY_HEIGHT = 0.0500
+XENSE_USB_GRASP_HEIGHT = USB_PLUG_HEIGHT + XENSE_USB_BODY_HEIGHT * 0.5 + 0.007
+XENSE_USB_GRASP_HEIGHT_NOISE = 0.0
+XENSE_LIFT_HEIGHT = 0.0500
+XENSE_SLOT_APPROACH_CLEARANCE = 0.040
+XENSE_PLAY_PRE_INSERT_CLEARANCE = 0.012
+XENSE_PLAY_INSERT_MOTION_BIAS = (0.0050, -0.0012, 0.0)
+XENSE_INSERT_EXTRA_DEPTH = 0.0
+XENSE_INSERT_STAGE_MAX_STEP = 0.004
+XENSE_INSERT_XY_CORRECTION_LIMIT = 0.0015
+XENSE_INSERT_XY_CORRECTION_DEADBAND = 0.0004
+XENSE_POST_CLOSE_SETTLE_STEPS = 80
+XENSE_USB_CLOSE_PERCENT = 0.185
+
 
 @configclass
 class TaskCfg(BaseTaskCfg):
@@ -69,7 +85,13 @@ class Task(BaseTask):
         cfg.sim.physics_material.dynamic_friction = 2.5
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
+        if cfg.tactile_sensor_type == "xensews":
+            cfg.reset_time_limit = max(float(cfg.reset_time_limit), 300.0)
+            cfg.step_lim = max(int(getattr(cfg, "step_lim", 300)), 1200)
         super().__init__(cfg, mode, render_mode, **kwargs)
+
+    def _is_xense(self):
+        return self.cfg.tactile_sensor_type == "xensews"
 
     def _usb_pose_in_slot(self, slot_pose: Pose):
         # 给定插槽位姿，计算 USB 完成插入时应处于的目标位姿。
@@ -130,7 +152,51 @@ class Task(BaseTask):
         self.metadata['start_slot_pose'] = start_slot_pose.tolist()
         self.metadata['target_slot_pose'] = target_slot_pose.tolist()
 
+    def _move_held_usb_by_translation(
+        self,
+        target_pose: Pose,
+        tag: str,
+        time_dilation_factor=None,
+        constraint_pose=None,
+    ):
+        delta = target_pose.p - self.prism.get_pose().p
+        return self.move(
+            self.atom.move_by_displacement(
+                x=float(delta[0]),
+                y=float(delta[1]),
+                z=float(delta[2]),
+                xyz_coord='world',
+            ),
+            tag=tag,
+            time_dilation_factor=time_dilation_factor,
+            constraint_pose=constraint_pose,
+        )
+
+    def _record_xense_debug_pose(self, label):
+        debug = self.metadata.setdefault('xense_debug_poses', {})
+        entry = {
+            'prism_pose': self.prism.get_pose().tolist(),
+            'slot_pose': self.slot.get_pose().tolist(),
+            'target_pose': self._usb_pose_in_slot(self.slot.get_pose()).tolist(),
+            'ee_pose': self._robot_manager.get_ee_pose().tolist(),
+            'gripper_center_pose': self._robot_manager.get_gripper_center_pose().tolist(),
+            'gripper_qpos': float(self._robot_manager.get_gripper_qpos()),
+        }
+        try:
+            entry['prism_in_slot'] = self.prism.get_pose().rebase(
+                self._usb_pose_in_slot(self.slot.get_pose())
+            ).tolist()
+            entry['prism_in_gripper_center'] = self.prism.get_pose().rebase(
+                self._robot_manager.get_gripper_center_pose()
+            ).tolist()
+        except Exception as exc:
+            entry['pose_debug_error'] = repr(exc)
+        debug[label] = entry
+
     def pre_move(self):
+        if self._is_xense():
+            return self._pre_move_xense()
+
         # 正式动作前等待 10 个仿真步，让 reset 后的物体接触状态先稳定下来。
         self.delay(10)
 
@@ -186,7 +252,78 @@ class Task(BaseTask):
         self.metadata['approach_clearance'] = float(approach_clearance)
         self.metadata['approach_xy_noise'] = approach_offset.p.tolist()
 
+    def _pre_move_xense(self):
+        # The Xense/Robotiq tactile shell is larger than the GelSight Mini case.
+        # Keep the object target identical, but approach it with more vertical
+        # clearance and avoid recomputing a GelSight-style grasp orientation.
+        self.delay(10)
+        if hasattr(self._tactile_manager, "reset_reference"):
+            self.metadata['xense_reference_reset_result'] = self._tactile_manager.reset_reference()
+            self.metadata['xense_reference_reset_step'] = int(self.step_count)
+            self.delay(20, is_save=False)
+            self._record_xense_debug_pose('after_initial_tactile_reset')
+
+        self.move(self.atom.open_gripper(1.0), tag="open_gripper_for_usb")
+        self.delay(20, is_save=False)
+        self._record_xense_debug_pose('after_open_for_usb')
+
+        grasp_height = XENSE_USB_GRASP_HEIGHT + self.rng.uniform(
+            -XENSE_USB_GRASP_HEIGHT_NOISE,
+            XENSE_USB_GRASP_HEIGHT_NOISE,
+        )
+        target_p = self.prism.get_pose().p.copy()
+        target_p[:2] = self.start_slot.get_pose().p[:2]
+        target_p[2] = self.start_slot.get_pose().p[2] + USB_INSERT_Z + grasp_height
+        cpose = construct_grasp_pose(
+            target_p,
+            np.array([0.0, 0.0, 1.0]),
+            np.array([0.0, 1.0, 0.0]),
+        )
+        cid = self.prism.register_point(cpose, type='contact')
+        self.move(self.atom.grasp_actor(
+            self.prism,
+            contact_point_id=cid,
+            is_close=False,
+        ), tag="approach_usb")
+        self._record_xense_debug_pose('after_approach_usb')
+
+        usb_close_percent = float(getattr(self.cfg, "xense_usb_close_percent", XENSE_USB_CLOSE_PERCENT))
+        usb_close_percent = float(np.clip(usb_close_percent, 0.0, 1.0))
+        post_close_settle_steps = int(getattr(
+            self.cfg,
+            "xense_post_close_settle_steps",
+            XENSE_POST_CLOSE_SETTLE_STEPS,
+        ))
+        self.metadata['usb_close_percent'] = float(usb_close_percent)
+        self.metadata['usb_close_target_qpos'] = float(
+            self._robot_manager.gripper_percent2qpos(usb_close_percent)
+        )
+        self.metadata['post_close_settle_steps'] = int(post_close_settle_steps)
+        self.move(self.atom.close_gripper(pos=usb_close_percent), tag="close_usb")
+        self.delay(post_close_settle_steps, is_save=True)
+        self._record_xense_debug_pose('after_close')
+
+        lift_height = XENSE_LIFT_HEIGHT
+        self.move(self.atom.move_by_displacement(z=lift_height), tag="lift_usb")
+        self._record_xense_debug_pose('after_lift')
+
+        self._update_insert_reference_poses()
+        self._update_pre_insert_pose(XENSE_SLOT_APPROACH_CLEARANCE)
+        self._move_held_usb_by_translation(
+            self.pre_insert_pose,
+            tag="move_usb_to_pre_insert",
+        )
+        self._record_xense_debug_pose('after_pre_insert')
+
+        self.metadata['grasp_height'] = float(grasp_height)
+        self.metadata['lift_height'] = float(lift_height)
+        self.metadata['approach_clearance'] = float(XENSE_SLOT_APPROACH_CLEARANCE)
+        self.metadata['play_insert_motion_bias'] = list(XENSE_PLAY_INSERT_MOTION_BIAS)
+
     def _play_once(self):
+        if self._is_xense():
+            return self._play_once_xense()
+
         self._update_insert_reference_poses()
         # 正式下插前去掉 XY 噪声，将 USB 参考原点精确移到槽口高度。
         play_pre_insert_pose = self.opening_pose.add_bias([0.0, 0.0, PLAY_PRE_INSERT_CLEARANCE])
@@ -206,6 +343,80 @@ class Task(BaseTask):
             xyz_coord='world'
         ), tag="insert_usb_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
         # 下插后保存一段稳定观测，便于 success 检查和离线数据回放看到最终状态。
+        self.delay(40, is_save=True)
+
+    def _play_once_xense(self):
+        self._update_insert_reference_poses()
+        play_pre_insert_pose = self.opening_pose.add_bias([0.0, 0.0, XENSE_PLAY_PRE_INSERT_CLEARANCE])
+        motion_play_pre_insert_pose = play_pre_insert_pose.add_bias(
+            XENSE_PLAY_INSERT_MOTION_BIAS,
+            coord='world',
+        )
+        self._move_held_usb_by_translation(
+            motion_play_pre_insert_pose,
+            tag="move_usb_to_play_pre_insert",
+            time_dilation_factor=0.5,
+        )
+        self._record_xense_debug_pose('after_play_pre_insert')
+        self.metadata['play_pre_insert_clearance'] = XENSE_PLAY_PRE_INSERT_CLEARANCE
+
+        insert_distance = max(
+            0.0,
+            float(self.prism.get_pose().p[2] - self.target_pose.p[2] + XENSE_INSERT_EXTRA_DEPTH),
+        )
+        self.metadata['insert_distance'] = insert_distance
+        self.metadata['insert_extra_depth'] = XENSE_INSERT_EXTRA_DEPTH
+        self.metadata['insert_stage_max_step'] = XENSE_INSERT_STAGE_MAX_STEP
+
+        remaining_insert_distance = insert_distance
+        insert_stage_idx = 0
+        xy_corrections = []
+        while remaining_insert_distance > 1e-6:
+            insert_stage_idx += 1
+            dz = min(float(XENSE_INSERT_STAGE_MAX_STEP), remaining_insert_distance)
+            self.move(self.atom.move_by_displacement(
+                z=-dz,
+                xyz_coord='world',
+            ), tag=f"insert_usb_into_slot_stage_{insert_stage_idx}", time_dilation_factor=0.5,
+                constraint_pose=[1, 1, 1, 1, 1, 0])
+            self.delay(10, is_save=True)
+            self._record_xense_debug_pose(f'after_insert_stage_{insert_stage_idx}_raw')
+
+            rel_pose = self.prism.get_pose().rebase(self.target_pose)
+            correction_local = np.array([-float(rel_pose.p[0]), -float(rel_pose.p[1]), 0.0], dtype=float)
+            correction_norm = float(np.linalg.norm(correction_local[:2]))
+            applied_correction = [0.0, 0.0, 0.0]
+            if correction_norm > XENSE_INSERT_XY_CORRECTION_DEADBAND:
+                correction_scale = min(
+                    correction_norm,
+                    float(XENSE_INSERT_XY_CORRECTION_LIMIT),
+                ) / correction_norm
+                correction_local = correction_local * correction_scale
+                target_rot = self.target_pose.to_transformation_matrix()[:3, :3]
+                correction_world = target_rot @ correction_local
+                applied_correction = [float(correction_world[0]), float(correction_world[1]), 0.0]
+                self.move(self.atom.move_by_displacement(
+                    x=applied_correction[0],
+                    y=applied_correction[1],
+                    z=0.0,
+                    xyz_coord='world',
+                ), tag=f"insert_xy_correct_stage_{insert_stage_idx}", time_dilation_factor=0.5,
+                    constraint_pose=[1, 1, 1, 1, 1, 0])
+                self.delay(5, is_save=True)
+
+            xy_corrections.append({
+                'stage': insert_stage_idx,
+                'raw_xy_error': [float(rel_pose.p[0]), float(rel_pose.p[1])],
+                'applied_world_correction': applied_correction,
+            })
+            self._record_xense_debug_pose(f'after_insert_stage_{insert_stage_idx}')
+            remaining_insert_distance -= dz
+
+        self.metadata['insert_xy_correction_limit'] = XENSE_INSERT_XY_CORRECTION_LIMIT
+        self.metadata['insert_xy_correction_deadband'] = XENSE_INSERT_XY_CORRECTION_DEADBAND
+        self.metadata['insert_xy_corrections'] = xy_corrections
+        self.metadata['insert_stage_count'] = insert_stage_idx
+        self._record_xense_debug_pose('after_insert')
         self.delay(40, is_save=True)
 
     def _get_success_diagnostics(self, xy_threshold=0.002, z_threshold=0.003):

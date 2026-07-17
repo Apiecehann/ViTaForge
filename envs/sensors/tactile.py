@@ -169,8 +169,10 @@ def create_gelsight_mini_cfg(
     update_period = 1/120,
     data_type:list[str] = ["camera_depth", "tactile_rgb"],
     sensor_type: str = "gsmini",
+    dense: bool = False,
 ):
     from tacex_assets.sensors.gelsight_mini.gsmini_cfg import GelSightMiniCfg
+    marker_sensor_type = 'gsmini_dyn' if dense else 'gsmini'
     sensor_cfg = GelSightMiniCfg(
         prim_path=prim_path,
         sensor_camera_cfg=GelSightMiniCfg.SensorCameraCfg(
@@ -194,7 +196,7 @@ def create_gelsight_mini_cfg(
             # Neote reuses the GelSight Mini physical gelpad/camera geometry.
             # Keep the FEM surface tables on gsmini and use TactileCfg.sensor_type
             # below to select Neote-only visualization outputs.
-            sensor_type='gsmini',
+            sensor_type=marker_sensor_type,
         ),
         data_types=data_type
     )
@@ -333,6 +335,7 @@ def create_tactile_cfg(
     name: str = "tactile_sensor",
     sensor_type:Literal['gsmini', 'xensews', 'neote'] = "gsmini",
     data_type:list[str] = ["camera_depth", "tactile_rgb"],
+    dense: bool = False,
 ) -> TactileCfg:
     if sensor_type in ("gsmini", "neote"):
         return create_gelsight_mini_cfg(
@@ -342,6 +345,7 @@ def create_tactile_cfg(
             name=name,
             data_type=data_type,
             sensor_type=sensor_type,
+            dense=dense,
         )
     elif sensor_type == "xensews":
         return create_xensews_cfg(

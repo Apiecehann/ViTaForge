@@ -12,12 +12,22 @@ use_seed: true
 episode_num: 5
 
 sensor_type: neote
+dense_gelpad: false
+force_field_grid: [64, 48]
 
 observations:
   camera: ['rgb']
-  tactile: ['rgb_marker', 'marker', 'depth', 'pose']
+  tactile:
+    - rgb
+    - rgb_marker
+    - marker
+    - depth
+    - pose
+    - vertex_force
+    - force_field
+    - gel_particle
   embodiment: ['joint', 'ee']
   actor: true
 
 save_pre_move: true
-tactile_video_key: rgb_marker
+tactile_video_key: gel_particle

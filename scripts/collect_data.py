@@ -184,6 +184,7 @@ def main():
     task_module = importlib.import_module(f"envs.{task_file_name}")
     env_cfg:'BaseTaskCfg' = task_module.TaskCfg()
     env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
+    env_cfg.dense_gelpad = bool(task_config.get('dense_gelpad', env_cfg.dense_gelpad))
     env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
     env_cfg.save_dir = Path(task_config.get("save_dir", "./data")) / task_file_name / task_config_file.stem
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)

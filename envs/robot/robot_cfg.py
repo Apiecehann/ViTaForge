@@ -24,7 +24,23 @@ class RobotCfg:
     adaptive_grasp_depth_threshold: float = 27.5 # in mm, used for grasping
     contact_threshold: tuple[float, float] = (27.5, 28.0) # in mm, used in `gravity_rotate` api
 
-def create_franka_gsmini_gripper(data_type:list[str]):
+def _use_dense_gelpad(robot: ArticulationCfg) -> ArticulationCfg:
+    from pathlib import Path
+
+    dense_usd = (
+        Path(__file__).resolve().parents[2]
+        / "third_party/TacEx/source/tacex_assets/tacex_assets/data/Robots/Franka/"
+        "GelSight_Mini/Gripper/uipc_gelpads_dense_wrist.usd"
+    )
+    if not dense_usd.exists():
+        raise FileNotFoundError(
+            f"dense gelpad USD not found: {dense_usd}\n"
+            "Generate it once before setting dense_gelpad: true."
+        )
+    return robot.replace(spawn=robot.spawn.replace(usd_path=str(dense_usd)))
+
+
+def create_franka_gsmini_gripper(data_type:list[str], dense_gelpad: bool = False):
     robot = FRANKA_PANDA_ARM_GSMINI_GRIPPER_HIGH_PD_HIGH_RES_UIPC_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
@@ -40,6 +56,8 @@ def create_franka_gsmini_gripper(data_type:list[str]):
             }
         ),
     )
+    if dense_gelpad:
+        robot = _use_dense_gelpad(robot)
     tactiles = [
         create_tactile_cfg(
             prim_path="/World/envs/env_.*/Robot/gelsight_mini_case_left",
@@ -48,6 +66,7 @@ def create_franka_gsmini_gripper(data_type:list[str]):
             name="left_tactile",
             sensor_type="gsmini",
             data_type=data_type,
+            dense=dense_gelpad,
         ),
         create_tactile_cfg(
             prim_path="/World/envs/env_.*/Robot/gelsight_mini_case_right",
@@ -56,6 +75,7 @@ def create_franka_gsmini_gripper(data_type:list[str]):
             name="right_tactile",
             sensor_type="gsmini",
             data_type=data_type,
+            dense=dense_gelpad,
         )
     ]
     return RobotCfg(
@@ -70,7 +90,7 @@ def create_franka_gsmini_gripper(data_type:list[str]):
 
 
 
-def create_franka_neote_gripper(data_type:list[str]):
+def create_franka_neote_gripper(data_type:list[str], dense_gelpad: bool = False):
     """Neote currently reuses the GelSight Mini physical assembly.
 
     The Neote branch differs in the requested tactile image modalities
@@ -92,6 +112,8 @@ def create_franka_neote_gripper(data_type:list[str]):
             }
         ),
     )
+    if dense_gelpad:
+        robot = _use_dense_gelpad(robot)
     tactiles = [
         create_tactile_cfg(
             prim_path="/World/envs/env_.*/Robot/gelsight_mini_case_left",
@@ -100,6 +122,7 @@ def create_franka_neote_gripper(data_type:list[str]):
             name="left_tactile",
             sensor_type="neote",
             data_type=data_type,
+            dense=dense_gelpad,
         ),
         create_tactile_cfg(
             prim_path="/World/envs/env_.*/Robot/gelsight_mini_case_right",
@@ -108,6 +131,7 @@ def create_franka_neote_gripper(data_type:list[str]):
             name="right_tactile",
             sensor_type="neote",
             data_type=data_type,
+            dense=dense_gelpad,
         )
     ]
     return RobotCfg(
