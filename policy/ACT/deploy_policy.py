@@ -21,6 +21,7 @@ class Policy(BasePolicy):
         # Construct checkpoint directory path
         self.train_config_name = os.environ.get('TRAIN_CONFIG', 'train_config')
         self.ep_num = os.environ.get('EP_NUM', '50')
+        self.eval_action_repeat = int(args.get('eval_action_repeat', 1))
         ckpt_dir = Path(__file__).parent / "act_ckpt" / f"act-{args['task_name']}" / f"{args['task_config']}-{self.ep_num}" / self.train_config_name
  
         self.task_name = args['task_name']
@@ -84,8 +85,11 @@ class Policy(BasePolicy):
         else:
             cam_high = camera_transform(observation["observation"][self.camera_type]["rgb"])
 
-        left_tac = tactile_transform(observation["tactile"]["left_gsmini"]["rgb_marker"])
-        right_tac = tactile_transform(observation["tactile"]["right_gsmini"]["rgb_marker"])
+        tactile_obs = observation["tactile"]
+        left_key = "left_tactile" if "left_tactile" in tactile_obs else "left_gsmini"
+        right_key = "right_tactile" if "right_tactile" in tactile_obs else "right_gsmini"
+        left_tac = tactile_transform(tactile_obs[left_key]["rgb_marker"])
+        right_tac = tactile_transform(tactile_obs[right_key]["rgb_marker"])
         
         # Extract joint positions (8D: 7 arm + 1 gripper)
         qpos = observation["embodiment"]["joint"][:8]
@@ -115,7 +119,9 @@ class Policy(BasePolicy):
             self.save(task.get_frame_shot(observation), task.take_action_cnt)
         action = self.model.get_action(obs).reshape(-1)
         action = torch.from_numpy(action).to(task.device).float()
-        exec_succ, eval_succ = task.take_action(action, action_type='qpos')
+        exec_succ, eval_succ = task.take_action(
+            action, action_type='qpos', action_repeat=self.eval_action_repeat
+        )
 
     def reset(self):
         """Reset ACT model state (temporal aggregation and timestep counter)"""
