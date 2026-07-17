@@ -9,7 +9,7 @@ render_frequency: 0
 random_texture: false
 
 use_seed: true
-episode_num: 15
+episode_num: 100
 
 sensor_type: gsmini
 
@@ -18,3 +18,5 @@ observations:
   tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
   embodiment: ['joint', 'ee']
   actor: true
+
+save_pre_move: true
