@@ -1163,12 +1163,6 @@ bool FiniteElementMethod::Impl::write_vertex_pos_to_sim(span<const Vector3> posi
     // const auto& scene = this->world().scene();
     // auto geo_slots = scene.geometries();
 
-    std::cout << "write_vertex_pos_to_sim FEM: " <<"\n";
-    
-    std::cout << "vertex_offset " << vertex_offset << "\n";
-    std::cout << "vertex_count " << vertex_count << "\n";
-
-        
     // buffer.resize(byte_buffer.size() / sizeof(T));
     xs.view(vertex_offset, vertex_count).copy_from(positions.data());
     x_prevs.view(vertex_offset, vertex_count).copy_from(positions.data());

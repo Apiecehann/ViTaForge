@@ -1,0 +1,23 @@
+save_dir: ./data
+
+decimation: 1
+
+save_frequency: 2
+video_frequency: 2
+render_frequency: 0
+
+random_texture: false
+
+use_seed: true
+episode_num: 5
+
+sensor_type: neote
+
+observations:
+  camera: ['rgb']
+  tactile: ['rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true
+
+save_pre_move: true
+tactile_video_key: rgb_marker

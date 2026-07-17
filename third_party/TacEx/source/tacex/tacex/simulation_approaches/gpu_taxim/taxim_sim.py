@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import cv2
 import omni.usd
+import torch.nn.functional as torch_F
 import torchvision.transforms.functional as F
 
 from ...gelsight_sensor import GelSightSensor
@@ -54,6 +55,7 @@ class TaximSimulator(GelSightSimulator):
         )
 
         self._taxim: Taxim = Taxim(calib_folder=calib_folder, device=self._device)
+        self._maybe_override_background_image()
         # update Taxim settings via settings from cfg class
         # print(self._taxim.width)
         # self._taxim.width = self.cfg.tactile_img_res[0]
@@ -76,6 +78,221 @@ class TaximSimulator(GelSightSimulator):
 
         # if camera resolution is different than the tactile RGB res, scale img
         self.img_res = self.cfg.tactile_img_res
+
+    def _maybe_override_background_image(self) -> None:
+        override_path = Path(getattr(self.cfg, "background_img_override_path", "") or "")
+        if not override_path.is_file():
+            return
+
+        taxim = self._taxim
+        np_img_to_torch = getattr(taxim, "_TaximTorch__np_img_to_torch", None)
+        bgr_to_rgb = getattr(taxim, "_TaximTorch__bgr_to_rgb", None)
+        process_initial_frame = getattr(taxim, "_TaximTorch__process_initial_frame", None)
+        background_cache = getattr(taxim, "_TaximTorch__get_background_img_cached", None)
+        if (
+            np_img_to_torch is None
+            or bgr_to_rgb is None
+            or process_initial_frame is None
+            or background_cache is None
+        ):
+            return
+
+        override_bgr = cv2.imread(str(override_path), cv2.IMREAD_COLOR)
+        if override_bgr is None:
+            return
+
+        try:
+            override_rgb = bgr_to_rgb(np_img_to_torch(override_bgr / 255.0))
+            if bool(getattr(self.cfg, "background_img_override_raw", False)):
+                taxim._TaximTorch__bg_proc = override_rgb
+            else:
+                taxim._TaximTorch__bg_proc = process_initial_frame(override_rgb)
+            if hasattr(background_cache, "cache_clear"):
+                background_cache.cache_clear()
+        except Exception as exc:
+            print(f"[TaximSimulator] Warning: failed to apply background override {override_path}: {exc}")
+
+    def _is_xsense_sensor(self) -> bool:
+        marker_cfg = getattr(getattr(self.sensor, "cfg", None), "marker_motion_sim_cfg", None)
+        sensor_type = str(getattr(marker_cfg, "sensor_type", "")).lower()
+        return sensor_type.startswith("xense")
+
+    def _blur_chw(self, value: torch.Tensor, passes: int, kernel_size: int = 5) -> torch.Tensor:
+        if passes <= 0:
+            return value
+        kernel_size = max(int(kernel_size), 1)
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        pad = kernel_size // 2
+        work = value
+        for _ in range(int(passes)):
+            work = torch_F.avg_pool2d(
+                torch_F.pad(work, (pad, pad, pad, pad), mode="replicate"),
+                kernel_size=kernel_size,
+                stride=1,
+            )
+        return work
+
+    def _xsense_contact_gate(self, height_map: torch.Tensor) -> torch.Tensor | None:
+        press_depth = torch.as_tensor(
+            self._indentation_depth,
+            dtype=height_map.dtype,
+            device=height_map.device,
+        ).flatten()
+        if press_depth.numel() == 1 and height_map.shape[0] > 1:
+            press_depth = press_depth.repeat(height_map.shape[0])
+        if press_depth.numel() < height_map.shape[0]:
+            return None
+
+        shifted = (
+            height_map
+            - height_map.amin(dim=(-2, -1), keepdim=True)
+            - press_depth[: height_map.shape[0]].view(-1, 1, 1)
+        )
+        contact_depth = torch.clamp(-shifted, min=0.0)
+        peak = contact_depth.amax(dim=(-2, -1), keepdim=True).clamp_min(1.0e-6)
+        gate = (contact_depth / peak).clamp(0.0, 1.0)
+        return gate.unsqueeze(1)
+
+    def _process_xsense_contact_gate(
+        self,
+        gate: torch.Tensor | None,
+        target_shape: tuple[int, int],
+    ) -> torch.Tensor | None:
+        if gate is None:
+            return None
+
+        if gate.shape[-2:] != target_shape:
+            gate = torch_F.interpolate(gate, size=target_shape, mode="bilinear", align_corners=False)
+        threshold = min(
+            max(float(getattr(self.cfg, "xsense_response_contact_gate_threshold", 0.05) or 0.0), 0.0),
+            0.95,
+        )
+        gate = torch.clamp((gate - threshold) / max(1.0 - threshold, 1.0e-6), min=0.0, max=1.0)
+        gamma = max(float(getattr(self.cfg, "xsense_response_contact_gate_gamma", 1.0) or 1.0), 0.25)
+        gate = gate.pow(gamma)
+        blur_passes = max(int(getattr(self.cfg, "xsense_response_contact_gate_blur_passes", 1) or 0), 0)
+        gate = self._blur_chw(gate, blur_passes, kernel_size=5)
+        peak = gate.amax(dim=(-2, -1), keepdim=True)
+        gate = torch.where(peak > 1.0e-6, gate / peak.clamp_min(1.0e-6), gate)
+        return gate.clamp(0.0, 1.0)
+
+    def _xsense_background_chw(self, rendered_chw: torch.Tensor) -> torch.Tensor:
+        background_hwc = self.background_img.to(device=rendered_chw.device, dtype=rendered_chw.dtype)
+        background_chw = background_hwc.movedim(2, 0).unsqueeze(0)
+        if background_chw.shape[-2:] != rendered_chw.shape[-2:]:
+            background_chw = torch_F.interpolate(
+                background_chw,
+                size=rendered_chw.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        if background_chw.shape[0] == 1 and rendered_chw.shape[0] > 1:
+            background_chw = background_chw.repeat(rendered_chw.shape[0], 1, 1, 1)
+        return background_chw
+
+    def _apply_xsense_taxim_residual_response(
+        self,
+        rendered_chw: torch.Tensor,
+        height_map: torch.Tensor,
+        background_chw: torch.Tensor,
+    ) -> torch.Tensor:
+        residual = rendered_chw - background_chw
+        sigma_px = float(getattr(self.cfg, "xsense_response_highpass_sigma_px", 0.0) or 0.0)
+        if sigma_px > 0.0:
+            kernel = max(3, int(round(sigma_px * 4.0)) | 1)
+            pad = kernel // 2
+            low = torch_F.avg_pool2d(
+                torch_F.pad(residual, (pad, pad, pad, pad), mode="replicate"),
+                kernel_size=kernel,
+                stride=1,
+            )
+            residual = residual - low
+
+        gate = self._process_xsense_contact_gate(self._xsense_contact_gate(height_map), rendered_chw.shape[-2:])
+        if gate is not None:
+            residual = residual * gate
+
+        gain = float(getattr(self.cfg, "xsense_response_residual_gain", 1.0) or 1.0)
+        return torch.clamp(background_chw + residual * gain, 0.0, 1.0)
+
+    def _xsense_indent_from_height_map(
+        self,
+        height_map: torch.Tensor,
+        target_shape: tuple[int, int],
+    ) -> torch.Tensor:
+        baseline = height_map.amax(dim=(-2, -1), keepdim=True)
+        indent = (baseline - height_map).clamp_min(0.0).unsqueeze(1)
+        if indent.shape[-2:] != target_shape:
+            indent = torch_F.interpolate(indent, size=target_shape, mode="bilinear", align_corners=False)
+        return indent
+
+    def _apply_xsense_analytic_response(
+        self,
+        rendered_chw: torch.Tensor,
+        height_map: torch.Tensor,
+        background_chw: torch.Tensor,
+    ) -> torch.Tensor:
+        target_shape = rendered_chw.shape[-2:]
+        indent = self._xsense_indent_from_height_map(height_map, target_shape)
+        peak = indent.amax(dim=(-2, -1), keepdim=True)
+        indent_norm = torch.where(peak > 1.0e-6, indent / peak.clamp_min(1.0e-6), torch.zeros_like(indent))
+
+        gate = self._process_xsense_contact_gate(self._xsense_contact_gate(height_map), target_shape)
+        if gate is None:
+            gate = indent_norm
+        if gate.shape[0] == 1 and rendered_chw.shape[0] > 1:
+            gate = gate.repeat(rendered_chw.shape[0], 1, 1, 1)
+        if float(gate.amax().item()) <= 1.0e-6:
+            return background_chw
+
+        indent_gamma = max(float(getattr(self.cfg, "xsense_response_indent_gamma", 0.85) or 0.85), 0.25)
+        indent_support = min(
+            max(float(getattr(self.cfg, "xsense_response_indent_support", 0.35) or 0.0), 0.0),
+            1.0,
+        )
+        contact_weight = torch.maximum(gate, indent_support * indent_norm.pow(indent_gamma)).clamp(0.0, 1.0)
+
+        padded_indent = torch_F.pad(indent_norm, (1, 1, 1, 1), mode="replicate")
+        grad_x = 0.5 * (padded_indent[..., 1:-1, 2:] - padded_indent[..., 1:-1, :-2])
+        grad_y = 0.5 * (padded_indent[..., 2:, 1:-1] - padded_indent[..., :-2, 1:-1])
+        edge = torch.sqrt(grad_x.square() + grad_y.square())
+        edge_flat = edge.flatten(start_dim=1)
+        edge_scale = torch.quantile(edge_flat, 0.98, dim=1).view(-1, 1, 1, 1).clamp_min(1.0e-6)
+        edge = torch.clamp(edge / edge_scale, 0.0, 1.0) * gate
+
+        contact_rgb = torch.as_tensor(
+            getattr(self.cfg, "xsense_response_contact_rgb", (-0.052, -0.002, 0.072)),
+            dtype=rendered_chw.dtype,
+            device=rendered_chw.device,
+        ).view(1, 3, 1, 1)
+        edge_rgb = torch.as_tensor(
+            getattr(self.cfg, "xsense_response_edge_rgb", (-0.010, 0.0, 0.016)),
+            dtype=rendered_chw.dtype,
+            device=rendered_chw.device,
+        ).view(1, 3, 1, 1)
+        edge_gain = float(getattr(self.cfg, "xsense_response_edge_gain", 1.0) or 0.0)
+
+        residual = contact_weight * contact_rgb + edge * edge_rgb * edge_gain
+        taxim_mix = min(max(float(getattr(self.cfg, "xsense_response_taxim_residual_mix", 0.0) or 0.0), 0.0), 1.0)
+        if taxim_mix > 0.0:
+            taxim_img = self._apply_xsense_taxim_residual_response(rendered_chw, height_map, background_chw)
+            residual = residual + (taxim_img - background_chw) * taxim_mix
+
+        gain = float(getattr(self.cfg, "xsense_response_residual_gain", 1.0) or 1.0)
+        return torch.clamp(background_chw + residual * gain, 0.0, 1.0)
+
+    def _apply_xsense_response(self, rendered_chw: torch.Tensor, height_map: torch.Tensor) -> torch.Tensor:
+        if not bool(getattr(self.cfg, "xsense_response_enabled", False)):
+            return rendered_chw
+        if not self._is_xsense_sensor():
+            return rendered_chw
+
+        background_chw = self._xsense_background_chw(rendered_chw)
+        model = str(getattr(self.cfg, "xsense_response_model", "taxim_residual") or "taxim_residual").lower()
+        if model in {"analytic", "analytic_xsense", "calibrated_xsense", "xsense"}:
+            return self._apply_xsense_analytic_response(rendered_chw, height_map, background_chw)
+        return self._apply_xsense_taxim_residual_response(rendered_chw, height_map, background_chw)
 
     def optical_simulation(self):
         """Returns simulation output of Taxim optical simulation.
@@ -101,14 +318,14 @@ class TaximSimulator(GelSightSimulator):
         #         orig_hm_fmt=False,
         #     ).movedim(1, 3) #*255).type(torch.uint8)
 
-        self.tactile_rgb_img[:] = self._taxim.render_direct(
+        rendered = self._taxim.render_direct(
             height_map[:],
             with_shadow=self.cfg.with_shadow,
             press_depth=self._indentation_depth,
             orig_hm_fmt=False,
-        ).movedim(
-            1, 3
-        )  # *255).type(torch.uint8)
+        )
+        rendered = self._apply_xsense_response(rendered, height_map)
+        self.tactile_rgb_img[:] = rendered.movedim(1, 3)  # *255).type(torch.uint8)
 
         return self.tactile_rgb_img
 

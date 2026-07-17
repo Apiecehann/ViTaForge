@@ -1,18 +1,19 @@
 from ._base_task import *
 import numpy as np
 
+# Frame 尺寸：外框 100mm x 100mm，内框 90mm x 90mm，厚度 2mm
 
-FRAME_OUTER_SIZE = 0.2000
-FRAME_INNER_SIZE = 0.1900
+FRAME_OUTER_SIZE = 0.1000
+FRAME_INNER_SIZE = 0.0900
 FRAME_THICKNESS = 0.0020
 CUBE_SIZE = 0.0300
 
 FRAME_BASE_POSE = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
-CUBE_BASE_POSE = Pose([0.4, 0.25, 0.002], [1, 0, 0, 0])
+CUBE_BASE_POSE = Pose([0.35, 0.25, 0.002], [1, 0, 0, 0])
 
 # reset 时只在 xy 平面加小扰动，z 维保持 0，避免物体初始高度被随机噪声带离桌面。
-XY_NOISE = (0.005, 0.005, 0.0)
-PLACE_XY_NOISE = 0.005
+XY_NOISE = (0.01, 0.01, 0.0)
+PLACE_XY_NOISE = 0.01
 GRASP_ROTATE_NOISE = np.deg2rad(10.0)
 GRASP_HEIGHT = CUBE_SIZE * 0.5
 GRASP_HEIGHT_NOISE = 0.003
@@ -65,7 +66,7 @@ class Task(BaseTask):
             name="wooden_cube",
             asset_path="wooden_cube.usd",
             pose=CUBE_BASE_POSE,
-            density=1e3,
+            density=1e3
         )
 
     def _reset_actors(self):

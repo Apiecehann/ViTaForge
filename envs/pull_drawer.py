@@ -123,8 +123,10 @@ class Task(BaseTask):
         self.cabinet = self._actor_manager.add_from_usd_file(
             name='cabinet',
             asset_path="cabinet_body.usd",
+            # visual_asset_path="cabinet_body_picture.usd",
             pose=cabinet_pose,
             density=1e5
+            # show_physics_mesh=False,
         )
         self.lower_drawer = self._actor_manager.add_from_usd_file(
             name='lower_drawer',

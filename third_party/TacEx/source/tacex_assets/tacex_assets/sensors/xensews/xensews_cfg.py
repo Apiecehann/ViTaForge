@@ -2,7 +2,8 @@ from dataclasses import MISSING
 
 from isaaclab.utils import configclass
 
-from tacex import GelSightSensor, GelSightSensorCfg
+from tacex import GelSightSensorCfg
+from tacex_assets.sensors.xensews.xense_sensor import XenseWSSensor
 from tacex.simulation_approaches.fots import FOTSMarkerSimulatorCfg
 from tacex.simulation_approaches.gpu_taxim import TaximSimulatorCfg
 
@@ -13,14 +14,14 @@ from tacex_assets import TACEX_ASSETS_DATA_DIR
 
 @configclass
 class XenseWSCfg(GelSightSensorCfg):
-    class_type: type = GelSightSensor
+    class_type: type = XenseWSSensor
 
     case_dimensions: GelSightSensorCfg.Dimensions = GelSightSensorCfg.Dimensions(
         width=52.8 / 1000, length=27 / 1000, height=22 / 1000
     )
 
     gelpad_dimensions: GelSightSensorCfg.Dimensions = GelSightSensorCfg.Dimensions(
-        width=29.366 / 1000, length=17.476 / 1000, height=2.168 / 1000
+        width=16.42 / 1000, length=27.84 / 1000, height=4.0 / 1000
     )
 
     sensor_camera_cfg: GelSightSensorCfg.SensorCameraCfg = GelSightSensorCfg.SensorCameraCfg(
@@ -28,7 +29,7 @@ class XenseWSCfg(GelSightSensorCfg):
         update_period=0,
         resolution=(320, 160),
         data_types=["depth", "rgb"],
-        clipping_range=(0.0230, 0.0290),
+        clipping_range=(0.024, 0.034),
     )
 
     update_period: float = 0.01
@@ -47,9 +48,9 @@ class XenseWSCfg(GelSightSensorCfg):
     """
 
     optical_sim_cfg = TaximSimulatorCfg(
-        calib_folder_path=f"{TACEX_ASSETS_DATA_DIR}/Sensors/GelSight_Mini/calibs/640x480",
+        calib_folder_path=f"{TACEX_ASSETS_DATA_DIR}/Sensors/XenseWS/calibs/640x480",
         gelpad_height=gelpad_dimensions.height,
-        gelpad_to_camera_min_distance=0.0230,
+        gelpad_to_camera_min_distance=0.024,
         with_shadow=False,
         tactile_img_res=(320, 160),
         device="cuda",

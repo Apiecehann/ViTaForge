@@ -67,16 +67,11 @@ class Task(BaseTask):
             self.prism, contact_point_id=cid, pre_dis=0.04, dis=0.0, is_close=False
         ))
 
-        if self.cfg.tactile_sensor_type == 'gsmini':
+        if self.cfg.tactile_sensor_type in ('gsmini', 'neote'):
             self.cfg.use_adaptive_grasp = True
             self.cfg.adaptive_grasp_depth_threshold = self.rng.uniform(27.7, 28.1)
             self.move(self.atom.close_gripper())
             self.metadata['grasp_threshold'] = self._tactile_manager.get_min_depth().tolist()
-        elif self.cfg.tactile_sensor_type == 'gf225':
-            self.cfg.use_adaptive_grasp = False
-            grasp_qpos = np.random.uniform(0.0118, 0.013) / self._robot_manager.gripper_max_qpos
-            self.move(self.atom.close_gripper(pos=grasp_qpos))
-            self.metadata['grasp_qpos'] = grasp_qpos
         elif self.cfg.tactile_sensor_type == 'xensews':
             grasp_qpos = np.random.uniform(0.0118, 0.013) / self._robot_manager.gripper_max_qpos
             self.move(self.atom.close_gripper(pos=grasp_qpos))

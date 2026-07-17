@@ -1,6 +1,7 @@
 import sys
 import json
 import time
+import os
 import torch
 import pickle
 import torchvision
@@ -93,7 +94,16 @@ class BaseTaskCfg(DirectRLEnvCfg):
     video_size = (960, 320)
 
     ui_window_class_type = BaseEnvWindow
+
+    # Video Save Config.
     save_pre_move = False
+    tactile_video_key = "rgb_marker"
+
+    # Reset warmup steps. Keep defaults identical to the original hard-coded loops.
+    reset_first_frame_steps = 5
+    reset_after_actor_steps = 20
+    reset_final_steps = 5
+
     decimation = 1
     # simulation
     sim: SimulationCfg = SimulationCfg(
@@ -135,7 +145,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(
             color=(0.75, 0.75, 0.75), intensity=1500.0,
-            texture_file=str(SCENE_ASSETS_ROOT / 'base0.exr')
+            texture_file=str(SCENE_ASSETS_ROOT / 'base5.exr')
         ),
     )
 
@@ -144,7 +154,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/ground_plate",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0, 0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=str(SCENE_ASSETS_ROOT / "plate.usda"),
+            usd_path=str(SCENE_ASSETS_ROOT / "plate01.usda"),
             rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
@@ -158,6 +168,14 @@ class BaseTaskCfg(DirectRLEnvCfg):
 
     use_adaptive_grasp: bool = True
     adaptive_grasp_depth_threshold = None # in mm
+    # Xense-specific grasp tuning. These are ignored by GelSight/Neote branches.
+    xense_usb_close_percent: float = 0.185
+    xense_post_close_settle_steps: int = 80
+    xense_adaptive_grasp_max_steps: int = 180
+    xense_adaptive_grasp_check_interval: int = 10
+    xense_adaptive_grasp_qpos_step: float = 0.012
+    xense_adaptive_grasp_target_tolerance: float = 0.006
+    xense_adaptive_grasp_min_target_margin: float = 0.02
     reset_time_limit: float = 120.0  # in seconds
 
     cameras: list[CameraCfg] = [
@@ -185,7 +203,8 @@ class BaseTaskCfg(DirectRLEnvCfg):
     ]
 
     robot: RobotCfg = None
-    tactile_sensor_type:Literal['gsmini', 'xensews', 'gf225'] = 'gsmini'
+    tactile_sensor_type:Literal['gsmini', 'xensews', 'neote'] = 'gsmini'
+    force_field_grid: tuple[int, int] = (64, 48)
 
     planner_time_dilation_factor: float = 1.0
 
@@ -253,8 +272,8 @@ class BaseTask(UipcRLEnv):
         data_type = ["camera_depth", "tactile_rgb", "marker_rgb", "marker_motion"]
         if cfg.tactile_sensor_type == 'gsmini':
             cfg.robot = create_franka_gsmini_gripper(data_type=data_type)
-        elif cfg.tactile_sensor_type == 'gf225':
-            cfg.robot = create_franka_gf225_gripper(data_type=data_type)
+        elif cfg.tactile_sensor_type == 'neote':
+            cfg.robot = create_franka_neote_gripper(data_type=data_type)
         elif cfg.tactile_sensor_type == 'xensews':
             cfg.robot = create_franka_xensews_gripper(data_type=data_type)
         else:
@@ -384,7 +403,7 @@ class BaseTask(UipcRLEnv):
         self.in_pre_move = True
         if self.first_frame is None:
             reset_test_start = time.perf_counter()
-            for _ in range(5):
+            for _ in range(int(getattr(self.cfg, 'reset_first_frame_steps', 5))):
                 self._step(is_save=False)
                 reset_test_cost = time.perf_counter() - reset_test_start
                 if reset_test_cost > self.cfg.reset_time_limit:
@@ -400,7 +419,7 @@ class BaseTask(UipcRLEnv):
             self._reset_actors()
 
             reset_test_start = time.perf_counter()
-            for _ in range(20):
+            for _ in range(int(getattr(self.cfg, 'reset_after_actor_steps', 20))):
                 self._step(is_save=self.save_pre_move)
                 reset_test_cost = time.perf_counter() - reset_test_start
                 if reset_test_cost > self.cfg.reset_time_limit:
@@ -411,7 +430,7 @@ class BaseTask(UipcRLEnv):
             self._actor_manager.remove_animate()
         
         reset_test_start = time.perf_counter()
-        for _ in range(5):
+        for _ in range(int(getattr(self.cfg, 'reset_final_steps', 5))):
             self._step(is_save=self.save_pre_move)
             reset_test_cost = time.perf_counter() - reset_test_start
             if reset_test_cost > self.cfg.reset_time_limit:
@@ -445,9 +464,9 @@ class BaseTask(UipcRLEnv):
 
         if self.cfg.random_texture:
             Actor._set_texture('/World/envs/env_0/ground_plate', 'random', self.rng)
-        self._tactile_manager._reset_idx()
         self._actor_manager._reset_idx(self.rng)
         self._robot_manager._reset_idx()
+        self._tactile_manager._reset_idx()
 
         self.plan_success = True
         self.eval_success = False
@@ -470,6 +489,7 @@ class BaseTask(UipcRLEnv):
 
     def _update_render(self):
         self.uipc_sim.update_render_meshes()
+        self._actor_manager.sync_visuals()
         self.sim.render()
         
         dt = self.physics_dt * self.cfg.decimation * max(1, self.step_count - self.last_render)
@@ -483,15 +503,113 @@ class BaseTask(UipcRLEnv):
         head_obs = obs['observation']['head']['rgb'].clone()
         wrist_obs = obs['observation']['wrist']['rgb'].clone()
         tac_size = 160
-        left_tac = torchvision.transforms.Resize((tac_size, tac_size))(
-            obs['tactile']['left_tactile']['rgb_marker'].clone().permute(2, 0, 1)).permute(1, 2, 0)
-        right_tac = torchvision.transforms.Resize((tac_size, tac_size))(
-            obs['tactile']['right_tactile']['rgb_marker'].clone().permute(2, 0, 1)).permute(1, 2, 0)
-        img = torch.zeros((320, 480*2+160, 3), dtype=head_obs.dtype)
-        img[:, :480, :] = torchvision.transforms.Resize(
-            (320, 480))(head_obs.permute(2, 0, 1)).permute(1, 2, 0)
-        img[:, 480:480*2, :] = torchvision.transforms.Resize(
-            (320, 480))(wrist_obs.permute(2, 0, 1)).permute(1, 2, 0)
+        tactile_key = getattr(self.cfg, "tactile_video_key", "rgb_marker")
+
+        def to_hwc3(image):
+            image = image.clone().to(device=head_obs.device)
+            if image.dim() == 2:
+                image = image.unsqueeze(-1)
+            if image.dim() != 3:
+                raise RuntimeError(f"Expected image tensor with 2 or 3 dims, got {tuple(image.shape)}")
+            if image.shape[-1] not in (1, 3, 4) and image.shape[0] in (1, 3, 4):
+                image = image.permute(1, 2, 0)
+            if image.shape[-1] == 4:
+                image = image[..., :3]
+            if image.shape[-1] == 1:
+                image = image.expand(-1, -1, 3)
+            if image.shape[-1] != 3:
+                raise RuntimeError(f"Expected HWC image with 1, 3 or 4 channels, got {tuple(image.shape)}")
+            if image.dtype != head_obs.dtype:
+                image = image.to(dtype=head_obs.dtype)
+            return image
+
+        def resize_hwc(image, size):
+            image = to_hwc3(image)
+            return torchvision.transforms.Resize(size)(image.permute(2, 0, 1)).permute(1, 2, 0)
+
+        def resize_hwc_if_needed(image, size):
+            image = to_hwc3(image)
+            if tuple(image.shape[:2]) == tuple(size):
+                return image
+            return torchvision.transforms.Resize(size)(image.permute(2, 0, 1)).permute(1, 2, 0)
+
+        def pad_height(image, target_height):
+            image = to_hwc3(image)
+            if image.shape[0] == target_height:
+                return image
+            if image.shape[0] > target_height:
+                return resize_hwc(image, (target_height, image.shape[1]))
+            pad_top = (target_height - image.shape[0]) // 2
+            padded = torch.zeros(
+                (target_height, image.shape[1], 3),
+                dtype=image.dtype,
+                device=image.device,
+            )
+            padded[pad_top:pad_top + image.shape[0], :, :] = image
+            return padded
+
+        def depth_to_rgb(depth):
+            depth = depth.clone().to(device=head_obs.device)
+            if depth.dim() == 3:
+                if depth.shape[-1] == 1:
+                    depth = depth[..., 0]
+                elif depth.shape[0] == 1:
+                    depth = depth.squeeze(0)
+                else:
+                    raise RuntimeError(f"Expected single-channel depth tensor, got {tuple(depth.shape)}")
+            if depth.dim() != 2:
+                raise RuntimeError(f"Expected depth tensor with 2 dims, got {tuple(depth.shape)}")
+
+            depth = depth.to(dtype=torch.float32)
+            finite = torch.isfinite(depth)
+            if finite.any():
+                valid = depth[finite]
+                min_depth = valid.min()
+                max_depth = valid.max()
+                if (max_depth - min_depth).abs().item() > 1e-12:
+                    depth = (depth - min_depth) / (max_depth - min_depth)
+                    depth = torch.where(finite, depth, torch.zeros_like(depth))
+                else:
+                    depth = torch.zeros_like(depth)
+            else:
+                depth = torch.zeros_like(depth)
+
+            if head_obs.dtype == torch.uint8:
+                depth = (depth * 255.0).clamp(0, 255).to(dtype=head_obs.dtype)
+            else:
+                depth = depth.to(dtype=head_obs.dtype)
+            return depth.unsqueeze(-1).expand(-1, -1, 3)
+
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq")
+        if is_xense:
+            xense_tac_size = (700, 400)
+            rgb_size = (320, 480)
+            row_height = xense_tac_size[0]
+            if tactile_key in ("rgb_marker", "rgb", "marker_force_img", "force_field_img", "gel_particle"):
+                left_tac = resize_hwc_if_needed(obs['tactile']['left_tactile'][tactile_key], xense_tac_size)
+                right_tac = resize_hwc_if_needed(obs['tactile']['right_tactile'][tactile_key], xense_tac_size)
+            elif tactile_key == "depth":
+                left_tac = resize_hwc_if_needed(depth_to_rgb(obs['tactile']['left_tactile'][tactile_key]), xense_tac_size)
+                right_tac = resize_hwc_if_needed(depth_to_rgb(obs['tactile']['right_tactile'][tactile_key]), xense_tac_size)
+            else:
+                raise RuntimeError(f"Unknown tactile key: {tactile_key}")
+
+            head_tile = pad_height(resize_hwc(head_obs, rgb_size), row_height)
+            wrist_tile = pad_height(resize_hwc(wrist_obs, rgb_size), row_height)
+            return torch.cat((head_tile, wrist_tile, left_tac, right_tac), dim=1)
+
+        if tactile_key in ("rgb_marker", "rgb", "marker_force_img", "force_field_img", "gel_particle"):
+            left_tac = resize_hwc(obs['tactile']['left_tactile'][tactile_key], (tac_size, tac_size))
+            right_tac = resize_hwc(obs['tactile']['right_tactile'][tactile_key], (tac_size, tac_size))
+        elif tactile_key == "depth":
+            left_tac = resize_hwc(depth_to_rgb(obs['tactile']['left_tactile'][tactile_key]), (tac_size, tac_size))
+            right_tac = resize_hwc(depth_to_rgb(obs['tactile']['right_tactile'][tactile_key]), (tac_size, tac_size))
+        else:
+            raise RuntimeError(f"Unknown tactile key: {tactile_key}")
+
+        img = torch.zeros((320, 480*2+160, 3), dtype=head_obs.dtype, device=head_obs.device)
+        img[:, :480, :] = resize_hwc(head_obs, (320, 480))
+        img[:, 480:480*2, :] = resize_hwc(wrist_obs, (320, 480))
         img[:tac_size, 480*2:, :] = left_tac
         img[tac_size:, 480*2:, :] = right_tac
         return img
@@ -543,7 +661,7 @@ class BaseTask(UipcRLEnv):
         # is_save = is_save and (not self.in_pre_move) and (not self.mode == 'eval_test')
         # Modify for Save the Whole Trajectory
         is_save = is_save and (self.save_pre_move or not self.in_pre_move) and (not self.mode == 'eval_test')
-        save_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.save_frequency == 0)
+        save_freq = (self.cfg.save_frequency > 0 and self.step_count % self.cfg.save_frequency == 0)
         video_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.video_frequency == 0)
         render_freq = (self.cfg.render_frequency > 0 and self.step_count % self.cfg.render_frequency == 0)
 
@@ -651,6 +769,11 @@ class BaseTask(UipcRLEnv):
     def save_to_hdf5(self):
         self.save_path.parent.mkdir(parents=True, exist_ok=True)
         HDF5Handler().pkls_to_hdf5(self.tmp_save_dir, self.save_path)
+        if 'vertex_force' in self.cfg.obs_data_type.get('tactile', []):
+            try:
+                self._tactile_manager.dump_force_field_meta(self.save_root)
+            except Exception as exc:
+                print(f"[force_field_meta] dump failed: {exc}")
     
     def _save_metadata(self):
         if self.metadata_path.exists():
@@ -858,59 +981,171 @@ class BaseTask(UipcRLEnv):
         return exec_success, self.eval_success
 
     def adaptive_set_gripper(self, qpos, depth_threshold:float=None):
+        if self.cfg.tactile_sensor_type == "xensews":
+            yield from self._adaptive_set_xense_gripper(qpos, depth_threshold)
+            return
+
         max_steps = 1000
+
         default_step, contact_step = 0.0005, 0.00005
+
         last_qpos = self._robot_manager.get_gripper_qpos()
-        max_depth = self.cfg.robot.tactile_far_plane \
-            * torch.ones_like(self._tactile_manager.get_min_depth()) # mm
+        max_depth = (
+            self.cfg.robot.tactile_far_plane
+            * torch.ones_like(self._tactile_manager.get_min_depth())
+        ) # mm
         if depth_threshold is not None:
             depth_threshold = depth_threshold * torch.ones_like(max_depth)
-        direct = 'open' if self._robot_manager.get_gripper_qpos() < qpos else 'close'
+        qpos = float(qpos)
+        direct = 'open' if self._robot_manager.is_gripper_opening(qpos) else 'close'
+        step_sign = 1.0 if qpos > self._robot_manager.get_gripper_qpos() else -1.0
+        step_size = step_sign * (contact_step if direct == 'open' else default_step)
 
-        step_size = contact_step if direct == 'open' else -default_step
+        stop_reason = 'max_steps'
         for i in range(max_steps):
             current_qpos = self._robot_manager.get_gripper_qpos()
             tactile_depth = self._tactile_manager.get_min_depth()
 
             if direct == 'close':
                 if torch.allclose(max_depth, tactile_depth, atol=1e-5):
-                    step_size = -default_step
+                    step_size = step_sign * default_step
                 elif depth_threshold is not None:
                     if torch.all(tactile_depth < depth_threshold):
+                        stop_reason = 'depth_threshold'
                         break
                     else:
-                        step_size = - min(
+                        step_size = step_sign * min(
                             torch.min(torch.abs(tactile_depth - depth_threshold)).item()/1000,
                             contact_step
                         )
                 else:
-                    step_size = -default_step
+                    step_size = step_sign * default_step
             else:
                 if torch.allclose(max_depth, tactile_depth, atol=1e-5):
-                    step_size = default_step
+                    step_size = step_sign * default_step
                 if depth_threshold is not None:
                     if torch.all(tactile_depth > depth_threshold):
+                        stop_reason = 'depth_threshold'
                         break
                     else:
-                        step_size = min(
+                        step_size = step_sign * min(
                             torch.min(torch.abs(depth_threshold - tactile_depth)).item()/1000,
                             contact_step
                         )
                 else:
-                    step_size = default_step
+                    step_size = step_sign * default_step
 
             if np.allclose(current_qpos, qpos, atol=1e-5):
+                stop_reason = 'target'
                 break
             elif np.abs(current_qpos - qpos) < np.abs(step_size):
                 target_qpos = qpos
             else:
                 target_qpos = current_qpos + step_size
-            position = torch.tensor([target_qpos, target_qpos], device=self._robot_manager.device)
-            velocity = (position - current_qpos)/self.cfg.sim.dt
+            cmd_dim = len(self._robot_manager._gripper_ids)
+            position = torch.full((cmd_dim,), target_qpos, device=self._robot_manager.device)
+            velocity = torch.full_like(position, (target_qpos - current_qpos) / self.cfg.sim.dt)
             last_qpos = current_qpos
             yield position, velocity, True
 
-        final_position = torch.tensor([last_qpos, last_qpos], device=self._robot_manager.device)
+        final_qpos = self._robot_manager.get_gripper_qpos()
+        final_target_qpos = qpos if stop_reason == 'max_steps' else final_qpos
+        cmd_dim = len(self._robot_manager._gripper_ids)
+        final_position = torch.full((cmd_dim,), final_target_qpos, device=self._robot_manager.device)
+        yield final_position, torch.zeros_like(final_position), False
+
+    def _adaptive_set_xense_gripper(self, qpos, depth_threshold: float = None):
+        qpos = float(qpos)
+        max_steps = max(1, int(getattr(self.cfg, "xense_adaptive_grasp_max_steps", 180)))
+        check_interval = max(1, int(getattr(self.cfg, "xense_adaptive_grasp_check_interval", 10)))
+        qpos_step = max(1e-6, float(getattr(self.cfg, "xense_adaptive_grasp_qpos_step", 0.012)))
+        target_tolerance = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_target_tolerance", 0.006)))
+        min_target_margin = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_min_target_margin", 0.02)))
+
+        direct = 'open' if self._robot_manager.is_gripper_opening(qpos) else 'close'
+        cmd_dim = len(self._robot_manager._gripper_ids)
+        velocity_limit = float(getattr(self._robot_manager, "gripper_velocity_limit", 1.0))
+        threshold = None
+        if depth_threshold is not None:
+            threshold = torch.as_tensor(depth_threshold, dtype=torch.float32, device=self.device)
+
+        start_qpos = float(self._robot_manager.get_gripper_qpos())
+        last_depth = None
+        stop_reason = 'max_steps'
+        steps_run = 0
+
+        def is_near_target(current_qpos: float) -> bool:
+            return abs(current_qpos - qpos) <= target_tolerance
+
+        def close_has_enough_angle(current_qpos: float) -> bool:
+            if direct != 'close':
+                return True
+            if qpos >= start_qpos:
+                return current_qpos >= qpos - min_target_margin
+            return current_qpos <= qpos + min_target_margin
+
+        for i in range(max_steps):
+            current_qpos = float(self._robot_manager.get_gripper_qpos())
+            near_target = is_near_target(current_qpos)
+            should_check_depth = threshold is not None and (
+                i == 0 or i % check_interval == 0 or near_target
+            )
+
+            if should_check_depth:
+                tactile_depth = self._tactile_manager.get_min_depth()
+                last_depth = tactile_depth.detach().cpu().tolist()
+                if direct == 'close':
+                    if bool(torch.all(tactile_depth < threshold)) and close_has_enough_angle(current_qpos):
+                        stop_reason = 'depth_threshold'
+                        break
+                else:
+                    if bool(torch.all(tactile_depth > threshold)):
+                        stop_reason = 'depth_threshold'
+                        break
+
+            if near_target:
+                stop_reason = 'target'
+                break
+
+            delta = qpos - current_qpos
+            step = float(np.clip(delta, -qpos_step, qpos_step))
+            target_qpos = qpos if abs(delta) <= qpos_step else current_qpos + step
+            position = torch.full((cmd_dim,), target_qpos, device=self._robot_manager.device)
+            velocity_value = float(np.clip(step / self.cfg.sim.dt, -velocity_limit, velocity_limit))
+            velocity = torch.full_like(position, velocity_value)
+            steps_run = i + 1
+            yield position, velocity, True
+
+        final_qpos = float(self._robot_manager.get_gripper_qpos())
+        if stop_reason == 'depth_threshold':
+            final_target_qpos = final_qpos
+        else:
+            final_target_qpos = qpos
+        final_position = torch.full((cmd_dim,), final_target_qpos, device=self._robot_manager.device)
+
+        debug = {
+            'direct': direct,
+            'start_qpos': start_qpos,
+            'target_qpos': qpos,
+            'final_qpos': final_qpos,
+            'final_target_qpos': final_target_qpos,
+            'stop_reason': stop_reason,
+            'steps': int(steps_run),
+            'max_steps': int(max_steps),
+            'check_interval': int(check_interval),
+            'qpos_step': float(qpos_step),
+            'depth_threshold': None if depth_threshold is None else float(depth_threshold),
+            'last_depth': last_depth,
+            'target_tolerance': float(target_tolerance),
+            'min_target_margin': float(min_target_margin),
+        }
+        self.metadata.setdefault('xense_adaptive_grasp', []).append(debug)
+        if os.environ.get("XENSE_ADAPTIVE_GRASP_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+            print(
+                f"[xense-debug] adaptive_gripper done reason={stop_reason} "
+                f"steps={steps_run}/{max_steps} qpos={final_qpos:.6f} target={qpos:.6f} "
+                f"last_depth={last_depth}"
+            )
         yield final_position, torch.zeros_like(final_position), False
 
     def gravity_rotate(self, actor:Actor, target_vec, target_axis=[0, 0, 1], is_save=True):

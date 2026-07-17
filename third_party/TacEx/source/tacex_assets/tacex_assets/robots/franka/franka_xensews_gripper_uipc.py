@@ -25,18 +25,26 @@ from tacex_assets import TACEX_ASSETS_DATA_DIR
 # Configuration
 ##
 
+# tmp xensews place. to be refined.
+FRANKA_ROBOTIQ_XENSEWS_USD = (
+    "/root/gpufree-data/assets/assemblies/franka_robotiq_xensews/"
+    "asset_package/usd/franka_robotiq_xensews_lift11p15_official2f85_xense_realcase_adapter_notips_tipdown_lr180_gelscale318_089_x1080_h4_padzdown20mm_gray_overlay_cameraalign1_drivefix.usda"
+)
+
 # todo find a good way to save the prim path of the sensor for the user?
 # -> currently, we need to look into the asset to figure out the prim name (in this case its /gelsight_mini_case)
 FRANKA_PANDA_ARM_XENSEWS_GRIPPER_UIPC_HIGH_RES_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{TACEX_ASSETS_DATA_DIR}/Robots/Franka/XenseWS/uipc_xense.usd",
+        usd_path=FRANKA_ROBOTIQ_XENSEWS_USD,
         activate_contact_sensors=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=5.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=0
+            enabled_self_collisions=False,
+            solver_position_iteration_count=8,
+            solver_velocity_iteration_count=0,
         ),
         # collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
     ),
@@ -49,7 +57,7 @@ FRANKA_PANDA_ARM_XENSEWS_GRIPPER_UIPC_HIGH_RES_CFG = ArticulationCfg(
             "panda_joint5": 0.0,
             "panda_joint6": 3.037,
             "panda_joint7": 0.741,
-            "panda_finger_joint.*": 0.04,
+            "finger_joint": 0.0,
         },
     ),
     actuators={
@@ -67,12 +75,15 @@ FRANKA_PANDA_ARM_XENSEWS_GRIPPER_UIPC_HIGH_RES_CFG = ArticulationCfg(
             stiffness=80.0,
             damping=4.0,
         ),
-        "panda_hand": ImplicitActuatorCfg(
-            joint_names_expr=["panda_finger_joint.*"],
-            effort_limit_sim=200.0,
-            velocity_limit_sim=0.2,
-            stiffness=2e3,
-            damping=1e2,
+        "robotiq_85": ImplicitActuatorCfg(
+            joint_names_expr=["finger_joint"],
+            # Stronger than the imported Robotiq default, but below the very stiff
+            # Panda finger drive used by GelSight. The remaining close settling is
+            # handled by holding the requested target in adaptive_set_gripper.
+            effort_limit_sim=80.0,
+            velocity_limit_sim=1.0,
+            stiffness=200.0,
+            damping=20.0,
         ),
     },
     soft_joint_pos_limit_factor=1.0,

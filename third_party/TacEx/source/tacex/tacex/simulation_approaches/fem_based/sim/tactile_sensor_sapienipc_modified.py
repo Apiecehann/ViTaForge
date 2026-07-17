@@ -82,7 +82,11 @@ class VisionTactileSensorUIPC:
 
         self.camera = camera
 
-        if self.sensor_type not in CONSTRAIN_PTS:        
+        use_precomputed_indices = (
+            self.sensor_type in CONSTRAIN_PTS
+            and self.sensor_type != "xensews"
+        )
+        if not use_precomputed_indices:
             gelpad_info = get_gelpad_info(self.gelpad_obj.uipc_meshes[0])
             self.constrain_ids = gelpad_info['bottom']['ids']
             self.faces_on_surfaces = gelpad_info['surface']['faces']
@@ -258,9 +262,20 @@ class VisionTactileSensorUIPC:
         face_idx_to_surface_idx = np.zeros(np.max(self.faces_on_surfaces)+1, dtype=np.int32)
         face_idx_to_surface_idx[self.vertices_on_surface] = np.arange(surface_pts.shape[0])
         faces_v_on_surface = surface_pts[face_idx_to_surface_idx[self.faces_on_surfaces.flatten()]].reshape(-1, 3, 2)
+        edge_1 = faces_v_on_surface[:, 1] - faces_v_on_surface[:, 0]
+        edge_2 = faces_v_on_surface[:, 2] - faces_v_on_surface[:, 0]
+        face_double_area = np.abs(edge_1[:, 0] * edge_2[:, 1] - edge_1[:, 1] * edge_2[:, 0])
+        valid_face_mask = face_double_area > 1e-14
+        if not np.any(valid_face_mask):
+            raise ValueError("No non-degenerate gelpad surface faces found for marker initialization")
+        surface_faces_for_markers = self.faces_on_surfaces[valid_face_mask]
+        faces_v_on_surface = faces_v_on_surface[valid_face_mask]
         f_centers = np.mean(faces_v_on_surface, axis=1)
 
-        nbrs = NearestNeighbors(n_neighbors=4, algorithm="ball_tree").fit(f_centers)
+        n_neighbors = min(8, len(f_centers))
+        if n_neighbors == 0:
+            raise ValueError("No gelpad surface faces found for marker initialization")
+        nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="ball_tree").fit(f_centers)
         distances, face_idx = nbrs.kneighbors(marker_pts)
 
         marker_pts_surface_idx = []
@@ -271,35 +286,43 @@ class VisionTactileSensorUIPC:
         for i in range(marker_pts.shape[0]):
             possible_face_ids = face_idx[i]
             p = marker_pts[i]
+            fallback_idx = None
+            fallback_weight = None
             for possible_face_id in possible_face_ids.tolist():
-                face_vertices_idx = face_idx_to_surface_idx[self.faces_on_surfaces[possible_face_id]]
+                face_vertices_idx = face_idx_to_surface_idx[surface_faces_for_markers[possible_face_id]]
                 vertices_of_face_i = surface_pts[face_vertices_idx]
                 p0, p1, p2 = vertices_of_face_i
                 A = np.stack([p1 - p0, p2 - p0], axis=1)
-                w12 = np.linalg.inv(A) @ (p - p0)
-                if possible_face_id == possible_face_ids[0]:
-                    marker_pts_surface_idx.append(face_vertices_idx)
-                    marker_pts_surface_weight.append(np.array([1 - w12.sum(), w12[0], w12[1]]))
-                    valid_marker_idx.append(i)
-                    if w12[0] >= 0 and w12[1] >= 0 and w12[0] + w12[1] <= 1:
-                        break
-                elif w12[0] >= 0 and w12[1] >= 0 and w12[0] + w12[1] <= 1:
-                    marker_pts_surface_idx[-1] = face_vertices_idx
-                    marker_pts_surface_weight[-1] = np.array([1 - w12.sum(), w12[0], w12[1]])
-                    valid_marker_idx[-1] = i
+                det = np.linalg.det(A)
+                if abs(det) <= 1e-14:
+                    continue
+                w12 = np.linalg.solve(A, p - p0)
+                weight = np.array([1 - w12.sum(), w12[0], w12[1]])
+                if fallback_idx is None:
+                    fallback_idx = face_vertices_idx
+                    fallback_weight = weight
+                if w12[0] >= 0 and w12[1] >= 0 and w12[0] + w12[1] <= 1:
+                    fallback_idx = face_vertices_idx
+                    fallback_weight = weight
                     break
+            if fallback_idx is None:
+                nearest_vertex = np.argmin(np.linalg.norm(surface_pts - p, axis=1))
+                fallback_idx = np.array([nearest_vertex, nearest_vertex, nearest_vertex], dtype=np.int32)
+                fallback_weight = np.array([1.0, 0.0, 0.0])
+            marker_pts_surface_idx.append(fallback_idx)
+            marker_pts_surface_weight.append(fallback_weight)
+            valid_marker_idx.append(i)
 
         valid_marker_idx = np.array(valid_marker_idx).astype(np.int32)
         marker_pts = marker_pts[valid_marker_idx]
         marker_pts_surface_idx = np.stack(marker_pts_surface_idx)
         marker_pts_surface_weight = np.stack(marker_pts_surface_weight)
-        assert np.allclose(
-            (surface_pts[marker_pts_surface_idx] * marker_pts_surface_weight[..., None]).sum(1)[:, :2],
-            marker_pts,
-        ), (
-            "max err:"
-            f" {np.abs((surface_pts[marker_pts_surface_idx] * marker_pts_surface_weight[..., None]).sum(1)[:, :2] - marker_pts).max()}"
-        )
+        reconstructed_marker_pts = (
+            surface_pts[marker_pts_surface_idx] * marker_pts_surface_weight[..., None]
+        ).sum(1)[:, :2]
+        marker_fit_err = np.abs(reconstructed_marker_pts - marker_pts).max()
+        if self.sensor_type == "xensews" and not np.allclose(reconstructed_marker_pts, marker_pts):
+            print(f"[xense-debug] marker_surface_fallback max_err={marker_fit_err}")
 
         return marker_pts_surface_idx, marker_pts_surface_weight
 

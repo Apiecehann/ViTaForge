@@ -76,9 +76,12 @@ class Task(BaseTask):
             "panda_joint5": -2.809691191,
             "panda_joint6": 1.849624872,
             "panda_joint7": -1.680763006,
-            # init_state 里写的是真实 qpos, 不是 open_gripper() 的比例; 0.039m 对应 open ratio 1.0。
-            "panda_finger.*": cfg.robot.gripper_max_qpos,
         }
+        # init_state stores real qpos, not the open_gripper() ratio.
+        if cfg.tactile_sensor_type == "xensews":
+            tilted_home_joint_pos["finger_joint"] = cfg.robot.gripper_open_qpos
+        else:
+            tilted_home_joint_pos["panda_finger.*"] = cfg.robot.gripper_max_qpos
         self._use_tilted_home_joint_pos = bool(tilted_home_joint_pos)
         if self._use_tilted_home_joint_pos:
             cfg.robot.robot.init_state.joint_pos.update(tilted_home_joint_pos)

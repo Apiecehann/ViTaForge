@@ -169,8 +169,6 @@ bool World::recover(SizeT aim_frame)
 
 bool World::write_vertex_pos_to_sim(span<const Vector3> positions, IndexT global_vertex_offset, IndexT local_vertex_offset, SizeT vertex_count, string system_name)
 {   
-    std::cout << "write_vertex_pos in world: test " << "\n";
-    
     if(!m_valid)
     {
         spdlog::error("World is not valid, skipping writing_vertex_pos_to_sim.");

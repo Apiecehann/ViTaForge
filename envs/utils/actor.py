@@ -4,7 +4,8 @@ import transforms3d as t3d
 from functools import partial
 from typing import Literal, Generator
 
-from pxr import Usd, Vt, Gf, Sdf, UsdShade, UsdGeom
+import omni
+from pxr import Usd, Vt, Gf, Sdf, UsdShade, UsdGeom, UsdPhysics
 
 import isaaclab.sim as sim_utils
 from isaaclab.utils.math import *
@@ -49,6 +50,9 @@ class ActorCfg(UipcObjectCfg):
     orientation_points: list = []
 
     constraint_strength_ratio: float = 100
+    visual_asset: str | None = None
+    visual_prim_paths: list[str] = []
+    show_physics_mesh: bool = True
 
 class Actor(UipcObject):
     cfg: ActorCfg
@@ -56,6 +60,7 @@ class Actor(UipcObject):
     def __init__(self, task: 'BaseTask', cfg: ActorCfg):
         self.task = task
         self.init_pose = Pose(cfg.init_state.pos, cfg.init_state.rot)
+        self._visual_xform_ops = []
         super().__init__(cfg, task.uipc_sim)
         task.scene.uipc_objects[cfg.name] = self
 
@@ -71,6 +76,10 @@ class Actor(UipcObject):
             self.actor_type = 'soft_body'
             soft_position_constraint = SoftPositionConstraint()
             soft_position_constraint.apply_to(self.uipc_meshes[0], self.cfg.constraint_strength_ratio)
+
+        self._setup_visual_meshes()
+        if not self.cfg.show_physics_mesh:
+            self.set_physics_mesh_visible(False)
         
     def _initialize_impl(self):
         ret = super()._initialize_impl()
@@ -82,15 +91,40 @@ class Actor(UipcObject):
         return ret
 
     @classmethod
-    def from_usd_file(cls, task: 'BaseTask', name:str, asset_path, pose:Pose, constitution_cfg=None, density=1e3):
+    def from_usd_file(
+        cls,
+        task: 'BaseTask',
+        name: str,
+        asset_path,
+        pose: Pose,
+        constitution_cfg=None,
+        density=1e3,
+        visual_asset_path=None,
+        show_physics_mesh: bool = True,
+    ):
         asset_path = Path(asset_path)
         if not asset_path.is_absolute():
             asset_path = OBJECTS_ROOT / asset_path
         asset_path = str(asset_path.absolute())
+
+        visual_asset = None
+        if visual_asset_path is not None:
+            visual_asset_path = Path(visual_asset_path)
+            if not visual_asset_path.is_absolute():
+                visual_asset_path = OBJECTS_ROOT / visual_asset_path
+            visual_asset = str(visual_asset_path.absolute())
+
+        env_prim_paths = getattr(task.scene, "env_prim_paths", ["/World/envs/env_0"])
+        visual_prim_paths = [
+            f"{env_prim_path}/{name}_visual" for env_prim_path in env_prim_paths
+        ] if visual_asset is not None else []
         
         cfg = ActorCfg(
             name=name,
             asset=asset_path,
+            visual_asset=visual_asset,
+            visual_prim_paths=visual_prim_paths,
+            show_physics_mesh=show_physics_mesh,
             prim_path=f"/World/envs/env_.*/{name}",
             init_state=AssetBaseCfg.InitialStateCfg(pos=pose.p, rot=pose.q),
             spawn=sim_utils.UsdFileCfg(
@@ -102,6 +136,66 @@ class Actor(UipcObject):
             mass_density=density,
         )
         return cls(task, cfg)
+
+    def _setup_visual_meshes(self):
+        if self.cfg.visual_asset is None:
+            return
+
+        stage = omni.usd.get_context().get_stage()
+        visual_spawn = sim_utils.UsdFileCfg(usd_path=self.cfg.visual_asset)
+        for prim_path in self.cfg.visual_prim_paths:
+            visual_spawn.func(
+                prim_path,
+                visual_spawn,
+                translation=self.init_pose.p,
+                orientation=self.init_pose.q,
+            )
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                continue
+
+            self._disable_visual_physics(prim)
+            xformable = UsdGeom.Xformable(prim)
+            xformable.ClearXformOpOrder()
+            translate_op = xformable.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
+            orient_op = xformable.AddOrientOp(UsdGeom.XformOp.PrecisionDouble)
+            self._visual_xform_ops.append((translate_op, orient_op))
+
+        self._set_visual_pose(self.init_pose)
+
+    @staticmethod
+    def _disable_visual_physics(root_prim: Usd.Prim):
+        for prim in Usd.PrimRange(root_prim):
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
+
+    def set_physics_mesh_visible(self, visible: bool):
+        for prim in self._prim_view.prims:
+            imageable = UsdGeom.Imageable(prim)
+            if visible:
+                imageable.MakeVisible()
+            else:
+                imageable.MakeInvisible()
+
+    def sync_visual_mesh(self):
+        if not self._visual_xform_ops:
+            return
+        pose = self.get_pose() if hasattr(self, "origin_surf_pts") else self.init_pose
+        self._set_visual_pose(pose)
+
+    def _set_visual_pose(self, pose: Pose):
+        if not self._visual_xform_ops:
+            return
+        pos = Gf.Vec3d(float(pose.p[0]), float(pose.p[1]), float(pose.p[2]))
+        quat = Gf.Quatd(
+            float(pose.q[0]),
+            Gf.Vec3d(float(pose.q[1]), float(pose.q[2]), float(pose.q[3])),
+        )
+        for translate_op, orient_op in self._visual_xform_ops:
+            translate_op.Set(pos)
+            orient_op.Set(quat)
 
     def get_pose(self, type:Literal['pose', 'matrix']='pose'):
         mat = estimate_rigid_transform(self.origin_surf_pts, self.vertices)
@@ -254,10 +348,21 @@ class ActorManager:
         self.task = task
         self.actors: dict[str, Actor] = {}
 
-    def add_from_usd_file(self, name:str, asset_path:str, pose:Pose, constitution_cfg=None, density=1e3):
+    def add_from_usd_file(
+        self,
+        name: str,
+        asset_path: str,
+        pose: Pose,
+        constitution_cfg=None,
+        density=1e3,
+        visual_asset_path: str | None = None,
+        show_physics_mesh: bool = True,
+    ):
         actor = Actor.from_usd_file(
             self.task, name, asset_path, pose,
-            constitution_cfg=constitution_cfg, density=density
+            constitution_cfg=constitution_cfg, density=density,
+            visual_asset_path=visual_asset_path,
+            show_physics_mesh=show_physics_mesh,
         )
         self.actors[actor.cfg.name] = actor
         return actor
@@ -271,6 +376,10 @@ class ActorManager:
     def update(self, dt):
         for actor in self.actors.values():
             actor.update(dt=dt)
+
+    def sync_visuals(self):
+        for actor in self.actors.values():
+            actor.sync_visual_mesh()
     
     def remove_animate(self):
         for actor in self.actors.values():

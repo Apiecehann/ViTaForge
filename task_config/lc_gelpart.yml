@@ -1,0 +1,21 @@
+save_dir: ./data
+decimation: 1
+episode_num: 1
+save_frequency: 2
+# Large value enables saving frames without writing dense videos.
+video_frequency: 999999
+render_frequency: 0
+reset_time_limit: 180
+random_texture: false
+use_seed: true
+sensor_type: neote
+dense_gelpad: false
+
+observations:
+  actor: true
+  camera: ['rgb']
+  embodiment: ['joint', 'ee']
+  tactile:
+    - rgb
+    - gel_particle
+    - force_field

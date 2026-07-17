@@ -4,9 +4,7 @@ from tacex_assets.robots.franka.franka_gsmini_gripper_uipc_high_res import (
 from tacex_assets.robots.franka.franka_xensews_gripper_uipc import (
     FRANKA_PANDA_ARM_XENSEWS_GRIPPER_HIGH_PD_HIGH_RES_UIPC_CFG
 )
-from tacex_assets.robots.franka.franka_gf225_gripper_uipc import (
-    FRANKA_PANDA_ARM_GF225_GRIPPER_HIGH_PD_HIGH_RES_UIPC_CFG
-)
+import math
 
 from isaaclab.utils import configclass
 from isaaclab.assets import ArticulationCfg
@@ -19,6 +17,8 @@ class RobotCfg:
 
     gripper_offset: float = 0.131 # in m
     gripper_max_qpos: float = 0.039 # in m
+    gripper_open_qpos: float | None = None
+    gripper_close_qpos: float | None = None
 
     tactile_far_plane: float = 30.0 # in mm
     adaptive_grasp_depth_threshold: float = 27.5 # in mm, used for grasping
@@ -29,12 +29,12 @@ def create_franka_gsmini_gripper(data_type:list[str]):
         prim_path="/World/envs/env_.*/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
             joint_pos={
-                "panda_joint1": 0.0,
-                "panda_joint2": 0.0,
-                "panda_joint3": 0.0,
-                "panda_joint4": -2.46,
-                "panda_joint5": 0.0,
-                "panda_joint6": 2.5,
+                "panda_joint1": -0.010809095,
+                "panda_joint2": 0.096037410,
+                "panda_joint3": 0.000734462,
+                "panda_joint4": -2.433035851,
+                "panda_joint5": 0.035354517,
+                "panda_joint6": 2.500859022,
                 "panda_joint7": 0.741,
                 "panda_finger.*": 0.02,
             }
@@ -68,37 +68,45 @@ def create_franka_gsmini_gripper(data_type:list[str]):
         contact_threshold=(27.5, 28.0)
     )
 
-def create_franka_gf225_gripper(data_type:list[str]):
-    robot = FRANKA_PANDA_ARM_GF225_GRIPPER_HIGH_PD_HIGH_RES_UIPC_CFG.replace(
+
+
+def create_franka_neote_gripper(data_type:list[str]):
+    """Neote currently reuses the GelSight Mini physical assembly.
+
+    The Neote branch differs in the requested tactile image modalities
+    (marker/force/particle rendering), not in robot USD, gelpad attachment,
+    or tactile camera geometry.
+    """
+    robot = FRANKA_PANDA_ARM_GSMINI_GRIPPER_HIGH_PD_HIGH_RES_UIPC_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
             joint_pos={
-                "panda_joint1": 0.0,
-                "panda_joint2": 0.0,
-                "panda_joint3": 0.0,
-                "panda_joint4": -2.46,
-                "panda_joint5": 0.0,
-                "panda_joint6": 2.5,
+                "panda_joint1": -0.010809095,
+                "panda_joint2": 0.096037410,
+                "panda_joint3": 0.000734462,
+                "panda_joint4": -2.433035851,
+                "panda_joint5": 0.035354517,
+                "panda_joint6": 2.500859022,
                 "panda_joint7": 0.741,
                 "panda_finger.*": 0.02,
             }
-        ), 
+        ),
     )
     tactiles = [
         create_tactile_cfg(
-            prim_path="/World/envs/env_.*/Robot/GF225_left",
-            gelpad_prim_path="/World/envs/env_.*/Robot/GF225_gelpad_left",
-            gelpad_attachment_body_name="GF225_left",
+            prim_path="/World/envs/env_.*/Robot/gelsight_mini_case_left",
+            gelpad_prim_path="/World/envs/env_.*/Robot/gelpad_left",
+            gelpad_attachment_body_name="gelsight_mini_case_left",
             name="left_tactile",
-            sensor_type="gf225",
+            sensor_type="neote",
             data_type=data_type,
         ),
         create_tactile_cfg(
-            prim_path="/World/envs/env_.*/Robot/GF225_right",
-            gelpad_prim_path="/World/envs/env_.*/Robot/GF225_gelpad_right",
-            gelpad_attachment_body_name="GF225_right",
+            prim_path="/World/envs/env_.*/Robot/gelsight_mini_case_right",
+            gelpad_prim_path="/World/envs/env_.*/Robot/gelpad_right",
+            gelpad_attachment_body_name="gelsight_mini_case_right",
             name="right_tactile",
-            sensor_type="gf225",
+            sensor_type="neote",
             data_type=data_type,
         )
     ]
@@ -107,12 +115,19 @@ def create_franka_gf225_gripper(data_type:list[str]):
         tactiles=tactiles,
         gripper_offset=0.131,
         gripper_max_qpos=0.039,
-        tactile_far_plane=29.0,
-        adaptive_grasp_depth_threshold=26.8,
-        contact_threshold=(26.5, 27.0)
+        tactile_far_plane=34.0,
+        adaptive_grasp_depth_threshold=27.5,
+        contact_threshold=(27.5, 28.0)
     )
 
+
 def create_franka_xensews_gripper(data_type:list[str]):
+
+    # Match the standalone gripper demo: finger_joint=0 opens the gripper,
+    # and +45 degrees is the maximum intended close pose.
+    robotiq_open_qpos = 0.0
+    robotiq_close_qpos = math.radians(45.0)
+
     robot = FRANKA_PANDA_ARM_XENSEWS_GRIPPER_HIGH_PD_HIGH_RES_UIPC_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
@@ -124,23 +139,32 @@ def create_franka_xensews_gripper(data_type:list[str]):
                 "panda_joint5": 0.0,
                 "panda_joint6": 2.5,
                 "panda_joint7": 0.741,
-                "panda_finger.*": 0.02,
+                "finger_joint": robotiq_open_qpos,
             }
         ),
     )
+    robot.spawn.usd_path = (
+        "/root/gpufree-data/assets/assemblies/franka_robotiq_xensews/asset_package/usd/"
+        "franka_robotiq_xensews_lift11p15_official2f85_xense_realcase_adapter_notips_tipdown_"
+        "lr180_gelscale318_089_x1080_h4_padzdown20mm_gray_overlay_cameraalign1_drivefix_padgap11_camera_centered.usda"
+    )
+    # Keep the visual/UIPC gelpad bound to the same named XenseWS link. Cross-binding
+    # makes the pads move apart when the gripper closes.
     tactiles = [
         create_tactile_cfg(
-            prim_path="/World/envs/env_.*/Robot/XenseWS_left",
+            prim_path="/World/envs/env_.*/Robot/root_joint/XenseWS_left",
             gelpad_prim_path="/World/envs/env_.*/Robot/XenseWS_gelpad_left",
             gelpad_attachment_body_name="XenseWS_left",
+            gelpad_attachment_prim_path="/World/envs/env_.*/Robot/root_joint/XenseWS_left",
             name="left_tactile",
             sensor_type="xensews",
             data_type=data_type,
         ),
         create_tactile_cfg(
-            prim_path="/World/envs/env_.*/Robot/XenseWS_right",
+            prim_path="/World/envs/env_.*/Robot/root_joint/XenseWS_right",
             gelpad_prim_path="/World/envs/env_.*/Robot/XenseWS_gelpad_right",
             gelpad_attachment_body_name="XenseWS_right",
+            gelpad_attachment_prim_path="/World/envs/env_.*/Robot/root_joint/XenseWS_right",
             name="right_tactile",
             sensor_type="xensews",
             data_type=data_type,
@@ -149,9 +173,11 @@ def create_franka_xensews_gripper(data_type:list[str]):
     return RobotCfg(
         robot=robot,
         tactiles=tactiles,
-        gripper_offset=0.125,
-        gripper_max_qpos=0.039,
-        tactile_far_plane=30.0,
-        adaptive_grasp_depth_threshold=24.8,
-        contact_threshold=(24.5, 25.0)
+        gripper_offset=0.138,
+        gripper_max_qpos=abs(robotiq_close_qpos - robotiq_open_qpos),
+        gripper_open_qpos=robotiq_open_qpos,
+        gripper_close_qpos=robotiq_close_qpos,
+        tactile_far_plane=34.0,
+        adaptive_grasp_depth_threshold=27.0,
+        contact_threshold=(26.8, 27.3)
     )

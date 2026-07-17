@@ -1,0 +1,17 @@
+save_dir: ./data
+decimation: 1
+episode_num: 1
+save_frequency: 10
+video_frequency: 2
+render_frequency: 0
+reset_time_limit: 180
+random_texture: false
+use_seed: true
+sensor_type: neote
+tactile_video_key: gel_particle
+
+observations:
+  camera: ['rgb']
+  tactile: ['gel_particle']
+  embodiment: ['joint', 'ee']
+  actor: true

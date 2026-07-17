@@ -1,10 +1,21 @@
 from ._base_task import *
 import numpy as np
 
+# USB尺寸：
+# assets/objects/USB.usd, 横截面：12.0mm x 4.5mm，插头长度：12.4mm，USB本体长度：45mm
+# assets/objects/usb.usd, 横截面：12.4mm x 4.4mm，插头长度：12.4mm，USB本体长度：50mm
+# USB.usd对应的Visual mesh: assets/objects/USB03_visual.usd
+
+# USB孔：
+# assets/objects/USB_slot_start.usd, 孔：13.5mm x 6.0mm
+# assets/objects/USB_slot_target.usd, 孔：13.2mm x 5.7mm
+# assets/objects/USB_slot_start_001.usd, 孔：13.9mm x 5.9mm
+# assets/objects/USB_slot_target_001.usd, 孔：13.4mm x 5.4mm
 
 # 下面的尺寸来自 assets/objects/*.usd 的网格顶点，用于把 USB 和插槽在 z 方向上对齐。
 USB_PLUG_HEIGHT = 0.0124
-USB_BODY_HEIGHT = 0.0500
+USB_BODY_HEIGHT = 0.0450
+# USB_BODY_HEIGHT = 0.0500
 # 抓取点设置在插头以上、USB 本体中部附近，再略微上移，避免夹爪碰到插槽或桌面。
 USB_GRASP_HEIGHT = USB_PLUG_HEIGHT + USB_BODY_HEIGHT * 0.5 + 0.007
 USB_GRASP_HEIGHT_NOISE = 0.003
@@ -17,11 +28,11 @@ USB_INSERT_Z = max(SLOT_HOLE_BOTTOM, SLOT_HEIGHT - USB_PLUG_HEIGHT)
 SLOT_XY_NOISE = (0.005, 0.005, 0.0)
 LIFT_HEIGHT = 0.0200
 LIFT_HEIGHT_NOISE = 0.0050
-# 预插入位姿相对插槽开口只保留很小 clearance，后续 _play_once 再竖直下插。
-SLOT_APPROACH_CLEARANCE = 0.002
-SLOT_APPROACH_CLEARANCE_NOISE = 0.0003
-# _play_once 下插前使用的精确预插入高度，确保 USB 先对准到槽口上方0mm。
-PLAY_PRE_INSERT_CLEARANCE = 0
+# pre_move 先移到槽口上方 10 mm，并在插槽平面内叠加小幅位置噪声。
+SLOT_APPROACH_CLEARANCE = 0.010
+SLOT_APPROACH_XY_NOISE = (0.002, 0.002, 0.0)
+# _play_once 下插前将 USB 精确移到槽口高度。
+PLAY_PRE_INSERT_CLEARANCE = 0.0
 
 
 @configclass
@@ -30,10 +41,10 @@ class TaskCfg(BaseTaskCfg):
         CameraCfg(
             name="head",
             prim_path="/World/envs/env_.*/Camera",
-            offset=CameraCfg.OffsetCfg(pos=(0.74, 0.0, 0.066), rot=(0.512, 0.512, 0.487, 0.487), convention="opengl"),
+            offset=CameraCfg.OffsetCfg(pos=(0.65, 0.14, 0.11), rot=(0.370608, 0.310977, 0.562556, 0.670428), convention="opengl"),
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
-                focal_length=2.5, focus_distance=1.0, horizontal_aperture=3.6, clipping_range=(0.1, 100.0)
+                focal_length=1.6, focus_distance=1.0, horizontal_aperture=2.4, clipping_range=(0.1, 100.0)
             ),
             width=480,
             height=270,
@@ -49,7 +60,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1/120,
         )
     ]
-    step_lim = 400
+    step_lim = 300
 
 
 class Task(BaseTask):
@@ -78,7 +89,7 @@ class Task(BaseTask):
     def create_actors(self):
         # start_slot 是 USB 初始放置槽，slot 是目标插入槽；USB 初始就放在起始槽内。
         start_slot_pose = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
-        target_slot_pose = Pose([0.58, 0.0, 0.002], [1, 0, 0, 0])
+        target_slot_pose = Pose([0.5, 0.0, 0.002], [1, 0, 0, 0])
         usb_pose = self._usb_pose_in_slot(start_slot_pose)
 
         self.start_slot = self._actor_manager.add_from_usd_file(
@@ -97,16 +108,19 @@ class Task(BaseTask):
 
         self.prism = self._actor_manager.add_from_usd_file(
             name='prism',
-            asset_path="usb.usd",
-            pose=usb_pose
+            asset_path="USB.usd",
+            visual_asset_path="USB03_visual.usd", 
+            pose=usb_pose,
+            show_physics_mesh=False
         )
+    
 
     def _reset_actors(self):
         # Pose.create_noise 会修改输入向量，因此每次传入新的 list，避免跨 episode 污染随机范围。
         start_offset = self.create_noise(list(SLOT_XY_NOISE))
         target_offset = self.create_noise(list(SLOT_XY_NOISE))
         start_slot_pose = Pose([0.4, 0.0, self.start_slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(start_offset)
-        target_slot_pose = Pose([0.58, 0.0, self.slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(target_offset)
+        target_slot_pose = Pose([0.5, 0.0, self.slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(target_offset)
 
         self.start_slot.set_pose(start_slot_pose)
         self.slot.set_pose(target_slot_pose)
@@ -152,17 +166,16 @@ class Task(BaseTask):
         self.move(self.atom.move_by_displacement(z=lift_height), tag="lift_usb")
 
         self._update_insert_reference_poses()
-        # 移动到随机化后的目标槽口正上方；真正的竖直下插放在 _play_once 中执行。
-        approach_clearance = SLOT_APPROACH_CLEARANCE + self.rng.uniform(
-            -SLOT_APPROACH_CLEARANCE_NOISE,
-            SLOT_APPROACH_CLEARANCE_NOISE
-        )
+        # 移动到槽口上方 10 mm，并在精确位姿上叠加 XY 各 ±2 mm 噪声。
+        approach_clearance = SLOT_APPROACH_CLEARANCE
         self._update_pre_insert_pose(approach_clearance)
+        approach_offset = self.create_noise(list(SLOT_APPROACH_XY_NOISE))
+        approach_pose = self.pre_insert_pose.add_offset(approach_offset)
         self.move(self.atom.place_actor(
             self.prism,
-            target_pose=self.pre_insert_pose,
+            target_pose=approach_pose,
             pre_dis=0.02,
-            dis=0.008,
+            dis=0.004,
             is_open=False
         ), tag="move_usb_to_pre_insert")
 
@@ -171,15 +184,17 @@ class Task(BaseTask):
         self.metadata['grasp_height'] = float(grasp_height)
         self.metadata['lift_height'] = float(lift_height)
         self.metadata['approach_clearance'] = float(approach_clearance)
+        self.metadata['approach_xy_noise'] = approach_offset.p.tolist()
 
     def _play_once(self):
         self._update_insert_reference_poses()
+        # 正式下插前去掉 XY 噪声，将 USB 参考原点精确移到槽口高度。
         play_pre_insert_pose = self.opening_pose.add_bias([0.0, 0.0, PLAY_PRE_INSERT_CLEARANCE])
         self.move(self.atom.place_actor(
             self.prism,
             target_pose=play_pre_insert_pose,
             pre_dis=0.01,
-            dis=0.001,
+            dis=0.0,
             is_open=False
         ), tag="move_usb_to_play_pre_insert", time_dilation_factor=0.5)
         self.metadata['play_pre_insert_clearance'] = PLAY_PRE_INSERT_CLEARANCE
@@ -191,7 +206,7 @@ class Task(BaseTask):
             xyz_coord='world'
         ), tag="insert_usb_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
         # 下插后保存一段稳定观测，便于 success 检查和离线数据回放看到最终状态。
-        self.delay(20, is_save=True)
+        self.delay(40, is_save=True)
 
     def _get_success_diagnostics(self, xy_threshold=0.002, z_threshold=0.003):
         cached_target_pose = self.target_pose

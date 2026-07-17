@@ -33,7 +33,6 @@ void GlobalVertexManager::Impl::init()
         R->report_count(info);
         // get count back
         reporter_vertex_counts[i] = info.m_count;
-        std::cout << "vertex_reporter i : " << i <<"\n";
     }
     reporter_vertex_offsets_counts.scan();
     SizeT total_count = reporter_vertex_offsets_counts.total_count();
@@ -190,17 +189,6 @@ void GlobalVertexManager::Impl::clear_recover(RecoverInfo& info)
 
 bool GlobalVertexManager::Impl::write_vertex_pos_to_sim(span<const Vector3> new_positions, IndexT global_vertex_offset, SizeT vertex_count) //span<const IndexT> global_vertex_indices, 
 {
-
-    std::cout << "write vertex pos in GlobalVertexManager: " <<"\n";
-
-    std::cout << "global vertex counts total: " << reporter_vertex_offsets_counts.total_count() <<"\n";
-
-    std::cout << "global vertex offsets test: " <<"\n";
-    for(auto idx: reporter_vertex_offsets_counts.counts()) {
-        std::cout << idx << "\n";
-    }
-
-    std::cout << "global vertex offset: " << global_vertex_offset << ", vertex count: " << vertex_count << "\n";
     positions.view(global_vertex_offset, vertex_count).copy_from(new_positions.data());
     prev_positions.view(global_vertex_offset, vertex_count).copy_from(new_positions.data());
 

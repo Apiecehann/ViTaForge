@@ -70,12 +70,45 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
 
         env_cfg: 'BaseTaskCfg' = task_module.TaskCfg()
         worker_id = current_process().name.split('-')[-1]
+        if "xense_use_baseline_filter" in task_config:
+            os.environ["XENSE_USE_BASELINE_FILTER"] = "1" if task_config["xense_use_baseline_filter"] else "0"
         env_cfg.save_dir = base_save_dir
+        env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
+        env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
         env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
         env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
         env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)
         env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
+        if "reset_time_limit" in task_config:
+            env_cfg.reset_time_limit = float(task_config["reset_time_limit"])
+        if "video_size" in task_config:
+            env_cfg.video_size = tuple(task_config["video_size"])
+        elif env_cfg.tactile_sensor_type in ("xensews", "xensews_robotiq"):
+            env_cfg.video_size = (1760, 700)
         env_cfg.obs_data_type = task_config.get("observations", {})
+        if task_config.get("gel_particle", False):
+            tactile_obs = env_cfg.obs_data_type.setdefault("tactile", [])
+            if "gel_particle" not in tactile_obs:
+                tactile_obs.append("gel_particle")
+        env_cfg.random_texture = task_config.get("random_texture", False)
+        env_cfg.save_pre_move = task_config.get("save_pre_move", getattr(env_cfg, "save_pre_move", False))
+        env_cfg.tactile_video_key = task_config.get("tactile_video_key", env_cfg.tactile_video_key)
+        if "use_adaptive_grasp" in task_config:
+            env_cfg.use_adaptive_grasp = bool(task_config["use_adaptive_grasp"])
+        if "adaptive_grasp_depth_threshold" in task_config:
+            env_cfg.adaptive_grasp_depth_threshold = float(task_config["adaptive_grasp_depth_threshold"])
+        xense_tuning_types = {
+            "xense_usb_close_percent": float,
+            "xense_post_close_settle_steps": int,
+            "xense_adaptive_grasp_max_steps": int,
+            "xense_adaptive_grasp_check_interval": int,
+            "xense_adaptive_grasp_qpos_step": float,
+            "xense_adaptive_grasp_target_tolerance": float,
+            "xense_adaptive_grasp_min_target_margin": float,
+        }
+        for key, value_type in xense_tuning_types.items():
+            if key in task_config:
+                setattr(env_cfg, key, value_type(task_config[key]))
         env_cfg.scene.num_envs = 1
         # Device routing by CUDA env
 

@@ -809,11 +809,6 @@ bool AffineBodyDynamics::Impl::write_vertex_pos_to_sim(span<const Vector3> posit
 
     //TODO I probably should write a new method for this? / a different method, cause we dont really update vertex positions here
 
-    std::cout << "write_vertex_pos_to_sim ABD: " <<"\n";
-    
-    std::cout << "vertex_offset " << vertex_offset << "\n";
-    std::cout << "vertex_count " << vertex_count << "\n";
-
     // setup default q
     Matrix4x4 identity_trans = Transform::Identity().matrix();
     vector<Vector12> q = {transform_to_q(identity_trans)};

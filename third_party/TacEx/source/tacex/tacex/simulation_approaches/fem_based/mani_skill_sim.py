@@ -6,6 +6,7 @@ import math
 from re import M
 import numpy as np
 import torch
+import torch.nn.functional as F
 from typing import TYPE_CHECKING
 
 import cv2
@@ -74,6 +75,7 @@ class ManiSkillSimulator(GelSightSimulator):
         )
 
         self.marker_motion_sim._gen_marker_grid()
+        self.canonical_marker_uv = self._canonical_marker_uv()
 
         # create buffers
         self.marker_data = torch.zeros(
@@ -90,6 +92,142 @@ class ManiSkillSimulator(GelSightSimulator):
         # todo do it properly for multi env, currently marker flow has shape [2, num_markers, 2] and we want [num_envs, 2, num_markers, 2]
         self.marker_data[0] = marker_flow
         return self.marker_data
+
+    def _canonical_marker_uv(self) -> torch.Tensor:
+        sx, sy = self.cfg.marker_shape
+        width, height = self.cfg.tactile_img_res
+        bounds = getattr(self.cfg, "marker_visual_bounds", None)
+        if bounds is None:
+            margin_x = 0.135 * width
+            margin_y = 0.235 * height
+            x_min, x_max = margin_x, width - margin_x
+            y_min, y_max = margin_y, height - margin_y
+        else:
+            x_min, y_min, x_max, y_max = bounds
+            x_min, x_max = x_min * width, x_max * width
+            y_min, y_max = y_min * height, y_max * height
+        xs = torch.linspace(x_min, x_max, sx, device=self._device)
+        ys = torch.linspace(y_min, y_max, sy, device=self._device)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+        marker_uv = torch.stack((grid_x.reshape(-1), grid_y.reshape(-1)), dim=-1)
+        jitter_ratio = getattr(self.cfg, "marker_visual_jitter", 0.0)
+        if jitter_ratio > 0:
+            num_markers = marker_uv.shape[0]
+            idx = torch.arange(num_markers, device=self._device, dtype=marker_uv.dtype)
+            seed = float(getattr(self.cfg, "marker_visual_jitter_seed", 20260623))
+            rand_x = torch.remainder(torch.sin(idx * 12.9898 + seed * 0.001) * 43758.5453, 1.0)
+            rand_y = torch.remainder(torch.sin(idx * 78.233 + seed * 0.002) * 24634.6345, 1.0)
+            step_x = (x_max - x_min) / max(sx - 1, 1)
+            step_y = (y_max - y_min) / max(sy - 1, 1)
+            jitter = torch.stack(
+                ((rand_x - 0.5) * step_x * jitter_ratio, (rand_y - 0.5) * step_y * jitter_ratio),
+                dim=-1,
+            )
+            marker_uv = marker_uv + jitter
+            pad = self.radius + 1.0
+            marker_uv[:, 0] = marker_uv[:, 0].clamp(pad, width - pad)
+            marker_uv[:, 1] = marker_uv[:, 1].clamp(pad, height - pad)
+        return marker_uv[: self.cfg.marker_params.num_markers]
+
+    def _smooth_marker_delta_for_visual(self, delta: torch.Tensor) -> torch.Tensor:
+        passes = int(getattr(self.cfg, "marker_visual_flow_smoothing", 0))
+        if passes <= 0:
+            return delta
+
+        sx, sy = self.cfg.marker_shape
+        grid_count = int(sx * sy)
+        if delta.shape[0] < grid_count:
+            return delta
+
+        head = delta[:grid_count]
+        tail = delta[grid_count:]
+        grid = head.reshape(sy, sx, 2).permute(2, 0, 1).unsqueeze(0)
+        for _ in range(passes):
+            grid = F.avg_pool2d(F.pad(grid, (1, 1, 1, 1), mode="replicate"), kernel_size=3, stride=1)
+        smoothed = grid.squeeze(0).permute(1, 2, 0).reshape(grid_count, 2)
+        if tail.numel() == 0:
+            return smoothed
+        return torch.cat((smoothed, tail), dim=0)
+
+    def _sample_visual_contact_weight(self, marker_uv: torch.Tensor) -> torch.Tensor | None:
+        weight_map = getattr(self.sensor, "_surface_deformation_marker_contact_weight", None)
+        if weight_map is None:
+            weight_map = getattr(self.sensor, "_surface_deformation_contact_weight", None)
+        if weight_map is None:
+            return None
+        weight_map = torch.as_tensor(weight_map, dtype=torch.float32, device=marker_uv.device)
+        if weight_map.ndim == 3:
+            weight_map = weight_map[0]
+        if weight_map.ndim != 2 or marker_uv.ndim != 2 or marker_uv.shape[-1] != 2:
+            return None
+
+        height, width = weight_map.shape
+        work = weight_map.view(1, 1, height, width)
+        if (width, height) != tuple(self.cfg.tactile_img_res):
+            work = F.interpolate(
+                work,
+                size=(self.cfg.tactile_img_res[1], self.cfg.tactile_img_res[0]),
+                mode="bilinear",
+                align_corners=False,
+            )
+            height, width = work.shape[-2:]
+
+        denom_x = max(float(width - 1), 1.0)
+        denom_y = max(float(height - 1), 1.0)
+        grid = torch.empty((1, marker_uv.shape[0], 1, 2), dtype=torch.float32, device=marker_uv.device)
+        grid[0, :, 0, 0] = marker_uv[:, 0] / denom_x * 2.0 - 1.0
+        grid[0, :, 0, 1] = marker_uv[:, 1] / denom_y * 2.0 - 1.0
+        sampled = F.grid_sample(work, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+        return sampled[0, 0, :, 0].clamp(0.0, 1.0)
+
+    def _remove_background_visual_drift(self, delta: torch.Tensor, contact_weight: torch.Tensor) -> torch.Tensor:
+        if delta.ndim != 2 or delta.shape[-1] != 2 or contact_weight.ndim != 1 or contact_weight.shape[0] != delta.shape[0]:
+            return delta - delta.mean(dim=0, keepdim=True)
+
+        threshold = float(getattr(self.cfg, "marker_visual_background_threshold", 0.18) or 0.18)
+        bg_mask = contact_weight <= threshold
+        min_bg = max(6, delta.shape[0] // 5)
+        if int(bg_mask.sum().item()) < min_bg:
+            quantile = torch.quantile(contact_weight, 0.35)
+            bg_mask = contact_weight <= quantile
+        if int(bg_mask.sum().item()) <= 0:
+            return delta - delta.mean(dim=0, keepdim=True)
+        return delta - delta[bg_mask].mean(dim=0, keepdim=True)
+
+    def marker_rgb_motion(self) -> torch.Tensor:
+        if str(self.cfg.sensor_type).startswith("xense"):
+            scale = float(getattr(self.cfg, "marker_visual_motion_scale", 1.0) or 1.0)
+            marker_flow = self.marker_data[0]
+            init_uv = marker_flow[0]
+            curr_uv = marker_flow[1]
+            delta = curr_uv - init_uv
+            contact_weight = self._sample_visual_contact_weight(self.canonical_marker_uv[: delta.shape[0]])
+            if contact_weight is not None:
+                delta = self._remove_background_visual_drift(delta, contact_weight)
+            else:
+                delta = delta - delta.mean(dim=0, keepdim=True)
+            delta = self._smooth_marker_delta_for_visual(delta)
+            if contact_weight is not None:
+                background_scale = max(
+                    float(getattr(self.cfg, "marker_visual_background_scale", 0.12) or 0.0),
+                    0.0,
+                )
+                contact_gain = max(float(getattr(self.cfg, "marker_visual_contact_gain", 3.0) or 0.0), 0.0)
+                contact_gamma = max(float(getattr(self.cfg, "marker_visual_contact_gamma", 1.35) or 1.35), 0.25)
+                local_gain = background_scale + contact_gain * contact_weight.pow(contact_gamma)
+                delta = delta * local_gain.unsqueeze(-1)
+            clip_px = float(getattr(self.cfg, "marker_visual_motion_clip_px", 0.0))
+            if clip_px > 0.0:
+                norm = torch.linalg.norm(delta, dim=-1, keepdim=True).clamp_min(1.0e-6)
+                delta = delta * torch.clamp(clip_px / norm, max=1.0)
+            marker_uv = self.canonical_marker_uv + scale * delta
+            width, height = self.cfg.tactile_img_res
+            pad = self.radius + 1.0
+            marker_uv[:, 0] = marker_uv[:, 0].clamp(pad, width - pad)
+            marker_uv[:, 1] = marker_uv[:, 1].clamp(pad, height - pad)
+            return marker_uv
+        marker_flow = self.marker_data[0]
+        return marker_flow[1]
 
     def reset(self):
         self._indentation_depth = torch.zeros((self._num_envs), device=self._device)
@@ -144,7 +282,7 @@ class ManiSkillSimulator(GelSightSimulator):
                         )  # default format omni.ui.TextureFormat.RGBA8_UNORM
 
                     tactile_rgb = self.sensor.data.output["tactile_rgb"][i] / 255.0
-                    marker_motion = self.sensor.data.output["marker_motion"][0, 1]
+                    marker_motion = self.marker_rgb_motion()
                     marker_img = self.draw_markers(marker_uv=marker_motion)
                     tactile_rgb *= torch.dstack([marker_img / 255] * 3)
                     frame = (tactile_rgb * 255).to(dtype=torch.uint8).cpu().numpy()
@@ -315,6 +453,9 @@ class ManiSkillSimulator(GelSightSimulator):
         Returns:
             Image with the markers visualized as dots.
         """
+        if str(self.cfg.sensor_type).startswith("xense") and hasattr(self, "canonical_marker_uv"):
+            marker_uv = self.marker_rgb_motion()
+
         device = "cuda:0"
         params = ManiSkillSimulator.patch_params
         circle_radius = params["circle_radius"]
@@ -357,12 +498,13 @@ class ManiSkillSimulator(GelSightSimulator):
 
         marker_image = marker_image[pad_size:-pad_size, pad_size:-pad_size]
         
-        noise_level = 80
-        noise = torch.rand_like(marker_image) * noise_level
-        marker_mask = marker_image < 255
-        marker_image = torch.where(
-            marker_mask,
-            torch.clamp(marker_image + noise, 0, 255),
-            marker_image)
+        noise_level = float(getattr(self.cfg, "marker_visual_noise", 80.0) or 0.0)
+        if noise_level > 0:
+            noise = torch.rand_like(marker_image) * noise_level
+            marker_mask = marker_image < 255
+            marker_image = torch.where(
+                marker_mask,
+                torch.clamp(marker_image + noise, 0, 255),
+                marker_image)
         
         return marker_image

@@ -9,7 +9,7 @@ from typing import Literal
 
 @configclass
 class ManiSkillSimulatorCfg(GelSightSimulatorCfg):
-    sensor_type:Literal['gsmini', 'xsensews', 'gf225'] = None
+    sensor_type:Literal['gsmini', 'xensews', 'neote'] = None
 
     simulation_approach_class: type = ManiSkillSimulator
 
@@ -30,6 +30,28 @@ class ManiSkillSimulatorCfg(GelSightSimulatorCfg):
     marker_random_noise: float = 0.0
 
     marker_lose_tracking_probability: float = 0.0
+
+    marker_visual_noise: float = 80.0
+
+    marker_visual_motion_scale: float = 1.0
+
+    marker_visual_flow_smoothing: int = 0
+
+    marker_visual_motion_clip_px: float = 0.0
+
+    marker_visual_background_scale: float = 0.06
+
+    marker_visual_contact_gain: float = 8.0
+
+    marker_visual_contact_gamma: float = 0.85
+
+    marker_visual_background_threshold: float = 0.18
+
+    marker_visual_jitter: float = 0.0
+
+    marker_visual_jitter_seed: int = 20260623
+
+    marker_visual_bounds: tuple[float, float, float, float] | None = None
 
     normalize: bool = False
 

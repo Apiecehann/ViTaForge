@@ -4,6 +4,8 @@ decimation: 1
 
 save_frequency: 2
 video_frequency: 2
+video_size: [1760, 700]
+reset_time_limit: 240
 render_frequency: 0 # set to 1 to one IsaacSim App window
 
 random_texture: false # set to true to enable random texture
@@ -15,6 +17,22 @@ sensor_type: xensews
 
 observations:
   camera: ['rgb']
-  tactile: ['rgb', 'marker', 'depth', 'pose']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
   embodiment: ['joint', 'ee']
   actor: true
+
+save_pre_move: true
+tactile_video_key: rgb_marker
+
+# Xense depth/contact diagnostics. Numeric thresholds are intentionally left
+# here for quick tuning without editing Python files.
+xense_use_baseline_filter: false
+use_adaptive_grasp: false
+# adaptive_grasp_depth_threshold: 27.0
+xense_usb_close_percent: 0.185
+# xense_post_close_settle_steps: 80
+# xense_adaptive_grasp_max_steps: 180
+# xense_adaptive_grasp_check_interval: 10
+# xense_adaptive_grasp_qpos_step: 0.012
+# xense_adaptive_grasp_target_tolerance: 0.006
+# xense_adaptive_grasp_min_target_margin: 0.02

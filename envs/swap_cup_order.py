@@ -45,10 +45,13 @@ class Task(BaseTask):
 
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
         cfg = super().load_robot_and_sensors(cfg)
-        # arm joint 保持 robot_cfg 默认; 这里只把夹爪初始开口设为最大值, 对应 open_gripper(1.0)。
-        cfg.robot.robot.init_state.joint_pos.update({
-            "panda_finger.*": cfg.robot.gripper_max_qpos,
-        })
+        # Keep arm joints from robot_cfg and only set the initial gripper
+        # opening. init_state stores real qpos, not open_gripper() ratio.
+        if cfg.tactile_sensor_type == "xensews":
+            gripper_joint_pos = {"finger_joint": cfg.robot.gripper_open_qpos}
+        else:
+            gripper_joint_pos = {"panda_finger.*": cfg.robot.gripper_max_qpos}
+        cfg.robot.robot.init_state.joint_pos.update(gripper_joint_pos)
         return cfg
 
     def create_actors(self):

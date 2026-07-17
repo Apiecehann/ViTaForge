@@ -1,9 +1,11 @@
 from ._base_task import *
 import numpy as np
 
+# 半圆柱体蓝色木块：assets/objects/Blue_half_cylinder.usd，尺寸为：半径22.8mm，高度30mm
+# 木箱：assets/objects/wooden_box_semicircle_hole.usd，半圆柱孔尺寸：半径24mm
 
 BOX_SIZE = 0.1000
-BOX_WALL_THICKNESS = 0.0100
+BOX_WALL_THICKNESS = 0.0050
 HALF_CYLINDER_HEIGHT = 0.0300
 
 BOX_BASE_POSE = Pose([0.4, -0.05, 0.002], [1, 0, 0, 0])
@@ -36,7 +38,7 @@ class TaskCfg(BaseTaskCfg):
         CameraCfg(
             name="head",
             prim_path="/World/envs/env_.*/Camera",
-            offset=CameraCfg.OffsetCfg(pos=(0.75, 0.0, 0.15), rot=(0.555057, 0.465748, 0.443006, 0.527954), convention="opengl"),
+            offset=CameraCfg.OffsetCfg(pos=(0.7, 0.0, 0.16), rot=(0.555057, 0.465748, 0.443006, 0.527954), convention="opengl"),
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.6, focus_distance=1.0, horizontal_aperture=2.4, clipping_range=(0.1, 100.0)
@@ -173,7 +175,7 @@ class Task(BaseTask):
         )
         self.move(self.atom.open_gripper(0.5), tag="release_blue_half_cylinder")
         # 释放后等待较长时间但不保存，给物体足够时间在盒内稳定下来再做 success 检查。
-        self.delay(240, is_save=False)
+        self.delay(420, is_save=False)
 
     def _get_success_diagnostics(self):
         box_pose = self.wooden_box.get_pose()

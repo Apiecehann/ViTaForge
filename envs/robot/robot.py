@@ -28,8 +28,12 @@ class RobotManager:
         self.task = task
         self.device = task.device
         self.sensor_type = task.cfg.tactile_sensor_type
-        if self.sensor_type in ['gsmini', 'gf225', 'xensews']: # franka panda
+        if self.sensor_type == 'xensews':
+            self.robot_type = 'franka_robotiq'
+        elif self.sensor_type in ['gsmini', 'neote']:
             self.robot_type = 'franka_panda'
+        else:
+            raise NotImplementedError(f"Sensor type {self.sensor_type} not implemented.")
 
         self.robot = Articulation(self.cfg.robot)
         self.task.scene.articulations['robot'] = self.robot
@@ -49,7 +53,34 @@ class RobotManager:
                 'panda_finger_joint1', 'panda_finger_joint2'
             ]
             self.gripper_max_qpos = self.cfg.gripper_max_qpos
+            self.gripper_open_qpos = self.cfg.gripper_max_qpos
+            self.gripper_close_qpos = 0.0
+            self.gripper_plan_step = 0.0005
+            self.gripper_velocity_limit = 0.0001
             self.yaml_path = str(EMBODIMENTS_ROOT / 'franka' / 'curobo.yml')
+            offset = self.cfg.gripper_offset
+        elif self.robot_type == 'franka_robotiq':
+            self.hand_name = 'panda_link8'
+            self._arm_joint_names = [
+                'panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4',
+                'panda_joint5', 'panda_joint6', 'panda_joint7'
+            ]
+            # Official Robotiq 2F-85 USD uses finger_joint as the single active
+            # master joint; the right side and closed-chain joints are handled by USD.
+            self._gripper_joint_names = ['finger_joint']
+            self._gripper_mimic_multipliers = torch.tensor([1.0], device=self.device)
+            self.gripper_max_qpos = self.cfg.gripper_max_qpos
+            explicit_open = getattr(self.cfg, "gripper_open_qpos", None)
+            explicit_close = getattr(self.cfg, "gripper_close_qpos", None)
+            if explicit_open is not None and explicit_close is not None:
+                self.gripper_open_qpos = float(explicit_open)
+                self.gripper_close_qpos = float(explicit_close)
+            else:
+                self.gripper_open_qpos = 0.0
+                self.gripper_close_qpos = self.cfg.gripper_max_qpos
+            self.gripper_plan_step = 0.02
+            self.gripper_velocity_limit = 1.0
+            self.yaml_path = str(EMBODIMENTS_ROOT / 'franka' / 'curobo_panda_link8.yml')
             offset = self.cfg.gripper_offset
         else:
             raise NotImplementedError(f"Robot type {self.robot_type} not implemented.")
@@ -75,6 +106,8 @@ class RobotManager:
         self._gripper_ids = torch.tensor([
             self.joint_name_to_id[n] for n in self._gripper_joint_names
         ], device=self.device)
+        if self.robot_type != 'franka_robotiq':
+            self._gripper_mimic_multipliers = torch.ones(len(self._gripper_ids), device=self.device)
         self.origin_pose = self.get_gripper_center_pose()
         self._all_ids = torch.cat([self._arm_ids, self._gripper_ids], dim=0)
  
@@ -124,26 +157,46 @@ class RobotManager:
     
     def get_gripper_qpos(self):
         return self.get_qpos()[0, self._gripper_ids[0]].clone().cpu().item()
+    
     def get_gripper_percentage(self):
-        return self.get_gripper_qpos().item() / self.gripper_max_qpos
+        qpos = self.get_gripper_qpos()
+        denom = self.gripper_open_qpos - self.gripper_close_qpos
+        if abs(denom) < 1e-8:
+            return 0.0
+        return (qpos - self.gripper_close_qpos) / denom
+
+    def is_gripper_opening(self, target_qpos: float):
+        current_qpos = self.get_gripper_qpos()
+        return abs(target_qpos - self.gripper_open_qpos) < abs(current_qpos - self.gripper_open_qpos)
 
     def set_arm(self, pos:torch.Tensor, vel:torch.Tensor=None, env_ids:slice=None, force:bool=True):
         '''设置目标位姿'''
         self.robot.set_joint_position_target(pos, joint_ids=self._arm_ids, env_ids=env_ids)
         if vel is not None:
             self.robot.set_joint_velocity_target(vel, joint_ids=self._arm_ids, env_ids=env_ids)
-        if force:
+        if force and self.robot_type != 'franka_robotiq':
             self.robot.root_physx_view.set_dof_positions(
                 self.robot._data.joint_pos_target,
                 self.robot._ALL_INDICES
             )
 
+    def _map_gripper_command(self, value: torch.Tensor | float | int):
+        value = torch.as_tensor(value, dtype=torch.float32, device=self.device).flatten()
+        if value.numel() == 1:
+            value = value * self._gripper_mimic_multipliers
+        elif self.robot_type == 'franka_robotiq':
+            # Upper layers pass the configured Robotiq master qpos; USD handles mimic joints.
+            value = value[:1] * self._gripper_mimic_multipliers
+        return value
+
     def set_gripper(self, pos:torch.Tensor, vel:torch.Tensor=None, env_ids:slice=None, force:bool=True):
-        '''设置目标位姿'''
+        '''Set gripper target pose.'''
+        pos = self._map_gripper_command(pos)
         self.robot.set_joint_position_target(pos, joint_ids=self._gripper_ids, env_ids=env_ids)
         if vel is not None:
+            vel = self._map_gripper_command(vel)
             self.robot.set_joint_velocity_target(vel, joint_ids=self._gripper_ids, env_ids=env_ids)
-        if force:
+        if force and self.robot_type != 'franka_robotiq':
             self.robot.root_physx_view.set_dof_positions(
                 self.robot._data.joint_pos_target,
                 self.robot._ALL_INDICES
@@ -151,8 +204,8 @@ class RobotManager:
 
     def plan_arm(self, target_pose:Pose, constraint_pose=None, pre_dis=None, time_dilation_factor=None):
         result:MotionGenResult = self.planner.plan_path(
-            curr_joint_pos=self.robot.data.joint_pos[0, :self.robot.num_joints-2],
-            curr_joint_vel=self.robot.data.joint_vel[0, :self.robot.num_joints-2],
+            curr_joint_pos=self.robot.data.joint_pos[0],
+            curr_joint_vel=self.robot.data.joint_vel[0],
             target_ee_pose=target_pose,
             real_robot_pose=self.root_pose,
             pre_dis=pre_dis,
@@ -171,9 +224,10 @@ class RobotManager:
             return {'status': 'Fail', 'num_steps': 0, 'position': None, 'velocity': None}
 
     def gripper_percent2qpos(self, percentage:float):
-        gripper_range = [0, self.gripper_max_qpos]
-        target_pos = gripper_range[0] + (gripper_range[1] - gripper_range[0]) * percentage
-        return target_pos
+        percentage = float(np.clip(percentage, 0.0, 1.0))
+        return self.gripper_close_qpos + (
+            self.gripper_open_qpos - self.gripper_close_qpos
+        ) * percentage
 
     def plan_gripper(self, pos:float, type:Literal['percent', 'qpos'] = 'percent'):
         if type == 'percent':
@@ -181,9 +235,9 @@ class RobotManager:
         else:
             target_pos = pos
         gripper_pos = self.robot.data.joint_pos[0, self._gripper_ids][0]
-        num_steps = np.ceil(abs(target_pos - gripper_pos.cpu().item()) / 0.0005).astype(int)
+        num_steps = np.ceil(abs(target_pos - gripper_pos.cpu().item()) / self.gripper_plan_step).astype(int)
         position = torch.linspace(gripper_pos, target_pos, num_steps, device=self.device)
-        velocity = torch.clip((position - gripper_pos)/self.task.cfg.sim.dt, -0.0001, 0.0001)
+        velocity = torch.clip((position - gripper_pos)/self.task.cfg.sim.dt, -self.gripper_velocity_limit, self.gripper_velocity_limit)
 
         return {
             'status': 'Success',
