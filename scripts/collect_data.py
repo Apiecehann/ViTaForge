@@ -160,7 +160,7 @@ def run(task: 'BaseTask', episode_num, use_seed, start_seed, max_seed):
 
 def main():
     global args_cli, task_config, task_config_file, log_path
-    task_file_name = args_cli.task
+    task_file_name = Path(args_cli.task).stem
 
     episode_num = task_config.get("episode_num", -1)
     if args_cli.episode_num != -1:
@@ -188,6 +188,7 @@ def main():
     env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.random_texture = task_config.get("random_texture", False)
+    env_cfg.save_pre_move = task_config.get("save_pre_move", env_cfg.save_pre_move)
 
     env_cfg.scene.num_envs = 1
     
