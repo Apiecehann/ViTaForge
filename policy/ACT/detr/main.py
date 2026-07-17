@@ -124,7 +124,7 @@ def get_args_parser():
 def build_ACT_model_and_optimizer(args_override, RoboTwin_Config=None):
     if RoboTwin_Config is None:
         # TacArena: Check if we're in deployment mode (has all required keys in args_override)
-        required_keys = ['ckpt_dir', 'policy_class', 'task_name', 'seed', 'num_epochs', 'state_dim']
+        required_keys = ['ckpt_dir', 'policy_class', 'task_name', 'seed', 'state_dim']
         if all(k in args_override for k in required_keys):
             # Deployment mode: create Namespace directly from args_override, no argparse
             from argparse import Namespace
@@ -142,6 +142,7 @@ def build_ACT_model_and_optimizer(args_override, RoboTwin_Config=None):
                 'masks': False,
                 'eval': False,
                 'onscreen_render': False,
+                'num_epochs': 6000,
             }
             # Merge defaults with args_override
             default_args.update(args_override)
