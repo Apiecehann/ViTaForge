@@ -30,6 +30,7 @@ __tracked_surface.stl
 /third_party/isaacsim
 /third_party/isaacsim_isaacsim_link
 /third_party/libuipc-samples
+/third_party/IsaacLab
 
 /policy/VTLA/LLama*
 /policy/act_data/**
