@@ -92,6 +92,9 @@ class BaseTaskCfg(DirectRLEnvCfg):
     render_frequency = 0
     video_size = (960, 320)
 
+    save_pre_move: bool = False
+    skip_pre_move: bool = False
+
     ui_window_class_type = BaseEnvWindow
 
     decimation = 1
@@ -134,17 +137,19 @@ class BaseTaskCfg(DirectRLEnvCfg):
     light = AssetBaseCfg(
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(
-            color=(0.75, 0.75, 0.75), intensity=3000.0,
-            texture_file=str(SCENE_ASSETS_ROOT / 'base0.exr')
+            color=(0.75, 0.75, 0.75), intensity=1500.0,
+            texture_file=str(SCENE_ASSETS_ROOT / 'base5.exr')
         ),
     )
 
     # plate
+    # The table material is defined in assets/scene/plate.usda and currently
+    # uses assets/scene/texture/GroundTexture.mdl -> ground_texture.png.
     plate = RigidObjectCfg(
         prim_path="/World/envs/env_.*/ground_plate",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0, 0)),
         spawn=sim_utils.UsdFileCfg(
-            usd_path=str(SCENE_ASSETS_ROOT / "plate.usda"),
+            usd_path=str(SCENE_ASSETS_ROOT / "plate01.usda"),
             rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
@@ -158,7 +163,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
 
     use_adaptive_grasp: bool = True
     adaptive_grasp_depth_threshold = None # in mm
-    reset_time_limit: float = 120.0  # in seconds
+    reset_time_limit: float = 200.0  # in seconds
 
     cameras: list[CameraCfg] = [
         CameraCfg(
@@ -419,7 +424,8 @@ class BaseTask(UipcRLEnv):
                 )
         self._update_render()
 
-        self.pre_move()
+        if not self.cfg.skip_pre_move:
+            self.pre_move()
         self.in_pre_move = False
 
         # update render to avoid artifacts
@@ -429,8 +435,11 @@ class BaseTask(UipcRLEnv):
         if self.mode == 'eval':
             self.delay()
 
-        self.atom_id = 0
-        self.atom_tag = ''
+        # self.atom_id = 0
+        # self.atom_tag = ''
+        if not self.cfg.save_pre_move:
+            self.atom_id = 0
+            self.atom_tag = ''
 
         return ret
 
@@ -467,6 +476,7 @@ class BaseTask(UipcRLEnv):
 
     def _update_render(self):
         self.uipc_sim.update_render_meshes()
+        self._actor_manager.sync_visuals()
         self.sim.render()
         
         dt = self.physics_dt * self.cfg.decimation * max(1, self.step_count - self.last_render)
@@ -538,7 +548,8 @@ class BaseTask(UipcRLEnv):
         
         self.step_count += 1
 
-        is_save = is_save and (not self.in_pre_move) and (not self.mode == 'eval_test')
+        # is_save = is_save and (not self.in_pre_move) and (not self.mode == 'eval_test')
+        is_save = is_save and (self.cfg.save_pre_move or not self.in_pre_move) and (not self.mode == 'eval_test')
         save_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.save_frequency == 0)
         video_freq = (self.cfg.video_frequency > 0 and self.step_count % self.cfg.video_frequency == 0)
         render_freq = (self.cfg.render_frequency > 0 and self.step_count % self.cfg.render_frequency == 0)
@@ -815,7 +826,13 @@ class BaseTask(UipcRLEnv):
     def check_early_stop(self):
         return False
 
-    def take_action(self, action:torch.Tensor, action_type:Literal['qpos', 'ee', 'delta_ee']='qpos', force:bool=True):
+    def take_action(
+        self,
+        action:torch.Tensor,
+        action_type:Literal['qpos', 'ee', 'delta_ee']='qpos',
+        force:bool=True,
+        action_repeat:int=1
+    ):
         '''
             qpos     : actions is Tensor([8]), qpos (7 DOFS + gripper)
             ee       : actions is Tensor([7]), position (3), orientation (4)
@@ -846,7 +863,11 @@ class BaseTask(UipcRLEnv):
         else:
             self._robot_manager.set_arm(action[:-1], force=force)
             self._robot_manager.set_gripper(action[-1], force=force)
-            self._step()
+            for _ in range(max(1, action_repeat)):
+                self._step()
+                if self.check_success():
+                    self.eval_success = True
+                    break
         
         if self.check_success():
             self.eval_success = True

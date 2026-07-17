@@ -223,6 +223,7 @@ def main():
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
     env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)
     env_cfg.random_texture = task_config.get("random_texture", False)
+    env_cfg.skip_pre_move = deploy_config.get("eval_from_start", False)
 
     env_cfg.scene.num_envs = 1
     env_cfg.sim.device = args_cli.device if args_cli.device is not None \
