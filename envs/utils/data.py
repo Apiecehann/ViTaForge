@@ -59,7 +59,15 @@ class HDF5Handler:
         max_len = 0
         encode_data = []
         for i in range(len(imgs)):
-            success, encoded_image = cv2.imencode(".jpg", imgs[i])
+            img = imgs[i]
+            if img.dtype != np.uint8:
+                img = np.nan_to_num(img)
+                if np.issubdtype(img.dtype, np.floating) and img.max() <= 1.0 and img.min() >= 0.0:
+                    img = img * 255.0
+                img = np.clip(img, 0, 255).astype(np.uint8)
+            success, encoded_image = cv2.imencode(".jpg", img)
+            if not success:
+                raise ValueError(f"Failed to encode image at index {i}")
             jpeg_data = encoded_image.tobytes()
             encode_data.append(jpeg_data)
             max_len = max(max_len, len(jpeg_data))
