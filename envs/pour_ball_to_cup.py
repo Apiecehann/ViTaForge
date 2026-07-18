@@ -42,7 +42,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1/120,
         ),
     ]
-    step_lim = 2000
+    step_lim = 600
     # # 抓蓝杯时, cuRobo 不把被抓物和杯内球当避障物; 黄杯和桌面仍参与避障。
     # planner_ignore_actors = ["yellow_cup", "red_ball", "blue_cup"]
     pass
