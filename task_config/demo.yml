@@ -9,7 +9,7 @@ render_frequency: 0 # set to 1 to one IsaacSim App window
 random_texture: false # set to true to enable random texture
 
 use_seed: true
-episode_num: 5
+episode_num: 100
 
 sensor_type: gsmini
 

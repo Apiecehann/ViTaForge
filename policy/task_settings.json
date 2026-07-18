@@ -66,5 +66,5 @@
     "place_wooden_cube_on_yellow_area": {
         "camera_type": "all",
         "downsample": 1
-    },
+    }
 }

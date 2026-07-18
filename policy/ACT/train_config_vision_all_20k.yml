@@ -15,7 +15,7 @@ num_steps: 20000
 
 # Model training params
 batch_size: 64
-save_freq: 1000
+save_freq: 2000
 position_embedding: sine
 lr_vision_backbone: 0.00001
 weight_decay: 0.0001
