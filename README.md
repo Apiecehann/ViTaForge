@@ -7,6 +7,14 @@
 
 ## Installation
 
+Clone the repository and run the installation script `scripts/install.sh` to set up the environment and install dependencies all at once. The script will create a conda environment named `UniVTAC` and install Isaac Sim, Isaac Lab, TacEx, cuRobo, and other necessary packages.
+
+```bash
+git clone https://github.com/univtac/UniVTAC.git
+cd UniVTAC
+bash scripts/install.sh
+```
+
 See the [Installation Guide](./docs/Installation.md) for detailed setup instructions, including installing the environment, installing TacEx from the modified local source and setting up cuRobo for motion planning.
 
 ## Task Gallery
@@ -24,6 +32,8 @@ UniVTAC currently includes the following manipulation tasks, all featuring tacti
 | **Pull Out Key** | `pull_out_key` | Extract a key from a lock |
 | **Put Bottle in Shelf** | `put_bottle_in_shelf` | Place a bottle onto a shelf |
 | **Grasp & Classify** | `grasp_classify` | Grasp an object and classify it by tactile feedback |
+
+To build more tasks, refer to the [Task Creation Guide](./docs/TaskCreation.md) for instructions on how to define new manipulation tasks within the UniVTAC framework.
 
 ## Data Collection
 
