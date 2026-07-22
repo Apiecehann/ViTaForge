@@ -105,9 +105,19 @@ class Task(BaseTask):
         self.metadata["red_gear_pose"] = red_pose.tolist()
         self.metadata["blue_gear_pose"] = blue_pose.tolist()
 
-    def pre_move(self):
+    def _record_initial_red_pose(self):
         self.initial_red_pose = self.red_gear.get_pose()
         self.metadata["initial_red_pose"] = self.initial_red_pose.tolist()
+
+    def reset(self, seed: int = -1, instructions: list[str] | None = None, options: dict[str, Any] | None = None):
+        ret = super().reset(seed=seed, instructions=instructions, options=options)
+        # eval_from_start 会跳过 pre_move；此时在 reset 和物理稳定完成后单独记录成功判定基准。
+        if self.cfg.skip_pre_move:
+            self._record_initial_red_pose()
+        return ret
+
+    def pre_move(self):
+        self._record_initial_red_pose()
 
         self.move(self.atom.open_gripper(0.5), delay=False)
 

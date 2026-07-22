@@ -6,6 +6,11 @@ import numpy as np
 # True 时给初始物体位置和若干 motion target 加小扰动; False 时所有随机量为 0。
 is_random = True
 
+SUCCESS_TABLE_HEIGHT_TOLERANCE = 0.010
+SUCCESS_UPRIGHT_SCORE_THRESHOLD = 0.95
+SUCCESS_MIN_Y_GAP = 0.060
+SUCCESS_GRIPPER_OPEN_RATIO = 0.90
+
 
 @configclass
 class TaskCfg(BaseTaskCfg):
@@ -206,18 +211,44 @@ class Task(BaseTask):
     def check_success(self):
         yellow_pose = self.yellow_cup.get_pose()
         blue_pose = self.blue_cup.get_pose()
+        gripper_qpos = float(self._robot_manager.get_gripper_qpos())
+        gripper_open_threshold = float(
+            self._robot_manager.gripper_max_qpos * SUCCESS_GRIPPER_OPEN_RATIO
+        )
         self.metadata["final_yellow_cup_pose"] = yellow_pose.tolist()
         self.metadata["final_blue_cup_pose"] = blue_pose.tolist()
+
+        blue_table_height_error = float(abs(blue_pose.p[2] - yellow_pose.p[2]))
+        blue_on_table_ok = blue_table_height_error <= SUCCESS_TABLE_HEIGHT_TOLERANCE
+
         blue_up_dir = blue_pose.to_transformation_matrix()[:3, :3] @ np.array([0.0, 0.0, 1.0])
         blue_upright_score = float(np.dot(blue_up_dir, np.array([0.0, 0.0, 1.0])))
-        blue_upright_ok = blue_upright_score > 0.95
-        blue_after_yellow_ok = blue_pose.p[1] > yellow_pose.p[1]
+        blue_upright_ok = blue_upright_score > SUCCESS_UPRIGHT_SCORE_THRESHOLD
+
+        blue_y_gap = float(blue_pose.p[1] - yellow_pose.p[1])
+        blue_after_yellow_ok = blue_y_gap >= SUCCESS_MIN_Y_GAP
+        gripper_open_ok = gripper_qpos >= gripper_open_threshold
+
         self.metadata["success_blue_up_dir"] = blue_up_dir.tolist()
         self.metadata["success_blue_upright_score"] = blue_upright_score
         self.metadata["success_checks"] = {
+            "blue_on_table_ok": bool(blue_on_table_ok),
+            "blue_table_height_error": blue_table_height_error,
+            "table_height_tolerance": float(SUCCESS_TABLE_HEIGHT_TOLERANCE),
             "blue_upright_ok": bool(blue_upright_ok),
+            "upright_score_threshold": float(SUCCESS_UPRIGHT_SCORE_THRESHOLD),
             "blue_after_yellow_ok": bool(blue_after_yellow_ok),
             "blue_y": float(blue_pose.p[1]),
             "yellow_y": float(yellow_pose.p[1]),
+            "blue_y_gap": blue_y_gap,
+            "min_y_gap": float(SUCCESS_MIN_Y_GAP),
+            "gripper_open_ok": bool(gripper_open_ok),
+            "gripper_qpos": gripper_qpos,
+            "gripper_open_threshold": gripper_open_threshold,
         }
-        return bool(blue_upright_ok and blue_after_yellow_ok)
+        return bool(
+            blue_on_table_ok
+            and blue_upright_ok
+            and blue_after_yellow_ok
+            and gripper_open_ok
+        )

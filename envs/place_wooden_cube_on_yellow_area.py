@@ -18,6 +18,8 @@ GRASP_ROTATE_NOISE = np.deg2rad(10.0)
 GRASP_HEIGHT = CUBE_SIZE * 0.5
 GRASP_HEIGHT_NOISE = 0.003
 LIFT_HEIGHT = 0.0300
+SUCCESS_TABLE_HEIGHT_TOLERANCE = 0.003
+SUCCESS_MIN_GRIPPER_OPEN_RATIO = 0.4
 
 
 @configclass
@@ -91,6 +93,18 @@ class Task(BaseTask):
             return float(np.min(local_points[:, 2])), float(np.max(local_points[:, 2]))
         # 如果没有表面点，就退回到传入的半高估计，保持采样逻辑可用。
         return -fallback_half_height, fallback_half_height
+
+    def _get_world_z_bounds(self, actor, actor_pose, fallback_half_height):
+        # 使用最终位姿将局部表面点变换到世界坐标，倾斜时也能得到真实的最低表面高度。
+        if hasattr(actor, "origin_surf_pts"):
+            local_points = np.asarray(actor.origin_surf_pts)
+            world_points = local_points @ actor_pose.R.T + actor_pose.p
+            return float(np.min(world_points[:, 2])), float(np.max(world_points[:, 2]))
+        # 缺少表面点时退回以 actor 原点为中心的尺寸估计，保证 success 诊断仍可执行。
+        return (
+            float(actor_pose.p[2] - fallback_half_height),
+            float(actor_pose.p[2] + fallback_half_height),
+        )
 
     def _sample_place_pose(self):
         area_pose = self.yellow_area.get_pose()
@@ -176,6 +190,19 @@ class Task(BaseTask):
         center_y_ok = bool(abs(cube_in_area.p[1]) <= inner_half_size)
         footprint_x_ok = bool(abs(cube_in_area.p[0]) + cube_half_size <= inner_half_size)
         footprint_y_ok = bool(abs(cube_in_area.p[1]) + cube_half_size <= inner_half_size)
+        cube_min_world_z, cube_max_world_z = self._get_world_z_bounds(
+            self.wooden_cube,
+            cube_pose,
+            cube_half_size,
+        )
+        table_height = float(self.cfg.uipc_sim.ground_height)
+        cube_table_height_error = float(cube_min_world_z - table_height)
+        on_table_ok = bool(abs(cube_table_height_error) <= SUCCESS_TABLE_HEIGHT_TOLERANCE)
+
+        gripper_qpos = float(self._robot_manager.get_gripper_qpos())
+        gripper_max_qpos = float(self._robot_manager.gripper_max_qpos)
+        gripper_open_ratio = gripper_qpos / gripper_max_qpos if gripper_max_qpos > 0.0 else 0.0
+        gripper_open_ok = bool(gripper_open_ratio >= SUCCESS_MIN_GRIPPER_OPEN_RATIO)
         return {
             "yellow_area_pose": area_pose.tolist(),
             "wooden_cube_pose": cube_pose.tolist(),
@@ -189,10 +216,25 @@ class Task(BaseTask):
             "footprint_x_ok": footprint_x_ok,
             "footprint_y_ok": footprint_y_ok,
             "xy_ok": bool(footprint_x_ok and footprint_y_ok),
+            "table_height": table_height,
+            "cube_min_world_z": cube_min_world_z,
+            "cube_max_world_z": cube_max_world_z,
+            "cube_table_height_error": cube_table_height_error,
+            "table_height_tolerance": float(SUCCESS_TABLE_HEIGHT_TOLERANCE),
+            "on_table_ok": on_table_ok,
+            "gripper_qpos": gripper_qpos,
+            "gripper_max_qpos": gripper_max_qpos,
+            "gripper_open_ratio": float(gripper_open_ratio),
+            "min_gripper_open_ratio": float(SUCCESS_MIN_GRIPPER_OPEN_RATIO),
+            "gripper_open_ok": gripper_open_ok,
         }
 
     def check_success(self):
-        # 成功判定只依赖 xy footprint 是否完全位于黄色方框内；完整诊断写入 metadata 便于离线排查。
+        # 成功要求木块完全位于框内、已经落桌，并且夹爪实际开度表明木块已被松开。
         diagnostics = self._get_success_diagnostics()
         self.metadata["success_diagnostics"] = diagnostics
-        return diagnostics["xy_ok"]
+        return bool(
+            diagnostics["xy_ok"]
+            and diagnostics["on_table_ok"]
+            and diagnostics["gripper_open_ok"]
+        )

@@ -75,5 +75,71 @@
             "tac_left",
             "tac_right"
         ]
+    },
+    "sim-turn_gear_pair-demo-100": {
+        "dataset_dir": "./data/sim-turn_gear_pair/demo-100",
+        "num_episodes": 100,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist",
+            "tac_left",
+            "tac_right"
+        ]
+    },
+    "sim-pull_drawer-demo-100": {
+        "dataset_dir": "./data/sim-pull_drawer/demo-100",
+        "num_episodes": 100,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist",
+            "tac_left",
+            "tac_right"
+        ]
+    },
+    "sim-swap_cup_order-demo-100": {
+        "dataset_dir": "./data/sim-swap_cup_order/demo-100",
+        "num_episodes": 100,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist",
+            "tac_left",
+            "tac_right"
+        ]
+    },
+    "sim-insert_half_cylinder_into_box-demo-100": {
+        "dataset_dir": "./data/sim-insert_half_cylinder_into_box/demo-100",
+        "num_episodes": 100,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist",
+            "tac_left",
+            "tac_right"
+        ]
+    },
+    "sim-place_wooden_cube_on_yellow_area-demo-100": {
+        "dataset_dir": "./data/sim-place_wooden_cube_on_yellow_area/demo-100",
+        "num_episodes": 100,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist",
+            "tac_left",
+            "tac_right"
+        ]
+    },
+    "sim-pour_ball_to_cup-demo-100": {
+        "dataset_dir": "./data/sim-pour_ball_to_cup/demo-100",
+        "num_episodes": 100,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist",
+            "tac_left",
+            "tac_right"
+        ]
     }
 }
