@@ -5,7 +5,7 @@ import numpy as np
 
 # True 时给初始物体位置和若干 motion target 加小扰动; False 时所有随机量为 0。
 is_random = True
-CUP_BASE_Z = 0.002
+CUP_BASE_Z = 0.020
 
 
 @configclass

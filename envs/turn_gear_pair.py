@@ -76,25 +76,21 @@ class Task(BaseTask):
         )
         self.red_gear = self._actor_manager.add_from_usd_file(
             name="red_gear",
-            asset_path="gear_pair_shaft_proxy.usd",
+            asset_path="gear_pair_red.usd",
             pose=red_pose,
             density=1e3,
-            visual_asset_path="gear_pair_red.usd",
-            show_physics_mesh=False,
             keep_constrained=True,
         )
         self.blue_gear = self._actor_manager.add_from_usd_file(
             name="blue_gear",
-            asset_path="gear_pair_shaft_proxy.usd",
+            asset_path="gear_pair_blue.usd",
             pose=blue_pose,
             density=1e3,
-            visual_asset_path="gear_pair_blue.usd",
-            show_physics_mesh=False,
             keep_constrained=True,
         )
 
-        # The collision proxies are small enough to use Xense-scale transform
-        # targets without making the ABD solve nearly singular.
+        # Keep the real gear meshes shape-stable without replacing their
+        # collision geometry with simplified shafts.
         for gear in (self.red_gear, self.blue_gear):
             strength_ratio = gear.uipc_meshes[0].instances().find("strength_ratio")
             if strength_ratio is None:
@@ -123,7 +119,7 @@ class Task(BaseTask):
         self.metadata["reset_xy_offset"] = xy_offset.tolist()
         self.metadata["gear_center_distance"] = 0.072
         self.metadata["gear_phase_offset_deg"] = 6.0
-        self.metadata["gear_collision_proxy"] = "gear_pair_shaft_proxy.usd"
+        self.metadata["gear_collision_asset"] = "real_gear_mesh_usd"
         self.metadata["gear_constraint_translation_strength"] = 5.0e3
         self.metadata["gear_constraint_rotation_strength"] = 5.0e3
         self.metadata["red_gear_pose"] = red_pose.tolist()
@@ -169,7 +165,7 @@ class Task(BaseTask):
 
     def _step(self, is_save: bool = True):
         # The full-mesh UIPC revolute joint is prohibitively slow with Xense
-        # contact. Drive lightweight shaft targets from measured wrist motion.
+        # contact. Drive real-gear transform targets from measured wrist motion.
         self._sync_driven_gears_to_gripper()
         return super()._step(is_save=is_save)
 
@@ -235,7 +231,7 @@ class Task(BaseTask):
         self._gear_drive_angle = 0.0
         self._gear_drive_prev_gripper_pose = self._robot_manager.get_gripper_center_pose()
         self._gear_drive_enabled = True
-        self.metadata["gear_drive_mode"] = "wrist_soft_joint_proxy_1_to_1"
+        self.metadata["gear_drive_mode"] = "wrist_soft_joint_real_mesh_1_to_1"
         self.settle_xense_after_close(is_save=False)
         self.record_xense_grasp_debug("xense_after_close_red_gear", self.red_gear)
         self.metadata["gripper_close_percent"] = float(close_percent)

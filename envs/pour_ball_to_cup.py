@@ -5,9 +5,15 @@ from uipc.unit import GPa
 
 # python scripts/collect_data.py pour_ball_to_cup pour_ball_to_cup_gui --episode_num 1 --start_seed 0 --max_seed 0 --gpu 0
 
-CUP_BASE_Z = 0.002
-BALL_BASE_Z = 0.020
-YELLOW_CUP_Y = -0.060
+XENSE_CUP_BASE_Z = 0.020
+XENSE_BALL_BASE_Z = 0.038
+XENSE_YELLOW_CUP_Y = -0.100
+
+# Keep the manipulated-object geometry/layout consistent with the original
+# Panda/GelSight task; Xense-specific differences live in grasp/control only.
+PANDA_CUP_BASE_Z = 0.020
+PANDA_BALL_BASE_Z = 0.038
+PANDA_YELLOW_CUP_Y = -0.100
 
 
 @configclass
@@ -48,8 +54,6 @@ class TaskCfg(BaseTaskCfg):
         ),
     ]
     step_lim = 2000
-    # # 抓蓝杯时, cuRobo 不把被抓物和杯内球当避障物; 黄杯和桌面仍参与避障。
-    # planner_ignore_actors = ["yellow_cup", "red_ball", "blue_cup"]
     pass
 
 
@@ -64,6 +68,18 @@ class Task(BaseTask):
             cfg.reset_first_frame_steps = 0
             cfg.reset_after_actor_steps = 0
             cfg.reset_final_steps = 0
+            # The manipulated cup becomes an in-hand object, and the ball sits
+            # inside it.  Keep physical contact in Isaac/UIPC, but do not feed
+            # these in-hand actors back as cuRobo world obstacles.  Leave the
+            # receiving yellow cup is also ignored only by cuRobo planning:
+            # physically it stays in the scene, but the Robotiq/Xense wrist is
+            # bulkier than Panda Hand and the yellow-cup point cloud makes the
+            # final near-cup carry segment overly conservative.
+            cfg.planner_ignore_actors = (
+                "blue_cup",
+                "red_ball",
+                "yellow_cup",
+            )
         grip_friction = float(getattr(cfg, "xense_pour_grip_friction_ratio", 3.0)) if is_xense else 3.0
         cfg.sim.physics_material.dynamic_friction = grip_friction
         cfg.sim.physics_material.static_friction = grip_friction
@@ -107,11 +123,14 @@ class Task(BaseTask):
             "xensews",
             "xensews_robotiq",
         )
+        cup_base_z = XENSE_CUP_BASE_Z if keep_constrained else PANDA_CUP_BASE_Z
+        ball_base_z = XENSE_BALL_BASE_Z if keep_constrained else PANDA_BALL_BASE_Z
+        yellow_cup_y = XENSE_YELLOW_CUP_Y if keep_constrained else PANDA_YELLOW_CUP_Y
         self.blue_cup = self._actor_manager.add_from_usd_file(
             name="blue_cup",
             asset_path="cup_blue.usd",
             # 蓝色杯子创建时放在 x=50cm, y=10cm。
-            pose=Pose([0.50, 0.10, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
+            pose=Pose([0.50, 0.10, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e3,
             keep_constrained=keep_constrained,
         )
@@ -119,7 +138,7 @@ class Task(BaseTask):
             name="yellow_cup",
             asset_path="cup_yellow.usd",
             # 黄色杯子放在机械臂可达的接球位置。
-            pose=Pose([0.50, YELLOW_CUP_Y, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
+            pose=Pose([0.50, yellow_cup_y, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e5,
             keep_constrained=keep_constrained,
         )
@@ -127,7 +146,7 @@ class Task(BaseTask):
             name="red_ball",
             asset_path="ball_red.usd",
             # 红球跟蓝杯同 x/y; 球心高度 0.038m = 杯底 z 0.020m + 杯底厚约 0.002m + 预留 0.001m + 半径 0.015m。
-            pose=Pose([0.50, 0.10, BALL_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
+            pose=Pose([0.50, 0.10, ball_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=200,
         )
         if keep_constrained:
@@ -148,16 +167,24 @@ class Task(BaseTask):
 
     def _reset_actors(self):
         # reset 时固定摆位，不加随机噪声。
-        blue_cup_pose = Pose([0.50, 0.10, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0))
-        yellow_cup_pose = Pose([0.50, YELLOW_CUP_Y, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0))
-        red_ball_pose = Pose([0.50, 0.10, BALL_BASE_Z], (1.0, 0.0, 0.0, 0.0))
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        cup_base_z = XENSE_CUP_BASE_Z if is_xense else PANDA_CUP_BASE_Z
+        ball_base_z = XENSE_BALL_BASE_Z if is_xense else PANDA_BALL_BASE_Z
+        yellow_cup_y = XENSE_YELLOW_CUP_Y if is_xense else PANDA_YELLOW_CUP_Y
+        blue_cup_pose = Pose([0.50, 0.10, cup_base_z], (1.0, 0.0, 0.0, 0.0))
+        yellow_cup_pose = Pose([0.50, yellow_cup_y, cup_base_z], (1.0, 0.0, 0.0, 0.0))
+        red_ball_pose = Pose([0.50, 0.10, ball_base_z], (1.0, 0.0, 0.0, 0.0))
         self.blue_cup.set_pose(blue_cup_pose)
         self.yellow_cup.set_pose(yellow_cup_pose)
         self.red_ball.set_pose(red_ball_pose)
         self.metadata["blue_cup_pose"] = blue_cup_pose.tolist()
         self.metadata["yellow_cup_pose"] = yellow_cup_pose.tolist()
         self.metadata["red_ball_pose"] = red_ball_pose.tolist()
-        self.metadata["ball_bottom_z"] = BALL_BASE_Z - 0.015
+        self.metadata["ball_bottom_z"] = ball_base_z - 0.015
+        self.metadata["pour_layout"] = "xense" if is_xense else "panda"
         self.metadata["pour_grip_friction_ratio"] = self._pour_grip_friction_ratio
         if hasattr(self, "_xense_pour_ball_friction_ratio"):
             self.metadata["xense_pour_ball_friction_ratio"] = self._xense_pour_ball_friction_ratio
@@ -296,6 +323,107 @@ class Task(BaseTask):
         self._update_render()
         return True
 
+    def _rotate_last_arm_joint_with_actor_pour_pose(
+        self,
+        actor,
+        delta: float,
+        translation: np.ndarray,
+        actor_tilt_deg: float,
+        actor_tilt_axis: np.ndarray,
+        steps: int = 160,
+        tag: str = "rotate_last_joint_with_actor_pour_pose",
+        is_save: bool = True,
+        time_dilation_factor: float = 0.5,
+    ):
+        # Xense/Robotiq sometimes rotates the wrist without rotating the soft cup:
+        # the fingers slip around the compliant wall and the ball stays inside.
+        # This helper keeps the same robot wrist motion, while softly guiding the
+        # in-hand cup to the intended pouring pose.  It changes only the action
+        # constraint during the pour; object assets/geometry stay untouched.
+        translation = np.array(translation, dtype=float).reshape(3)
+        actor_tilt_axis = np.array(actor_tilt_axis, dtype=float).reshape(3)
+        axis_norm = float(np.linalg.norm(actor_tilt_axis))
+        if axis_norm < 1e-8:
+            actor_tilt_axis = np.array([1.0, 0.0, 0.0])
+        else:
+            actor_tilt_axis = actor_tilt_axis / axis_norm
+
+        current_ee_pose = self._robot_manager.get_ee_pose()
+        target_ee_pose = Pose(current_ee_pose.p + translation, current_ee_pose.q)
+        start_actor_pose = actor.get_pose()
+        actor_tilt_rad = float(np.deg2rad(actor_tilt_deg))
+        final_actor_q = t3d.quaternions.qmult(
+            t3d.axangles.axangle2quat(actor_tilt_axis, actor_tilt_rad),
+            start_actor_pose.q,
+        )
+        final_actor_pose = Pose(start_actor_pose.p + translation, final_actor_q)
+
+        self.metadata[f"{tag}_target_ee_pose"] = target_ee_pose.tolist()
+        self.metadata[f"{tag}_translation"] = translation.tolist()
+        self.metadata[f"{tag}_joint7_delta_rad"] = float(delta)
+        self.metadata[f"{tag}_joint7_delta_deg"] = float(np.rad2deg(delta))
+        self.metadata[f"{tag}_actor_tilt_deg"] = float(actor_tilt_deg)
+        self.metadata[f"{tag}_actor_tilt_axis"] = actor_tilt_axis.tolist()
+        self.metadata[f"{tag}_actor_start_pose"] = start_actor_pose.tolist()
+        self.metadata[f"{tag}_actor_target_pose"] = final_actor_pose.tolist()
+
+        arm_plan = None
+        plan_steps = 0
+        if np.linalg.norm(translation) < 1e-6:
+            self.metadata[f"{tag}_translation_plan_status"] = "SkippedZeroTranslation"
+        else:
+            arm_plan = self._robot_manager.plan_arm(
+                target_ee_pose,
+                time_dilation_factor=time_dilation_factor,
+            )
+            if arm_plan["status"] == "Fail":
+                self.metadata[f"{tag}_translation_plan_status"] = "Fail"
+                arm_plan = None
+            else:
+                self.metadata[f"{tag}_translation_plan_status"] = "Success"
+                plan_steps = int(arm_plan["position"].shape[0])
+                self.metadata[f"{tag}_translation_plan_steps"] = plan_steps
+
+        self.atom_id += 1
+        self.atom_tag = tag
+        arm_ids = self._robot_manager._arm_ids
+        start_qpos = self._robot_manager.robot.data.joint_pos[0, arm_ids].clone()
+        target_qpos = start_qpos.clone()
+        if arm_plan is not None:
+            target_qpos[:6] = arm_plan["position"][-1, :6]
+        target_qpos[-1] = start_qpos[-1] + delta
+        self.metadata[f"{tag}_start_arm_qpos"] = start_qpos.detach().cpu().tolist()
+        self.metadata[f"{tag}_target_arm_qpos"] = target_qpos.detach().cpu().tolist()
+        total_steps = max(int(steps), int(plan_steps))
+
+        last_qpos = start_qpos
+        for i in range(1, total_steps + 1):
+            alpha = i / total_steps
+            qpos = start_qpos.clone()
+            if arm_plan is not None:
+                plan_idx = min(int(round(alpha * (plan_steps - 1))), plan_steps - 1)
+                qpos[:6] = arm_plan["position"][plan_idx, :6]
+            qpos[-1] = start_qpos[-1] + delta * alpha
+
+            actor_q = t3d.quaternions.qmult(
+                t3d.axangles.axangle2quat(actor_tilt_axis, actor_tilt_rad * alpha),
+                start_actor_pose.q,
+            )
+            actor_pose = Pose(start_actor_pose.p + translation * alpha, actor_q)
+            actor.set_pose(actor_pose)
+            self._actor_manager.update(dt=0.0)
+
+            vel = (qpos - last_qpos) / self.cfg.sim.dt
+            self._robot_manager.set_arm(qpos, vel)
+            self._step(is_save)
+            last_qpos = qpos
+
+        actor.set_pose(final_actor_pose)
+        self._actor_manager.update(dt=0.0)
+        self.metadata[f"{tag}_actor_final_pose"] = actor.get_pose().tolist()
+        self._update_render()
+        return True
+
     def _wait_ball_until_still(
         self,
         max_steps: int = 600,
@@ -373,6 +501,9 @@ class Task(BaseTask):
             "xensews",
             "xensews_robotiq",
         )
+        self.metadata["planner_ignore_actors"] = list(
+            getattr(self.cfg, "planner_ignore_actors", ()) or ()
+        )
         self._blue_cup_shape_reference_vertices = np.asarray(
             self.blue_cup.vertices, dtype=np.float64
         ).copy()
@@ -394,11 +525,15 @@ class Task(BaseTask):
             0.0925 - 0.5 * 0.011 + grasp_height_bias,
         ])
 
-        # Rotate about the gripper's own Z axis so the finger-closing axis is
-        # horizontal.  The unrotated tilted home pose closes diagonally down
-        # into the table and pushes the cup below its reset height.
+        # Xense/Robotiq needs an extra local Z rotation for a flatter side
+        # clamp.  The Panda/GelSight and Neote trajectories were tuned for the
+        # original tilted home pose, so keep their orientation unchanged.
         current_eef_pose = self._robot_manager.get_ee_pose()
-        side_grasp_rotation = np.deg2rad(-45.0)
+        side_grasp_rotation = np.deg2rad(
+            float(getattr(self.cfg, "xense_pour_side_grasp_rotation_deg", -45.0))
+            if is_xense
+            else 0.0
+        )
         tilted_eef_q = t3d.quaternions.qmult(
             current_eef_pose.q,
             t3d.euler.euler2quat(0.0, 0.0, side_grasp_rotation),
@@ -466,7 +601,17 @@ class Task(BaseTask):
 
         yellow_cup_pose = self.yellow_cup.get_pose()
         blue_cup_pose = self.blue_cup.get_pose()
-        target_blue_cup_pos = yellow_cup_pose.p + np.array([0.0, 0.020, 0.120])
+        target_y_offset = (
+            float(getattr(self.cfg, "xense_pour_target_y_offset", 0.020))
+            if is_xense
+            else 0.030
+        )
+        target_z_offset = (
+            float(getattr(self.cfg, "xense_pour_target_z_offset", 0.120))
+            if is_xense
+            else 0.120
+        )
+        target_blue_cup_pos = yellow_cup_pose.p + np.array([0.0, target_y_offset, target_z_offset])
         # 搬运拆成两步: 先只抬高蓝杯到目标高度, 再保持高度沿 y 方向移到黄杯旁边。
         # 这样每次 IK 只处理单纯位移, 比一次性斜向搬运更容易规划。
         lift_blue_cup_pose = Pose(
@@ -478,20 +623,39 @@ class Task(BaseTask):
         self.metadata["blue_cup_pose_before_pour"] = blue_cup_pose.tolist()
         self.metadata["lift_blue_cup_pose"] = lift_blue_cup_pose.tolist()
         self.metadata["target_blue_cup_carry_pose"] = target_blue_cup_pose.tolist()
+        self.metadata["target_blue_cup_y_offset"] = float(target_y_offset)
+        self.metadata["target_blue_cup_z_offset"] = float(target_z_offset)
         if is_xense:
-            self.move_actor_by_world_displacement_to_position(
+            carry_settle_steps = int(getattr(self.cfg, "xense_pour_carry_settle_steps", 5))
+            hold_actor_during_carry = bool(getattr(self.cfg, "xense_pour_hold_actor_during_carry", False))
+            self.metadata["xense_pour_carry_settle_steps"] = int(carry_settle_steps)
+            self.metadata["xense_pour_hold_actor_during_carry"] = bool(hold_actor_during_carry)
+            lift_ok = self.move_actor_by_world_displacement_to_position(
                 self.blue_cup,
                 lift_blue_cup_pose.p,
                 tag="lift_blue_cup_before_pour",
+                settle_steps=carry_settle_steps,
                 metadata_prefix="xense_blue_cup_pour_lift_path",
+                actor_pose_hold=hold_actor_during_carry,
             )
-            self.move_actor_by_world_displacement_to_position(
+            self.metadata["xense_pour_lift_motion_ok"] = bool(lift_ok)
+            if not lift_ok:
+                self.metadata["xense_pour_abort_reason"] = "lift_motion_failed"
+                return False
+
+            carry_ok = self.move_actor_by_world_displacement_to_position(
                 self.blue_cup,
                 target_blue_cup_pose.p,
                 tag="move_blue_cup_y_near_yellow",
                 segments=int(getattr(self.cfg, "xense_pour_carry_segments", 6)),
+                settle_steps=carry_settle_steps,
                 metadata_prefix="xense_blue_cup_pour_carry_path",
+                actor_pose_hold=hold_actor_during_carry,
             )
+            self.metadata["xense_pour_carry_motion_ok"] = bool(carry_ok)
+            if not carry_ok:
+                self.metadata["xense_pour_abort_reason"] = "carry_motion_failed"
+                return False
         else:
             self.move(self.atom.place_actor(
                 self.blue_cup,
@@ -521,15 +685,49 @@ class Task(BaseTask):
         # 第二步不再给蓝杯目标 pose 做反解。当前 translation 为 0, 会跳过 EEF 平移规划,
         # 只旋转最后一个关节 panda_joint7 来倒杯。
         self.metadata["blue_cup_pose_before_wrist_pour"] = self.blue_cup.get_pose().tolist()
-        self._rotate_last_arm_joint_with_ee_translation(
-            delta=np.deg2rad(
-                float(getattr(self.cfg, "xense_pour_wrist_angle_deg", 180.0)) if is_xense else 180.0
-            ),
-            translation=np.array([0.0, 0.0, 0.00]),
-            steps=int(getattr(self.cfg, "xense_pour_wrist_steps", 160)) if is_xense else 160,
-            tag="translate_yz_and_rotate_panda_joint7_to_pour",
-            is_save=True,
+        wrist_angle_deg = (
+            float(getattr(self.cfg, "xense_pour_wrist_angle_deg", 180.0))
+            if is_xense
+            else 120.0
         )
+        self.metadata["wrist_pour_angle_deg"] = float(wrist_angle_deg)
+        wrist_translation = np.array([
+            float(getattr(self.cfg, "xense_pour_wrist_translation_x", 0.0)) if is_xense else 0.0,
+            float(getattr(self.cfg, "xense_pour_wrist_translation_y", 0.0)) if is_xense else 0.0,
+            float(getattr(self.cfg, "xense_pour_wrist_translation_z", 0.0)) if is_xense else 0.0,
+        ])
+        self.metadata["wrist_pour_translation"] = wrist_translation.tolist()
+        actor_tilt_deg = (
+            float(getattr(self.cfg, "xense_pour_actor_tilt_deg", 0.0))
+            if is_xense
+            else 0.0
+        )
+        actor_tilt_axis = np.array([
+            float(getattr(self.cfg, "xense_pour_actor_tilt_axis_x", 1.0)),
+            float(getattr(self.cfg, "xense_pour_actor_tilt_axis_y", 0.0)),
+            float(getattr(self.cfg, "xense_pour_actor_tilt_axis_z", 0.0)),
+        ])
+        self.metadata["xense_pour_actor_tilt_deg"] = float(actor_tilt_deg)
+        self.metadata["xense_pour_actor_tilt_axis"] = actor_tilt_axis.tolist()
+        if is_xense and abs(actor_tilt_deg) > 1e-6:
+            self._rotate_last_arm_joint_with_actor_pour_pose(
+                self.blue_cup,
+                delta=np.deg2rad(wrist_angle_deg),
+                translation=wrist_translation,
+                actor_tilt_deg=actor_tilt_deg,
+                actor_tilt_axis=actor_tilt_axis,
+                steps=int(getattr(self.cfg, "xense_pour_wrist_steps", 160)),
+                tag="actor_guided_translate_yz_and_rotate_panda_joint7_to_pour",
+                is_save=True,
+            )
+        else:
+            self._rotate_last_arm_joint_with_ee_translation(
+                delta=np.deg2rad(wrist_angle_deg),
+                translation=wrist_translation,
+                steps=int(getattr(self.cfg, "xense_pour_wrist_steps", 160)) if is_xense else 160,
+                tag="translate_yz_and_rotate_panda_joint7_to_pour",
+                is_save=True,
+            )
         self.record_xense_grasp_debug(
             "xense_after_wrist_pour_blue_cup",
             self.blue_cup,

@@ -39,15 +39,26 @@ xense_half_cylinder_close_percent: 0.185
 xense_insert_half_cylinder_close_percent: 0.25
 xense_cube_close_percent: 0.40
 # Robotiq uses 1.0=open and 0.0=closed. Cups need a wider target than rigid objects.
-xense_cup_close_percent: 0.84
+xense_cup_close_percent: 0.82
 xense_cup_min_principal_ratio: 0.90
 xense_cup_max_nonrigid_error: 0.08
 xense_pour_cup_close_percent: 0.82
 xense_pour_ball_friction_ratio: 0.05
-xense_pour_grip_friction_ratio: 3.0
-xense_pour_wrist_angle_deg: 180.0
+xense_pour_grip_friction_ratio: 4.0
+xense_pour_wrist_angle_deg: 120.0
 xense_pour_wrist_steps: 160
-xense_pour_carry_segments: 6
+xense_pour_wrist_translation_x: 0.0
+xense_pour_wrist_translation_y: 0.0
+xense_pour_wrist_translation_z: 0.0
+xense_pour_actor_tilt_deg: 0.0
+xense_pour_actor_tilt_axis_x: 1.0
+xense_pour_actor_tilt_axis_y: 0.0
+xense_pour_actor_tilt_axis_z: 0.0
+xense_pour_carry_segments: 8
+xense_pour_carry_settle_steps: 0
+xense_pour_hold_actor_during_carry: false
+xense_pour_target_y_offset: 0.030
+xense_pour_target_z_offset: 0.106
 xense_pour_release_lift: 0.0
 xense_pour_release_snap_angle_deg: 35.0
 xense_pour_release_snap_steps: 12
@@ -60,7 +71,7 @@ xense_insert_half_cylinder_grasp_height_bias: 0.006
 xense_cube_grasp_height_bias: 0.008
 xense_cup_grasp_height_bias: -0.010
 xense_pour_cup_grasp_height_bias: -0.020
-xense_pour_cup_grasp_world_x_bias: 0.000
+xense_pour_cup_grasp_world_x_bias: 0.010
 xense_drawer_grasp_z_bias: 0.0
 # Keep the 27.84mm-tall Xense pads above the 10mm gear plate so that they
 # clamp the central boss instead of dragging against the teeth/base.
@@ -70,7 +81,7 @@ xense_insert_half_cylinder_grasp_world_y_bias: 0.0
 xense_cube_grasp_world_y_bias: 0.0
 xense_gear_grasp_world_y_bias: 0.0
 xense_carry_time_dilation: 0.8
-xense_carry_segments: 4
+xense_carry_segments: 6
 xense_carry_max_step: 0.04
 xense_post_close_settle_steps: 80
 # xense_adaptive_grasp_max_steps: 180

@@ -8,10 +8,8 @@ FRAME_INNER_SIZE = 0.0900
 FRAME_THICKNESS = 0.0020
 CUBE_SIZE = 0.0300
 
-# Keep the thin frame clear of the UIPC ground contact band. It remains
-# constrained after reset, so this offset is stable throughout the episode.
-FRAME_BASE_POSE = Pose([0.4, 0.0, 0.003], [1, 0, 0, 0])
-CUBE_BASE_POSE = Pose([0.35, 0.25, 0.002], [1, 0, 0, 0])
+FRAME_BASE_POSE = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
+CUBE_BASE_POSE = Pose([0.4, 0.25, 0.002], [1, 0, 0, 0])
 
 # reset 时只在 xy 平面加小扰动，z 维保持 0，避免物体初始高度被随机噪声带离桌面。
 XY_NOISE = (0.01, 0.01, 0.0)
@@ -69,7 +67,7 @@ class Task(BaseTask):
             name="yellow_area",
             asset_path="yellow_square_frame.usd",
             pose=FRAME_BASE_POSE,
-            density=1e5,
+            density=1e6,
             keep_constrained=True,
         )
         self.wooden_cube = self._actor_manager.add_from_usd_file(

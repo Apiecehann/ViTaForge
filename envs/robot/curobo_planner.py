@@ -4,7 +4,7 @@ import transforms3d as t3d
 from curobo.types.robot import JointState
 from curobo.util.usd_helper import UsdHelper, WorldConfig
 from curobo.types.math import Pose as CuroboPose
-from curobo.geom.types import Mesh
+from curobo.geom.types import Cuboid, Mesh
 from curobo.geom.sdf.world import CollisionCheckerType
 from curobo.wrap.reacher.motion_gen import (
     MotionGen,
@@ -93,9 +93,26 @@ class CuroboPlanner:
             ],
         ).get_collision_check_world()
 
+        ignore_actors = set(getattr(self.task.cfg, "planner_ignore_actors", ()) or ())
         for name, actor in self.task._actor_manager.actors.items():
+            if name in ignore_actors:
+                continue
             mesh = Mesh.from_pointcloud(actor.vertices, pitch=0.005, name=name)
             obstacles.add_obstacle(mesh)
+        if (
+            len(getattr(obstacles, "cuboid", []) or []) == 0
+            and len(getattr(obstacles, "mesh", []) or []) == 0
+            and len(getattr(obstacles, "sphere", []) or []) == 0
+            and len(getattr(obstacles, "capsule", []) or []) == 0
+            and len(getattr(obstacles, "cylinder", []) or []) == 0
+        ):
+            obstacles.add_obstacle(
+                Cuboid(
+                    name="planner_dummy_far_obstacle",
+                    pose=[10.0, 10.0, 10.0, 1.0, 0.0, 0.0, 0.0],
+                    dims=[0.001, 0.001, 0.001],
+                )
+            )
         return obstacles
 
     def update_world(self):

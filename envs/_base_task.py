@@ -84,6 +84,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     viewer.lookat = (-3.0, -4.5, -0.6)
 
     step_lim = 300
+    planner_ignore_actors: tuple[str, ...] = ()
 
     save_dir = "auto"
     obs_data_type = {}
@@ -179,7 +180,19 @@ class BaseTaskCfg(DirectRLEnvCfg):
     xense_pour_grip_friction_ratio: float = 3.0
     xense_pour_wrist_angle_deg: float = 180.0
     xense_pour_wrist_steps: int = 160
+    xense_pour_wrist_translation_x: float = 0.0
+    xense_pour_wrist_translation_y: float = 0.0
+    xense_pour_wrist_translation_z: float = 0.0
+    xense_pour_actor_tilt_deg: float = 0.0
+    xense_pour_actor_tilt_axis_x: float = 1.0
+    xense_pour_actor_tilt_axis_y: float = 0.0
+    xense_pour_actor_tilt_axis_z: float = 0.0
     xense_pour_carry_segments: int = 6
+    xense_pour_carry_settle_steps: int = 5
+    xense_pour_hold_actor_during_carry: bool = False
+    xense_pour_target_y_offset: float = 0.020
+    xense_pour_target_z_offset: float = 0.120
+    xense_pour_cup_grasp_height_bias: float = 0.0
     xense_pour_release_lift: float = 0.04
     xense_pour_release_snap_angle_deg: float = 35.0
     xense_pour_release_snap_steps: int = 12
@@ -1016,6 +1029,7 @@ class BaseTask(UipcRLEnv):
         settle_steps: int = 5,
         time_dilation_factor: float | None = None,
         metadata_prefix: str | None = None,
+        actor_pose_hold: bool = False,
     ):
         """Move an in-hand actor by commanding bounded world-frame EE displacements."""
         target_position = np.asarray(target_position, dtype=float).reshape(3)
@@ -1042,7 +1056,9 @@ class BaseTask(UipcRLEnv):
             self.metadata[f"{metadata_prefix}_actual_position_errors"] = []
             self.metadata[f"{metadata_prefix}_gripper_center_poses"] = []
             self.metadata[f"{metadata_prefix}_actual_gripper_center_poses"] = []
+            self.metadata[f"{metadata_prefix}_actor_pose_hold"] = bool(actor_pose_hold)
 
+        start_actor_pose_for_hold = actor.get_pose()
         if np.linalg.norm(total_delta) < 1e-8:
             if metadata_prefix is not None:
                 self.metadata[f"{metadata_prefix}_skipped"] = True
@@ -1065,6 +1081,18 @@ class BaseTask(UipcRLEnv):
             if metadata_prefix is not None:
                 self.metadata[f"{metadata_prefix}_commanded_step_deltas"].append(step_delta.tolist())
                 self.metadata[f"{metadata_prefix}_gripper_center_poses"].append(gripper_center_pose.tolist())
+
+            if actor_pose_hold:
+                held_actor_pose = Pose(
+                    start_actor_position + total_delta * alpha,
+                    start_actor_pose_for_hold.q,
+                )
+                actor.set_pose(held_actor_pose)
+                self._actor_manager.update(dt=0.0)
+                if metadata_prefix is not None:
+                    self.metadata.setdefault(f"{metadata_prefix}_held_actor_target_poses", []).append(
+                        held_actor_pose.tolist()
+                    )
 
             ok = self.move(
                 [Action("move", target_pose=ee_pose)],
