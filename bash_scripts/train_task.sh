@@ -12,13 +12,15 @@
 set -euo pipefail
 
 ROOT_DIR="/root/gpufree-data/UniVTAC"
-TASK_ARG="${1:-insert_usb}"
-CONFIG_ARG="${2:-demo}"
+TASK_ARG="${1:-all}"
+CONFIG_ARG="${2:-neote}"
 EXPERT_DATA_NUM="${3:-100}"
 GPU="${4:-0}"
 TRAIN_CONFIG="${5:-train_config}"
 SEED="${6:-0}"
-REPROCESS="${REPROCESS:-0}"
+# Reprocess by default so ACT data follows the current full-trajectory HDF5
+# convention, including pre_move frames when save_pre_move is enabled.
+REPROCESS="${REPROCESS:-1}"
 
 TASKS=(
     insert_usb
@@ -75,13 +77,21 @@ for task in "${RUN_TASKS[@]}"; do
         echo
         echo "===== ACT train: task=${task}, config=${config}, episodes=${EXPERT_DATA_NUM}, tactile=${tactile_key} ====="
 
-        if [[ "${REPROCESS}" == "1" || ! -d "${processed_dir}" ]]; then
+        processed_count=0
+        if [[ -d "${processed_dir}" ]]; then
+            processed_count=$(find "${processed_dir}" -maxdepth 1 -name 'episode_*.hdf5' | wc -l | tr -d ' ')
+        fi
+
+        if [[ "${REPROCESS}" == "1" || "${processed_count}" -lt "${EXPERT_DATA_NUM}" ]]; then
+            if [[ "${REPROCESS}" != "1" && "${processed_count}" -gt 0 ]]; then
+                echo "Processed data incomplete (${processed_count}/${EXPERT_DATA_NUM}), reprocessing: ${processed_dir}"
+            fi
             (
                 cd "${ROOT_DIR}/policy/ACT"
                 TACTILE_KEY="${tactile_key}" python process_data.py "${task}" "${config}" "${EXPERT_DATA_NUM}"
             )
         else
-            echo "Processed data exists, skip: ${processed_dir}"
+            echo "Processed data exists (${processed_count}/${EXPERT_DATA_NUM}), skip: ${processed_dir}"
         fi
 
         (

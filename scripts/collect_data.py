@@ -193,6 +193,13 @@ def main():
     env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
     if "reset_time_limit" in task_config:
         env_cfg.reset_time_limit = float(task_config["reset_time_limit"])
+    for key in (
+        "reset_first_frame_steps",
+        "reset_after_actor_steps",
+        "reset_final_steps",
+    ):
+        if key in task_config:
+            setattr(env_cfg, key, int(task_config[key]))
     if "video_size" in task_config:
         env_cfg.video_size = tuple(task_config["video_size"])
     elif env_cfg.tactile_sensor_type in ("xensews", "xensews_robotiq"):
@@ -211,6 +218,39 @@ def main():
         env_cfg.adaptive_grasp_depth_threshold = float(task_config["adaptive_grasp_depth_threshold"])
     xense_tuning_types = {
         "xense_usb_close_percent": float,
+        "xense_half_cylinder_close_percent": float,
+        "xense_insert_half_cylinder_close_percent": float,
+        "xense_cube_close_percent": float,
+        "xense_cup_close_percent": float,
+        "xense_cup_min_principal_ratio": float,
+        "xense_cup_max_nonrigid_error": float,
+        "xense_pour_cup_close_percent": float,
+        "xense_pour_ball_friction_ratio": float,
+        "xense_pour_grip_friction_ratio": float,
+        "xense_pour_wrist_angle_deg": float,
+        "xense_pour_wrist_steps": int,
+        "xense_pour_carry_segments": int,
+        "xense_pour_release_lift": float,
+        "xense_pour_release_snap_angle_deg": float,
+        "xense_pour_release_snap_steps": int,
+        "xense_pour_release_snap_cycles": int,
+        "xense_pour_fix_cup_during_release": bool,
+        "xense_drawer_close_percent": float,
+        "xense_gear_close_percent": float,
+        "xense_half_cylinder_grasp_height_bias": float,
+        "xense_insert_half_cylinder_grasp_height_bias": float,
+        "xense_cube_grasp_height_bias": float,
+        "xense_cup_grasp_height_bias": float,
+        "xense_pour_cup_grasp_height_bias": float,
+        "xense_pour_cup_grasp_world_x_bias": float,
+        "xense_drawer_grasp_z_bias": float,
+        "xense_gear_grasp_height_bias": float,
+        "xense_half_cylinder_grasp_world_y_bias": float,
+        "xense_insert_half_cylinder_grasp_world_y_bias": float,
+        "xense_cube_grasp_world_y_bias": float,
+        "xense_gear_grasp_world_y_bias": float,
+        "xense_carry_time_dilation": float,
+        "xense_carry_segments": int,
         "xense_post_close_settle_steps": int,
         "xense_adaptive_grasp_max_steps": int,
         "xense_adaptive_grasp_check_interval": int,

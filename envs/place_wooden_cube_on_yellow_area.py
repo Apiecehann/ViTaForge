@@ -8,7 +8,9 @@ FRAME_INNER_SIZE = 0.0900
 FRAME_THICKNESS = 0.0020
 CUBE_SIZE = 0.0300
 
-FRAME_BASE_POSE = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
+# Keep the thin frame clear of the UIPC ground contact band. It remains
+# constrained after reset, so this offset is stable throughout the episode.
+FRAME_BASE_POSE = Pose([0.4, 0.0, 0.003], [1, 0, 0, 0])
 CUBE_BASE_POSE = Pose([0.35, 0.25, 0.002], [1, 0, 0, 0])
 
 # reset 时只在 xy 平面加小扰动，z 维保持 0，避免物体初始高度被随机噪声带离桌面。
@@ -50,6 +52,13 @@ class TaskCfg(BaseTaskCfg):
 
 class Task(BaseTask):
     def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
+        if getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            # Advancing the constrained frame and cube together can make the
+            # first UIPC reset step take minutes. pre_move starts with ten
+            # unsaved settling steps after the cube constraint is released.
+            cfg.reset_first_frame_steps = 0
+            cfg.reset_after_actor_steps = 0
+            cfg.reset_final_steps = 0
         cfg.sim.physics_material.dynamic_friction = 2.5
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
@@ -60,7 +69,8 @@ class Task(BaseTask):
             name="yellow_area",
             asset_path="yellow_square_frame.usd",
             pose=FRAME_BASE_POSE,
-            density=1e6,
+            density=1e5,
+            keep_constrained=True,
         )
         self.wooden_cube = self._actor_manager.add_from_usd_file(
             name="wooden_cube",
@@ -122,8 +132,19 @@ class Task(BaseTask):
         cube_pose = self.wooden_cube.get_pose()
         # 抓取姿态以方块中心为基准，上移到半高附近；绕局部 y 轴加少量随机旋转，提高数据多样性。
         grasp_rotate = self.rng.uniform(-GRASP_ROTATE_NOISE, GRASP_ROTATE_NOISE)
-        grasp_height = GRASP_HEIGHT + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
-        target_pose = cube_pose.add_bias([0.0, 0.0, grasp_height]).add_rotation([0.0, grasp_rotate, 0.0])
+        grasp_height_bias = self.get_xense_grasp_height_bias("xense_cube_grasp_height_bias")
+        grasp_world_y_bias = self.get_xense_grasp_height_bias("xense_cube_grasp_world_y_bias")
+        grasp_height = (
+            GRASP_HEIGHT
+            + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
+            + grasp_height_bias
+        )
+        target_pose = (
+            cube_pose
+            .add_bias([0.0, 0.0, grasp_height])
+            .add_bias([0.0, grasp_world_y_bias, 0.0], coord="world")
+            .add_rotation([0.0, grasp_rotate, 0.0])
+        )
         target_mat = target_pose.to_transformation_matrix()
         # construct_grasp_pose 需要抓取点、接近方向和夹爪横向方向；这里沿目标局部 z 方向接近。
         grasp_pose = construct_grasp_pose(
@@ -134,32 +155,64 @@ class Task(BaseTask):
         # register_point 会把抓取点注册到物体局部坐标，用于后续 atom.grasp_actor 生成接近轨迹。
         contact_point_id = self.wooden_cube.register_point(grasp_pose, type="contact")
 
-        self.move(self.atom.grasp_actor(
+        approach_actions = self.atom.grasp_actor(
             self.wooden_cube,
             contact_point_id=contact_point_id,
             is_close=False,
             pre_dis=0.05,
-        ), tag="approach_wooden_cube")
-        self.move(self.atom.close_gripper(), tag="close_wooden_cube")
+        )
+        self.move(approach_actions, tag="approach_wooden_cube")
+        self.record_xense_grasp_debug("xense_after_approach_wooden_cube", self.wooden_cube)
+
+        close_percent = self.get_xense_close_percent("xense_cube_close_percent")
+        self.move(self.atom.close_gripper(pos=close_percent), tag="close_wooden_cube")
+        self.settle_xense_after_close(is_save=False)
+        self.record_xense_grasp_debug("xense_after_close_wooden_cube", self.wooden_cube)
 
         self.metadata["grasp_rotate_rad"] = float(grasp_rotate)
         self.metadata["grasp_rotate_deg"] = float(np.rad2deg(grasp_rotate))
         self.metadata["grasp_height"] = float(grasp_height)
+        self.metadata["grasp_height_bias"] = float(grasp_height_bias)
+        self.metadata["grasp_world_y_bias"] = float(grasp_world_y_bias)
+        self.metadata["gripper_close_percent"] = float(close_percent)
         self.metadata["grasp_pose"] = grasp_pose.tolist()
 
     def _play_once(self):
-        # 抓牢后先竖直上提 3cm，给方块离开桌面和越过黄色区域边框留出余量。
-        self.move(self.atom.move_by_displacement(z=LIFT_HEIGHT), tag="lift_wooden_cube")
-
-        # 根据当前黄色区域位置采样本轮放置目标；该函数同时会把噪声和目标位姿写入 metadata。
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq")
         place_pose = self._sample_place_pose()
-        self.move(self.atom.place_actor(
-            self.wooden_cube,
-            target_pose=place_pose,
-            pre_dis=0.02,
-            dis=0.005,
-            is_open=False,
-        ), tag="place_wooden_cube_on_yellow_area", time_dilation_factor=0.5)
+
+        if is_xense:
+            cube_pose = self.wooden_cube.get_pose()
+            lift_position = cube_pose.p + np.array([0.0, 0.0, LIFT_HEIGHT])
+            self.move_actor_by_world_displacement_to_position(
+                self.wooden_cube,
+                lift_position,
+                tag="lift_wooden_cube",
+                metadata_prefix="xense_wooden_cube_lift_path",
+            )
+            pre_place_position = place_pose.p + np.array([0.0, 0.0, 0.04])
+            self.move_actor_by_world_displacement_to_position(
+                self.wooden_cube,
+                pre_place_position,
+                tag="carry_wooden_cube_above_yellow_area",
+                metadata_prefix="xense_wooden_cube_carry_path",
+            )
+            self.move_actor_by_world_displacement_to_position(
+                self.wooden_cube,
+                place_pose.p,
+                tag="place_wooden_cube_on_yellow_area",
+                metadata_prefix="xense_wooden_cube_place_path",
+            )
+        else:
+            # 抓牢后先竖直上提 3cm，给方块离开桌面和越过黄色区域边框留出余量。
+            self.move(self.atom.move_by_displacement(z=LIFT_HEIGHT), tag="lift_wooden_cube")
+            self.move(self.atom.place_actor(
+                self.wooden_cube,
+                target_pose=place_pose,
+                pre_dis=0.02,
+                dis=0.005,
+                is_open=False,
+            ), tag="place_wooden_cube_on_yellow_area", time_dilation_factor=0.5)
         self.move(self.atom.open_gripper(0.5), tag="release_wooden_cube")
         # 松爪后不保存等待帧，避免把纯稳定过程混入动作数据，同时让 success 检查读到更稳定的物理状态。
         self.delay(20, is_save=False)

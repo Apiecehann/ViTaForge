@@ -56,3 +56,16 @@ textures.zip
 /data_force/
 /_working_backups/
 /third_party/IsaacLab/
+
+# Local experiment outputs and large generated artifacts
+/logs/
+/data_compare/
+/success_task_videos/
+/.codex_backups/
+/.codex_tmp/
+/policy/ACT/act_ckpt/
+/policy/ACT/data/
+**/*.ckpt
+**/*.hdf5
+**/*.mp4
+**/*.png

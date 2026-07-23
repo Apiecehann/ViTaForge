@@ -197,7 +197,7 @@ def create_franka_xensews_gripper(data_type:list[str]):
     return RobotCfg(
         robot=robot,
         tactiles=tactiles,
-        gripper_offset=0.138,
+        gripper_offset=0.1644,
         gripper_max_qpos=abs(robotiq_close_qpos - robotiq_open_qpos),
         gripper_open_qpos=robotiq_open_qpos,
         gripper_close_qpos=robotiq_close_qpos,

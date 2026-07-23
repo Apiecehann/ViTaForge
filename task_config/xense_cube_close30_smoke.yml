@@ -3,7 +3,7 @@ save_dir: ./data
 decimation: 1
 
 save_frequency: 20
-video_frequency: 2
+video_frequency: 12
 video_size: [1760, 700]
 reset_time_limit: 600
 # Heavy UIPC actor meshes only need one constrained step to initialize/reset.
@@ -33,13 +33,13 @@ tactile_video_key: rgb_marker
 # here for quick tuning without editing Python files.
 xense_use_baseline_filter: false
 use_adaptive_grasp: false
-adaptive_grasp_depth_threshold: 27.0
+# adaptive_grasp_depth_threshold: 27.0
 xense_usb_close_percent: 0.185
 xense_half_cylinder_close_percent: 0.185
-xense_insert_half_cylinder_close_percent: 0.25
-xense_cube_close_percent: 0.40
+xense_insert_half_cylinder_close_percent: 0.185
+xense_cube_close_percent: 0.30
 # Robotiq uses 1.0=open and 0.0=closed. Cups need a wider target than rigid objects.
-xense_cup_close_percent: 0.84
+xense_cup_close_percent: 0.82
 xense_cup_min_principal_ratio: 0.90
 xense_cup_max_nonrigid_error: 0.08
 xense_pour_cup_close_percent: 0.82
@@ -53,14 +53,13 @@ xense_pour_release_snap_angle_deg: 35.0
 xense_pour_release_snap_steps: 12
 xense_pour_release_snap_cycles: 0
 xense_pour_fix_cup_during_release: true
-xense_drawer_close_percent: 0.25
-xense_gear_close_percent: 0.40
+xense_drawer_close_percent: 0.0
+xense_gear_close_percent: 0.35
 xense_half_cylinder_grasp_height_bias: 0.010
-xense_insert_half_cylinder_grasp_height_bias: 0.006
+xense_insert_half_cylinder_grasp_height_bias: 0.001
 xense_cube_grasp_height_bias: 0.008
 xense_cup_grasp_height_bias: -0.010
 xense_pour_cup_grasp_height_bias: -0.020
-xense_pour_cup_grasp_world_x_bias: 0.000
 xense_drawer_grasp_z_bias: 0.0
 # Keep the 27.84mm-tall Xense pads above the 10mm gear plate so that they
 # clamp the central boss instead of dragging against the teeth/base.

@@ -174,11 +174,26 @@ class RobotManager:
         self.robot.set_joint_position_target(pos, joint_ids=self._arm_ids, env_ids=env_ids)
         if vel is not None:
             self.robot.set_joint_velocity_target(vel, joint_ids=self._arm_ids, env_ids=env_ids)
-        if force and self.robot_type != 'franka_robotiq':
-            self.robot.root_physx_view.set_dof_positions(
-                self.robot._data.joint_pos_target,
-                self.robot._ALL_INDICES
-            )
+        if force:
+            if self.robot_type == 'franka_robotiq':
+                # Track Curobo exactly for the arm while leaving the Robotiq
+                # finger/mimic joints under physical PD control.
+                arm_pos = pos.unsqueeze(0) if pos.ndim == 1 else pos
+                if vel is None:
+                    arm_vel = torch.zeros_like(arm_pos)
+                else:
+                    arm_vel = vel.unsqueeze(0) if vel.ndim == 1 else vel
+                self.robot.write_joint_state_to_sim(
+                    arm_pos,
+                    arm_vel,
+                    joint_ids=self._arm_ids,
+                    env_ids=env_ids,
+                )
+            else:
+                self.robot.root_physx_view.set_dof_positions(
+                    self.robot._data.joint_pos_target,
+                    self.robot._ALL_INDICES
+                )
 
     def _map_gripper_command(self, value: torch.Tensor | float | int):
         value = torch.as_tensor(value, dtype=torch.float32, device=self.device).flatten()

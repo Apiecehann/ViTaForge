@@ -145,8 +145,23 @@ class Task(BaseTask):
         target_pose = self.target_block.get_pose()
         # 以目标半圆柱当前位姿为基准，在半高附近构造抓取点，并绕局部 y 轴加入少量随机旋转。
         grasp_rotate = self.rng.uniform(-GRASP_ROTATE_NOISE, GRASP_ROTATE_NOISE)
-        grasp_height = GRASP_HEIGHT + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
-        grasp_target_pose = target_pose.add_bias([0.0, 0.0, grasp_height]).add_rotation([0.0, grasp_rotate, 0.0])
+        grasp_height_bias = self.get_xense_grasp_height_bias(
+            "xense_half_cylinder_grasp_height_bias"
+        )
+        grasp_world_y_bias = self.get_xense_grasp_height_bias(
+            "xense_half_cylinder_grasp_world_y_bias"
+        )
+        grasp_height = (
+            GRASP_HEIGHT
+            + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
+            + grasp_height_bias
+        )
+        grasp_target_pose = (
+            target_pose
+            .add_bias([0.0, 0.0, grasp_height])
+            .add_bias([0.0, grasp_world_y_bias, 0.0], coord="world")
+            .add_rotation([0.0, grasp_rotate, 0.0])
+        )
         target_mat = grasp_target_pose.to_transformation_matrix()
         # construct_grasp_pose 使用目标点、接近方向和夹爪横向方向，生成机器人末端抓取姿态。
         grasp_pose = construct_grasp_pose(
@@ -157,18 +172,60 @@ class Task(BaseTask):
         # 将抓取点注册到目标 actor 局部坐标系，后续 grasp_actor 会按该 contact point 规划接近动作。
         contact_point_id = self.target_block.register_point(grasp_pose, type="contact")
 
-        self.move(self.atom.grasp_actor(
+        approach_actions = self.atom.grasp_actor(
             self.target_block,
             contact_point_id=contact_point_id,
             is_close=False,
             pre_dis=0.05,
-        ), tag="approach_half_cylinder")
-        self.move(self.atom.close_gripper(), tag="close_half_cylinder")
+        )
+        approach_target_pose = self._robot_manager.ee_to_gripper_center(
+            approach_actions[0].target_pose
+        )
+        self.move(approach_actions, tag="approach_half_cylinder")
+
+        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            actual_gripper_pose = self._robot_manager.get_gripper_center_pose()
+            target_quat = approach_target_pose.q / np.linalg.norm(approach_target_pose.q)
+            actual_quat = actual_gripper_pose.q / np.linalg.norm(actual_gripper_pose.q)
+            quat_dot = float(np.clip(
+                np.abs(np.dot(target_quat, actual_quat)),
+                0.0,
+                1.0,
+            ))
+            self.metadata["xense_approach_half_cylinder_target_gripper_center_pose"] = (
+                approach_target_pose.tolist()
+            )
+            self.metadata["xense_approach_half_cylinder_position_error_m"] = float(
+                np.linalg.norm(actual_gripper_pose.p - approach_target_pose.p)
+            )
+            self.metadata["xense_approach_half_cylinder_orientation_error_deg"] = float(
+                np.rad2deg(2.0 * np.arccos(quat_dot))
+            )
+        self.record_xense_grasp_debug(
+            "xense_after_approach_half_cylinder",
+            self.target_block,
+        )
+
+        close_percent = self.get_xense_close_percent(
+            "xense_half_cylinder_close_percent"
+        )
+        self.move(
+            self.atom.close_gripper(pos=close_percent),
+            tag="close_half_cylinder",
+        )
+        self.settle_xense_after_close(is_save=False)
+        self.record_xense_grasp_debug(
+            "xense_after_close_half_cylinder",
+            self.target_block,
+        )
 
         # 保存抓取随机量和最终抓取姿态，便于复现失败样本或分析抓取分布。
         self.metadata["grasp_rotate_rad"] = float(grasp_rotate)
         self.metadata["grasp_rotate_deg"] = float(np.rad2deg(grasp_rotate))
         self.metadata["grasp_height"] = float(grasp_height)
+        self.metadata["grasp_height_bias"] = float(grasp_height_bias)
+        self.metadata["grasp_world_y_bias"] = float(grasp_world_y_bias)
+        self.metadata["gripper_close_percent"] = float(close_percent)
         self.metadata["grasp_pose"] = grasp_pose.tolist()
 
     def _play_once(self):

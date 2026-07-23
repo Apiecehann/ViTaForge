@@ -42,7 +42,7 @@ XENSE_USB_GRASP_HEIGHT_NOISE = 0.0
 XENSE_LIFT_HEIGHT = 0.0500
 XENSE_SLOT_APPROACH_CLEARANCE = 0.040
 XENSE_PLAY_PRE_INSERT_CLEARANCE = 0.012
-XENSE_PLAY_INSERT_MOTION_BIAS = (0.0050, -0.0012, 0.0)
+XENSE_PLAY_INSERT_MOTION_BIAS = (0.0, 0.0, 0.0)
 XENSE_INSERT_EXTRA_DEPTH = 0.0
 XENSE_INSERT_STAGE_MAX_STEP = 0.004
 XENSE_INSERT_XY_CORRECTION_LIMIT = 0.0015
@@ -274,10 +274,13 @@ class Task(BaseTask):
         target_p = self.prism.get_pose().p.copy()
         target_p[:2] = self.start_slot.get_pose().p[:2]
         target_p[2] = self.start_slot.get_pose().p[2] + USB_INSERT_Z + grasp_height
+        # Match the original GelSight/Neote trajectory: use the USB local X
+        # axis so the pads contact its long side faces.
+        xense_gripper_up = self.prism.get_pose().to_transformation_matrix()[:3, 0]
         cpose = construct_grasp_pose(
             target_p,
             np.array([0.0, 0.0, 1.0]),
-            np.array([0.0, 1.0, 0.0]),
+            xense_gripper_up,
         )
         cid = self.prism.register_point(cpose, type='contact')
         self.move(self.atom.grasp_actor(
@@ -316,6 +319,7 @@ class Task(BaseTask):
         self._record_xense_debug_pose('after_pre_insert')
 
         self.metadata['grasp_height'] = float(grasp_height)
+        self.metadata['xense_gripper_up'] = xense_gripper_up.tolist()
         self.metadata['lift_height'] = float(lift_height)
         self.metadata['approach_clearance'] = float(XENSE_SLOT_APPROACH_CLEARANCE)
         self.metadata['play_insert_motion_bias'] = list(XENSE_PLAY_INSERT_MOTION_BIAS)

@@ -1,8 +1,13 @@
 from ._base_task import *
 import numpy as np
 import transforms3d as t3d
+from uipc.unit import GPa
 
 # python scripts/collect_data.py pour_ball_to_cup pour_ball_to_cup_gui --episode_num 1 --start_seed 0 --max_seed 0 --gpu 0
+
+CUP_BASE_Z = 0.002
+BALL_BASE_Z = 0.020
+YELLOW_CUP_Y = -0.060
 
 
 @configclass
@@ -50,10 +55,20 @@ class TaskCfg(BaseTaskCfg):
 
 class Task(BaseTask):
     def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
-        # 塑料杯和球先给较高摩擦, 减少抓取和倒球时的滑动。
-        cfg.sim.physics_material.dynamic_friction = 3.0
-        cfg.sim.physics_material.static_friction = 3.0
-        cfg.uipc_sim.contact.default_friction_ratio = 3.0
+        # The cup needs high pad friction during the long carry and wrist turn.
+        # The final near-inverted pose lets gravity release the ball.
+        is_xense = getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq")
+        if is_xense:
+            # Both cups remain constrained after reset. Pre-move provides the
+            # visible settling steps needed by the unconstrained ball.
+            cfg.reset_first_frame_steps = 0
+            cfg.reset_after_actor_steps = 0
+            cfg.reset_final_steps = 0
+        grip_friction = float(getattr(cfg, "xense_pour_grip_friction_ratio", 3.0)) if is_xense else 3.0
+        cfg.sim.physics_material.dynamic_friction = grip_friction
+        cfg.sim.physics_material.static_friction = grip_friction
+        cfg.uipc_sim.contact.default_friction_ratio = grip_friction
+        self._pour_grip_friction_ratio = grip_friction
         super().__init__(cfg, mode, render_mode, **kwargs)
 
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
@@ -88,40 +103,64 @@ class Task(BaseTask):
         return cfg
 
     def create_actors(self):
+        keep_constrained = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
         self.blue_cup = self._actor_manager.add_from_usd_file(
             name="blue_cup",
             asset_path="cup_blue.usd",
             # 蓝色杯子创建时放在 x=50cm, y=10cm。
-            pose=Pose([0.50, 0.10, 0.020], (1.0, 0.0, 0.0, 0.0)),
+            pose=Pose([0.50, 0.10, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
             density=1e3,
+            keep_constrained=keep_constrained,
         )
         self.yellow_cup = self._actor_manager.add_from_usd_file(
             name="yellow_cup",
             asset_path="cup_yellow.usd",
-            # 黄色杯子创建时放在 x=50cm, y=-10cm 作为接球杯。
-            pose=Pose([0.50, -0.10, 0.020], (1.0, 0.0, 0.0, 0.0)),
+            # 黄色杯子放在机械臂可达的接球位置。
+            pose=Pose([0.50, YELLOW_CUP_Y, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
             density=1e5,
+            keep_constrained=keep_constrained,
         )
         self.red_ball = self._actor_manager.add_from_usd_file(
             name="red_ball",
             asset_path="ball_red.usd",
             # 红球跟蓝杯同 x/y; 球心高度 0.038m = 杯底 z 0.020m + 杯底厚约 0.002m + 预留 0.001m + 半径 0.015m。
-            pose=Pose([0.50, 0.10, 0.038], (1.0, 0.0, 0.0, 0.0)),
+            pose=Pose([0.50, 0.10, BALL_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
             density=200,
         )
+        if keep_constrained:
+            self._xense_pour_ball_friction_ratio = float(
+                getattr(self.cfg, "xense_pour_ball_friction_ratio", 0.05)
+            )
+            contact_tabular = self.uipc_sim.scene.contact_tabular()
+            default_contact = contact_tabular.default_element()
+            ball_contact = contact_tabular.create("xense_pour_ball_low_friction")
+            contact_tabular.insert(
+                ball_contact,
+                default_contact,
+                friction_rate=self._xense_pour_ball_friction_ratio,
+                resistance=self.cfg.uipc_sim.contact.default_contact_resistance * GPa,
+            )
+            for mesh in self.red_ball.uipc_meshes:
+                ball_contact.apply_to(mesh)
 
     def _reset_actors(self):
-        # reset 时固定摆位, 不加随机噪声; 当前实际运行会重置到 x=50cm, y=+/-10cm。
-        blue_cup_pose = Pose([0.50, 0.10, 0.020], (1.0, 0.0, 0.0, 0.0))
-        yellow_cup_pose = Pose([0.50, -0.10, 0.020], (1.0, 0.0, 0.0, 0.0))
-        red_ball_pose = Pose([0.50, 0.10, 0.038], (1.0, 0.0, 0.0, 0.0))
+        # reset 时固定摆位，不加随机噪声。
+        blue_cup_pose = Pose([0.50, 0.10, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0))
+        yellow_cup_pose = Pose([0.50, YELLOW_CUP_Y, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0))
+        red_ball_pose = Pose([0.50, 0.10, BALL_BASE_Z], (1.0, 0.0, 0.0, 0.0))
         self.blue_cup.set_pose(blue_cup_pose)
         self.yellow_cup.set_pose(yellow_cup_pose)
         self.red_ball.set_pose(red_ball_pose)
         self.metadata["blue_cup_pose"] = blue_cup_pose.tolist()
         self.metadata["yellow_cup_pose"] = yellow_cup_pose.tolist()
         self.metadata["red_ball_pose"] = red_ball_pose.tolist()
-        self.metadata["ball_bottom_z"] = 0.023
+        self.metadata["ball_bottom_z"] = BALL_BASE_Z - 0.015
+        self.metadata["pour_grip_friction_ratio"] = self._pour_grip_friction_ratio
+        if hasattr(self, "_xense_pour_ball_friction_ratio"):
+            self.metadata["xense_pour_ball_friction_ratio"] = self._xense_pour_ball_friction_ratio
 
     def pre_move(self):
         # 先等待 10 step 看初始 settling。夹爪开口已经在 init_state 里设成最大值, 不再额外规划 open_gripper。
@@ -130,6 +169,44 @@ class Task(BaseTask):
         self.metadata["gripper_open_qpos"] = float(self._robot_manager.gripper_max_qpos)
         self.metadata["gripper_open_ratio"] = 1.0
         self.metadata["gripper_qpos_after_init_delay"] = float(self._robot_manager.get_gripper_qpos())
+
+    def _record_blue_cup_shape(self, label: str):
+        vertices = np.asarray(self.blue_cup.vertices, dtype=np.float64).copy()
+        centered = vertices - vertices.mean(axis=0)
+        covariance = centered.T @ centered / len(centered)
+        principal_spread = np.sqrt(np.maximum(np.linalg.eigvalsh(covariance), 0.0))
+
+        cup_pose = self.blue_cup.get_pose()
+        local_vertices = (vertices - cup_pose.p) @ cup_pose.R
+        shape = {
+            "point_count": int(len(vertices)),
+            "local_extent": np.ptp(local_vertices, axis=0).tolist(),
+            "principal_spread": principal_spread.tolist(),
+        }
+
+        reference = getattr(self, "_blue_cup_shape_reference_vertices", None)
+        if reference is not None:
+            reference_centered = reference - reference.mean(axis=0)
+            reference_covariance = reference_centered.T @ reference_centered / len(reference_centered)
+            reference_spread = np.sqrt(np.maximum(np.linalg.eigvalsh(reference_covariance), 0.0))
+            spread_ratio = principal_spread / np.maximum(reference_spread, 1e-12)
+
+            u, _, vh = np.linalg.svd(reference_centered.T @ centered)
+            correction = np.eye(3)
+            correction[-1, -1] = np.sign(np.linalg.det(u @ vh))
+            rigid_rotation = u @ correction @ vh
+            aligned_reference = reference_centered @ rigid_rotation
+            rms_deformation = np.sqrt(np.mean(np.sum((aligned_reference - centered) ** 2, axis=1)))
+            reference_rms_radius = np.sqrt(np.mean(np.sum(reference_centered ** 2, axis=1)))
+
+            shape["principal_spread_ratio"] = spread_ratio.tolist()
+            shape["min_principal_spread_ratio"] = float(np.min(spread_ratio))
+            shape["normalized_nonrigid_error"] = float(
+                rms_deformation / max(reference_rms_radius, 1e-12)
+            )
+
+        self.metadata[f"blue_cup_shape_{label}"] = shape
+        return shape
 
     def _rotate_last_arm_joint(self, delta: float, steps: int = 160, tag: str = "rotate_last_joint", is_save: bool = True):
         # 不走 cuRobo IK, 只做 panda_joint7 的关节空间插值; 旋转角度由 delta 指定。
@@ -222,6 +299,8 @@ class Task(BaseTask):
     def _wait_ball_until_still(
         self,
         max_steps: int = 600,
+        min_steps: int = 60,
+        stable_steps: int = 10,
         pos_tol: float = 1e-4,
         quat_tol: float = 1e-3,
         tag: str = "wait_ball_still",
@@ -230,6 +309,7 @@ class Task(BaseTask):
         # max_steps 是兜底, 防止球持续微小抖动导致无限循环。
         prev_pose = self.red_ball.get_pose()
         self.metadata[f"{tag}_start_pose"] = prev_pose.tolist()
+        stable_count = 0
 
         for step in range(1, max_steps + 1):
             self.delay(1, is_save=True)
@@ -241,10 +321,16 @@ class Task(BaseTask):
             ))
 
             if pos_delta <= pos_tol and quat_delta <= quat_tol:
+                stable_count += 1
+            else:
+                stable_count = 0
+
+            if step >= min_steps and stable_count >= stable_steps:
                 self.metadata[f"{tag}_steps"] = step
                 self.metadata[f"{tag}_end_pose"] = curr_pose.tolist()
                 self.metadata[f"{tag}_last_pos_delta"] = pos_delta
                 self.metadata[f"{tag}_last_quat_delta"] = quat_delta
+                self.metadata[f"{tag}_stable_steps"] = stable_count
                 self.metadata[f"{tag}_stopped_by"] = "still"
                 return True
 
@@ -283,17 +369,50 @@ class Task(BaseTask):
         return success
 
     def _play_once(self):
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        self._blue_cup_shape_reference_vertices = np.asarray(
+            self.blue_cup.vertices, dtype=np.float64
+        ).copy()
+        self._record_blue_cup_shape("before_close")
         # 黄色杯子是接球杯, 这里先抓蓝色起始杯; 如果要抓 yellow, 把 self.blue_cup 换成 self.yellow_cup。
         cup_pose = self.blue_cup.get_pose()
-        # 抓卷边中线高度: 杯高 92.5mm - 卷边 11mm 的一半 = 杯底上方 87mm。
-        # gripper center/gel pad 不再额外下调; 横向抓杯时让目标点沿 +X 前伸 1cm, 让垫片吃住更多杯沿。
-        grasp_pos = cup_pose.p + np.array([0.01, 0.0, 0.0925 - 0.5 * 0.011])
+        # Base height is the rolled-rim center. Xense applies a negative bias
+        # to clamp a larger patch of the upper cup wall for pouring torque.
+        grasp_height_bias = self.get_xense_grasp_height_bias(
+            "xense_pour_cup_grasp_height_bias"
+        )
+        grasp_world_x_bias = (
+            float(getattr(self.cfg, "xense_pour_cup_grasp_world_x_bias", 0.01))
+            if is_xense else 0.01
+        )
+        grasp_pos = cup_pose.p + np.array([
+            grasp_world_x_bias,
+            0.0,
+            0.0925 - 0.5 * 0.011 + grasp_height_bias,
+        ])
 
-        # 初始 joint 已经是 gripper_flat_lift_debug 里平抬后的姿态。
-        # 这里不再额外旋转夹爪, 直接沿用当前 EEF 姿态做后续平移和下探。
+        # Rotate about the gripper's own Z axis so the finger-closing axis is
+        # horizontal.  The unrotated tilted home pose closes diagonally down
+        # into the table and pushes the cup below its reset height.
         current_eef_pose = self._robot_manager.get_ee_pose()
-        tilted_eef_q = current_eef_pose.q
+        side_grasp_rotation = np.deg2rad(-45.0)
+        tilted_eef_q = t3d.quaternions.qmult(
+            current_eef_pose.q,
+            t3d.euler.euler2quat(0.0, 0.0, side_grasp_rotation),
+        )
+        side_grasp_rotation_mat = t3d.quaternions.quat2mat(tilted_eef_q)
         self.metadata["initial_grasp_eef_pose"] = current_eef_pose.tolist()
+        self.metadata["side_grasp_local_z_rotation_deg"] = float(
+            np.rad2deg(side_grasp_rotation)
+        )
+        self.metadata["side_grasp_local_axes_world"] = {
+            "x": side_grasp_rotation_mat[:, 0].tolist(),
+            "y": side_grasp_rotation_mat[:, 1].tolist(),
+            "z": side_grasp_rotation_mat[:, 2].tolist(),
+        }
         self.metadata["use_tilted_home_joint_pos"] = bool(getattr(self, "_use_tilted_home_joint_pos", False))
 
         # 保持当前侧向姿态, 平移到蓝杯抓取点上方 5cm。
@@ -312,6 +431,7 @@ class Task(BaseTask):
         grasp_pose = Pose(grasp_pos, tilted_eef_q)
 
         self.metadata["rim_grasp_world_z"] = float(grasp_pos[2])
+        self.metadata["grasp_world_x_bias"] = float(grasp_world_x_bias)
         self.metadata["rim_grasp_pose"] = grasp_pose.tolist()
         self.metadata["target_gripper_center_pose"] = grasp_pose.tolist()
         self.metadata["target_gripper_minus_z"] = (
@@ -326,13 +446,27 @@ class Task(BaseTask):
             dis=0.0,
             is_close=False,
         ), tag="approach_blue_cup_rim", time_dilation_factor=0.5)
+        self.record_xense_grasp_debug("xense_after_approach_blue_cup_rim", self.blue_cup)
 
-        # 模仿 insert_USB.py: 不手写闭合宽度, close_gripper() 交给 adaptive/tactile 接触逻辑停止。
-        self.move(self.atom.close_gripper(), tag="close_blue_cup_rim")
+        close_percent = self.get_xense_close_percent(
+            "xense_pour_cup_close_percent",
+            fallback_key="xense_cup_close_percent",
+        )
+        if is_xense:
+            # Release the reset-only world constraint before closing. Keeping
+            # it active while both pads squeeze the wall over-constrains UIPC.
+            self.blue_cup.remove_animate(force=True)
+            self._actor_manager.update(dt=0.0)
+        self.move(self.atom.close_gripper(pos=close_percent), tag="close_blue_cup_rim")
+        self.settle_xense_after_close(is_save=False)
+        self.record_xense_grasp_debug("xense_after_close_blue_cup_rim", self.blue_cup)
+        self._blue_cup_shape_after_close = self._record_blue_cup_shape("after_close")
+        self.metadata["grasp_height_bias"] = float(grasp_height_bias)
+        self.metadata["gripper_close_percent"] = float(close_percent)
 
         yellow_cup_pose = self.yellow_cup.get_pose()
         blue_cup_pose = self.blue_cup.get_pose()
-        target_blue_cup_pos = yellow_cup_pose.p + np.array([0.0, 0.030, 0.120])
+        target_blue_cup_pos = yellow_cup_pose.p + np.array([0.0, 0.020, 0.120])
         # 搬运拆成两步: 先只抬高蓝杯到目标高度, 再保持高度沿 y 方向移到黄杯旁边。
         # 这样每次 IK 只处理单纯位移, 比一次性斜向搬运更容易规划。
         lift_blue_cup_pose = Pose(
@@ -344,37 +478,142 @@ class Task(BaseTask):
         self.metadata["blue_cup_pose_before_pour"] = blue_cup_pose.tolist()
         self.metadata["lift_blue_cup_pose"] = lift_blue_cup_pose.tolist()
         self.metadata["target_blue_cup_carry_pose"] = target_blue_cup_pose.tolist()
-        self.move(self.atom.place_actor(
-            self.blue_cup,
-            target_pose=lift_blue_cup_pose,
-            pre_dis=0.0,
-            dis=0.0,
-            is_open=False,
-            constrain="free",
-        ), tag="lift_blue_cup_before_pour", time_dilation_factor=0.5)
-        self.move(self.atom.place_actor(
-            self.blue_cup,
-            target_pose=target_blue_cup_pose,
-            pre_dis=0.0,
-            dis=0.0,
-            is_open=False,
-            constrain="free",
-        ), tag="move_blue_cup_y_near_yellow", time_dilation_factor=0.5)
+        if is_xense:
+            self.move_actor_by_world_displacement_to_position(
+                self.blue_cup,
+                lift_blue_cup_pose.p,
+                tag="lift_blue_cup_before_pour",
+                metadata_prefix="xense_blue_cup_pour_lift_path",
+            )
+            self.move_actor_by_world_displacement_to_position(
+                self.blue_cup,
+                target_blue_cup_pose.p,
+                tag="move_blue_cup_y_near_yellow",
+                segments=int(getattr(self.cfg, "xense_pour_carry_segments", 6)),
+                metadata_prefix="xense_blue_cup_pour_carry_path",
+            )
+        else:
+            self.move(self.atom.place_actor(
+                self.blue_cup,
+                target_pose=lift_blue_cup_pose,
+                pre_dis=0.0,
+                dis=0.0,
+                is_open=False,
+                constrain="free",
+            ), tag="lift_blue_cup_before_pour", time_dilation_factor=0.5)
+            self.move(self.atom.place_actor(
+                self.blue_cup,
+                target_pose=target_blue_cup_pose,
+                pre_dis=0.0,
+                dis=0.0,
+                is_open=False,
+                constrain="free",
+            ), tag="move_blue_cup_y_near_yellow", time_dilation_factor=0.5)
+        self._blue_cup_shape_before_pour = self._record_blue_cup_shape("before_pour")
+        self.record_xense_grasp_debug("xense_before_pour_blue_cup", self.blue_cup)
+
+        if is_xense:
+            # Ensure the ball is governed only by contact and gravity during
+            # the pour, even if a reset constraint survived an earlier step.
+            self.red_ball.remove_animate(force=True)
+            self._actor_manager.update(dt=0.0)
 
         # 第二步不再给蓝杯目标 pose 做反解。当前 translation 为 0, 会跳过 EEF 平移规划,
         # 只旋转最后一个关节 panda_joint7 来倒杯。
         self.metadata["blue_cup_pose_before_wrist_pour"] = self.blue_cup.get_pose().tolist()
         self._rotate_last_arm_joint_with_ee_translation(
-            delta=np.deg2rad(120.0),
+            delta=np.deg2rad(
+                float(getattr(self.cfg, "xense_pour_wrist_angle_deg", 180.0)) if is_xense else 180.0
+            ),
             translation=np.array([0.0, 0.0, 0.00]),
-            steps=160,
+            steps=int(getattr(self.cfg, "xense_pour_wrist_steps", 160)) if is_xense else 160,
             tag="translate_yz_and_rotate_panda_joint7_to_pour",
             is_save=True,
         )
+        self.record_xense_grasp_debug(
+            "xense_after_wrist_pour_blue_cup",
+            self.blue_cup,
+        )
+        self._blue_cup_shape_after_pour = self._record_blue_cup_shape("after_pour")
+        if is_xense:
+            release_lift = float(getattr(self.cfg, "xense_pour_release_lift", 0.04))
+            if release_lift > 0.0:
+                self.metadata["red_ball_pose_before_release_lift"] = self.red_ball.get_pose().tolist()
+                self.move(
+                    self.atom.move_by_displacement(z=release_lift, xyz_coord="world"),
+                    tag="lift_cup_to_release_ball",
+                    time_dilation_factor=1.0,
+                    delay=False,
+                )
+                self.metadata["red_ball_pose_after_release_lift"] = self.red_ball.get_pose().tolist()
+                self.metadata["blue_cup_pose_after_release_lift"] = self.blue_cup.get_pose().tolist()
+
+            release_snap_angle = float(
+                getattr(self.cfg, "xense_pour_release_snap_angle_deg", 35.0)
+            )
+            release_snap_steps = int(getattr(self.cfg, "xense_pour_release_snap_steps", 12))
+            release_snap_cycles = int(getattr(self.cfg, "xense_pour_release_snap_cycles", 4))
+            self.metadata["red_ball_pose_before_release_snap"] = self.red_ball.get_pose().tolist()
+            self.metadata["release_snap_ball_poses"] = []
+            self.metadata["release_snap_blue_cup_poses"] = []
+            for snap_idx in range(release_snap_cycles):
+                signed_angle = release_snap_angle if snap_idx % 2 == 0 else -release_snap_angle
+                self._rotate_last_arm_joint(
+                    delta=np.deg2rad(signed_angle),
+                    steps=release_snap_steps,
+                    tag=f"snap_wrist_to_release_ball_{snap_idx}",
+                    is_save=True,
+                )
+                self.metadata["release_snap_ball_poses"].append(self.red_ball.get_pose().tolist())
+                self.metadata["release_snap_blue_cup_poses"].append(self.blue_cup.get_pose().tolist())
+            self.metadata["red_ball_pose_after_release_snap"] = self.red_ball.get_pose().tolist()
+            self.metadata["blue_cup_pose_after_release_snap"] = self.blue_cup.get_pose().tolist()
+            if bool(getattr(self.cfg, "xense_pour_fix_cup_during_release", False)):
+                release_hold_pose = self.blue_cup.get_pose()
+                self.blue_cup.set_pose(release_hold_pose)
+                self.metadata["blue_cup_release_hold_pose"] = release_hold_pose.tolist()
+                self.delay(2, is_save=True)
+                # The transform constraint is intentionally soft. Release the
+                # Robotiq pads so their sustained squeeze cannot drag the cup
+                # away from the hold target while the ball falls out.
+                self.move(
+                    self.atom.open_gripper(1.0),
+                    tag="open_gripper_to_release_ball",
+                    delay=False,
+                )
+                self.metadata["blue_cup_pose_after_release_open"] = self.blue_cup.get_pose().tolist()
+                self.metadata["red_ball_pose_after_release_open"] = self.red_ball.get_pose().tolist()
         self._wait_ball_until_still(tag="wait_red_ball_still_after_pour")
         self.metadata["blue_cup_pose_after_wrist_pour"] = self.blue_cup.get_pose().tolist()
         self.metadata["red_ball_pose_after_wait"] = self.red_ball.get_pose().tolist()
 
 
     def check_success(self):
-        return self._is_ball_in_yellow_cup()
+        ball_in_yellow_cup = self._is_ball_in_yellow_cup()
+        blue_shape_final = self._record_blue_cup_shape("final")
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        min_shape_ratio = float(getattr(self.cfg, "xense_cup_min_principal_ratio", 0.90))
+        max_nonrigid_error = float(getattr(self.cfg, "xense_cup_max_nonrigid_error", 0.08))
+        shape_samples = (
+            getattr(self, "_blue_cup_shape_after_close", {}),
+            getattr(self, "_blue_cup_shape_before_pour", {}),
+            getattr(self, "_blue_cup_shape_after_pour", {}),
+            blue_shape_final,
+        )
+        blue_shape_ok = (not is_xense) or all(
+            sample.get("min_principal_spread_ratio", 0.0) >= min_shape_ratio
+            and sample.get("normalized_nonrigid_error", float("inf")) <= max_nonrigid_error
+            for sample in shape_samples
+        )
+        self.metadata["blue_cup_shape_thresholds"] = {
+            "min_principal_spread_ratio": min_shape_ratio,
+            "max_nonrigid_error": max_nonrigid_error,
+        }
+        self.metadata["success_checks"].update({
+            "ball_in_yellow_cup": bool(ball_in_yellow_cup),
+            "blue_shape_ok": bool(blue_shape_ok),
+        })
+        return bool(ball_in_yellow_cup and blue_shape_ok)

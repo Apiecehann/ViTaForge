@@ -170,6 +170,37 @@ class BaseTaskCfg(DirectRLEnvCfg):
     adaptive_grasp_depth_threshold = None # in mm
     # Xense-specific grasp tuning. These are ignored by GelSight/Neote branches.
     xense_usb_close_percent: float = 0.185
+    xense_half_cylinder_close_percent: float = 0.0
+    xense_insert_half_cylinder_close_percent: float = 0.0
+    xense_cube_close_percent: float = 0.0
+    xense_cup_close_percent: float = 0.0
+    xense_pour_cup_close_percent: float = 0.0
+    xense_pour_ball_friction_ratio: float = 0.05
+    xense_pour_grip_friction_ratio: float = 3.0
+    xense_pour_wrist_angle_deg: float = 180.0
+    xense_pour_wrist_steps: int = 160
+    xense_pour_carry_segments: int = 6
+    xense_pour_release_lift: float = 0.04
+    xense_pour_release_snap_angle_deg: float = 35.0
+    xense_pour_release_snap_steps: int = 12
+    xense_pour_release_snap_cycles: int = 4
+    xense_pour_fix_cup_during_release: bool = False
+    xense_drawer_close_percent: float = 0.0
+    xense_gear_close_percent: float = 0.0
+    xense_half_cylinder_grasp_height_bias: float = 0.0
+    xense_insert_half_cylinder_grasp_height_bias: float = 0.0
+    xense_cube_grasp_height_bias: float = 0.0
+    xense_cup_grasp_height_bias: float = 0.0
+    xense_pour_cup_grasp_world_x_bias: float = 0.01
+    xense_drawer_grasp_z_bias: float = 0.0
+    xense_gear_grasp_height_bias: float = 0.0
+    xense_half_cylinder_grasp_world_y_bias: float = 0.0
+    xense_insert_half_cylinder_grasp_world_y_bias: float = 0.0
+    xense_cube_grasp_world_y_bias: float = 0.0
+    xense_gear_grasp_world_y_bias: float = 0.0
+    xense_carry_time_dilation: float = 0.5
+    xense_carry_segments: int = 4
+    xense_carry_max_step: float = 0.04
     xense_post_close_settle_steps: int = 80
     xense_adaptive_grasp_max_steps: int = 180
     xense_adaptive_grasp_check_interval: int = 10
@@ -418,6 +449,9 @@ class BaseTask(UipcRLEnv):
 
         if hasattr(self, '_reset_actors'):
             self._reset_actors()
+            # Actor.set_pose() only stages UIPC constraint data. Apply it
+            # before stepping so the reset settling loop runs at the target.
+            self._actor_manager.update(dt=0.0)
 
             reset_test_start = time.perf_counter()
             for _ in range(int(getattr(self.cfg, 'reset_after_actor_steps', 20))):
@@ -429,6 +463,9 @@ class BaseTask(UipcRLEnv):
                     )
             self._update_render()
             self._actor_manager.remove_animate()
+            # Likewise, release reset constraints before the final settling
+            # steps instead of leaving every actor constrained for the loop.
+            self._actor_manager.update(dt=0.0)
         
         reset_test_start = time.perf_counter()
         for _ in range(int(getattr(self.cfg, 'reset_final_steps', 5))):
@@ -882,6 +919,204 @@ class BaseTask(UipcRLEnv):
                 self.delay(10, is_save)
         self._update_render()
         return True
+
+    def move_gripper_center_path(
+        self,
+        poses: list[Pose],
+        tag: str,
+        is_save: bool = True,
+        delay: bool = False,
+        settle_steps: int = 0,
+        time_dilation_factor: float | None = None,
+        metadata_prefix: str | None = None,
+    ):
+        """Move through gripper-center waypoints by converting each one to an EE target."""
+        ee_poses = [self._robot_manager.gripper_center_to_ee(pose) for pose in poses]
+        if metadata_prefix is not None:
+            self.metadata[f"{metadata_prefix}_gripper_center_poses"] = [pose.tolist() for pose in poses]
+            self.metadata[f"{metadata_prefix}_ee_poses"] = [pose.tolist() for pose in ee_poses]
+            self.metadata[f"{metadata_prefix}_actual_gripper_center_poses"] = []
+            self.metadata[f"{metadata_prefix}_actual_position_errors"] = []
+
+        for idx, ee_pose in enumerate(ee_poses):
+            move_tag = tag if len(ee_poses) == 1 else f"{tag}_{idx}"
+            ok = self.move(
+                [Action("move", target_pose=ee_pose)],
+                tag=move_tag,
+                is_save=is_save,
+                delay=delay,
+                time_dilation_factor=time_dilation_factor,
+            )
+            if not ok:
+                return ee_poses
+            if settle_steps > 0:
+                self.delay(settle_steps, is_save=is_save)
+            if metadata_prefix is not None:
+                actual_pose = self._robot_manager.get_gripper_center_pose()
+                self.metadata[f"{metadata_prefix}_actual_gripper_center_poses"].append(actual_pose.tolist())
+                self.metadata[f"{metadata_prefix}_actual_position_errors"].append(
+                    float(np.linalg.norm(actual_pose.p - poses[idx].p))
+                )
+        return ee_poses
+
+    def gripper_center_pose_for_actor_target(self, actor, target_pose: Pose) -> Pose:
+        """Compute the gripper-center pose that would place an in-hand actor at target_pose."""
+        inhand_pose = actor.get_pose().rebase(to_coord=self._robot_manager.get_gripper_center_pose())
+        target_gripper_center_mat = (
+            target_pose.to_transformation_matrix()
+            @ np.linalg.inv(inhand_pose.to_transformation_matrix())
+        )
+        return Pose.from_matrix(target_gripper_center_mat)
+
+    def gripper_center_pose_for_actor_position_target(self, actor, target_position) -> Pose:
+        """Translate the current gripper-center pose so the actor center reaches target_position."""
+        current_gripper_center_pose = self._robot_manager.get_gripper_center_pose()
+        target_position = np.asarray(target_position, dtype=float).reshape(3)
+        actor_delta = target_position - actor.get_pose().p
+        return current_gripper_center_pose.add_bias(actor_delta, coord="world")
+
+    def move_actor_with_gripper_center_to_position(
+        self,
+        actor,
+        target_position,
+        tag: str,
+        segments: int | None = None,
+        settle_steps: int = 5,
+        time_dilation_factor: float | None = None,
+        metadata_prefix: str | None = None,
+    ):
+        current_pose = self._robot_manager.get_gripper_center_pose()
+        target_pose = self.gripper_center_pose_for_actor_position_target(actor, target_position)
+        segments = max(1, int(segments or getattr(self.cfg, "xense_carry_segments", 4)))
+        if time_dilation_factor is None:
+            time_dilation_factor = float(getattr(self.cfg, "xense_carry_time_dilation", 0.5))
+        poses = []
+        for idx in range(1, segments + 1):
+            alpha = idx / segments
+            p = current_pose.p + (target_pose.p - current_pose.p) * alpha
+            poses.append(Pose(p, current_pose.q))
+        if metadata_prefix is not None:
+            self.metadata[f"{metadata_prefix}_actor_start_pose"] = actor.get_pose().tolist()
+            self.metadata[f"{metadata_prefix}_actor_target_position"] = np.asarray(target_position, dtype=float).reshape(3).tolist()
+        return self.move_gripper_center_path(
+            poses,
+            tag=tag,
+            delay=False,
+            settle_steps=settle_steps,
+            time_dilation_factor=time_dilation_factor,
+            metadata_prefix=metadata_prefix,
+        )
+
+    def move_actor_by_world_displacement_to_position(
+        self,
+        actor,
+        target_position,
+        tag: str,
+        segments: int | None = None,
+        settle_steps: int = 5,
+        time_dilation_factor: float | None = None,
+        metadata_prefix: str | None = None,
+    ):
+        """Move an in-hand actor by commanding bounded world-frame EE displacements."""
+        target_position = np.asarray(target_position, dtype=float).reshape(3)
+        requested_segments = max(1, int(segments or getattr(self.cfg, "xense_carry_segments", 4)))
+        max_step = max(1e-6, float(getattr(self.cfg, "xense_carry_max_step", 0.04)))
+        start_actor_position = actor.get_pose().p.copy()
+        total_delta = target_position - start_actor_position
+        auto_segments = max(1, int(np.ceil(float(np.linalg.norm(total_delta)) / max_step)))
+        segments = max(requested_segments, auto_segments)
+        if time_dilation_factor is None:
+            time_dilation_factor = float(getattr(self.cfg, "xense_carry_time_dilation", 0.5))
+
+        if metadata_prefix is not None:
+            self.metadata[f"{metadata_prefix}_actor_start_pose"] = actor.get_pose().tolist()
+            self.metadata[f"{metadata_prefix}_actor_target_position"] = target_position.tolist()
+            self.metadata[f"{metadata_prefix}_start_actor_position"] = start_actor_position.tolist()
+            self.metadata[f"{metadata_prefix}_total_delta"] = total_delta.tolist()
+            self.metadata[f"{metadata_prefix}_requested_segments"] = int(requested_segments)
+            self.metadata[f"{metadata_prefix}_segments"] = int(segments)
+            self.metadata[f"{metadata_prefix}_max_step"] = float(max_step)
+            self.metadata[f"{metadata_prefix}_commanded_step_deltas"] = []
+            self.metadata[f"{metadata_prefix}_actual_actor_poses"] = []
+            self.metadata[f"{metadata_prefix}_actual_ee_poses"] = []
+            self.metadata[f"{metadata_prefix}_actual_position_errors"] = []
+            self.metadata[f"{metadata_prefix}_gripper_center_poses"] = []
+            self.metadata[f"{metadata_prefix}_actual_gripper_center_poses"] = []
+
+        if np.linalg.norm(total_delta) < 1e-8:
+            if metadata_prefix is not None:
+                self.metadata[f"{metadata_prefix}_skipped"] = True
+            return True
+
+        current_gripper_center_pose = self._robot_manager.get_gripper_center_pose()
+        target_gripper_center_pose = self.gripper_center_pose_for_actor_position_target(actor, target_position)
+        step_delta = total_delta / float(segments)
+
+        for idx in range(segments):
+            alpha = (idx + 1) / float(segments)
+            gripper_center_pos = (
+                current_gripper_center_pose.p
+                + (target_gripper_center_pose.p - current_gripper_center_pose.p) * alpha
+            )
+            gripper_center_pose = Pose(gripper_center_pos, current_gripper_center_pose.q)
+            ee_pose = self._robot_manager.gripper_center_to_ee(gripper_center_pose)
+            move_tag = tag if segments == 1 else f"{tag}_{idx}"
+
+            if metadata_prefix is not None:
+                self.metadata[f"{metadata_prefix}_commanded_step_deltas"].append(step_delta.tolist())
+                self.metadata[f"{metadata_prefix}_gripper_center_poses"].append(gripper_center_pose.tolist())
+
+            ok = self.move(
+                [Action("move", target_pose=ee_pose)],
+                tag=move_tag,
+                delay=False,
+                time_dilation_factor=time_dilation_factor,
+            )
+            if not ok:
+                return False
+            if settle_steps > 0:
+                self.delay(settle_steps, is_save=True)
+
+            if metadata_prefix is not None:
+                actual_actor_pose = actor.get_pose()
+                self.metadata[f"{metadata_prefix}_actual_actor_poses"].append(actual_actor_pose.tolist())
+                self.metadata[f"{metadata_prefix}_actual_ee_poses"].append(self._robot_manager.get_ee_pose().tolist())
+                self.metadata[f"{metadata_prefix}_actual_gripper_center_poses"].append(
+                    self._robot_manager.get_gripper_center_pose().tolist()
+                )
+                self.metadata[f"{metadata_prefix}_actual_position_errors"].append(
+                    float(np.linalg.norm(actual_actor_pose.p - target_position))
+                )
+        return True
+
+    def get_xense_close_percent(self, key: str, fallback_key: str = "xense_usb_close_percent") -> float:
+        if getattr(self.cfg, "tactile_sensor_type", "") not in ("xensews", "xensews_robotiq"):
+            return 0.0
+        if hasattr(self.cfg, key):
+            return float(getattr(self.cfg, key))
+        return float(getattr(self.cfg, fallback_key, 0.0))
+
+    def get_xense_grasp_height_bias(self, key: str, default: float = 0.0) -> float:
+        if getattr(self.cfg, "tactile_sensor_type", "") not in ("xensews", "xensews_robotiq"):
+            return 0.0
+        return float(getattr(self.cfg, key, default))
+
+    def record_xense_grasp_debug(self, prefix: str, actor: Actor | None = None):
+        if getattr(self.cfg, "tactile_sensor_type", "") not in ("xensews", "xensews_robotiq"):
+            return
+        self.metadata[f"{prefix}_gripper_center_pose"] = self._robot_manager.get_gripper_center_pose().tolist()
+        self.metadata[f"{prefix}_ee_pose"] = self._robot_manager.get_ee_pose().tolist()
+        self.metadata[f"{prefix}_gripper_qpos"] = float(self._robot_manager.get_gripper_qpos())
+        self.metadata[f"{prefix}_gripper_percent"] = float(self._robot_manager.get_gripper_percentage())
+        if actor is not None:
+            self.metadata[f"{prefix}_actor_pose"] = actor.get_pose().tolist()
+
+    def settle_xense_after_close(self, is_save: bool = False):
+        if getattr(self.cfg, "tactile_sensor_type", "") not in ("xensews", "xensews_robotiq"):
+            return
+        steps = max(0, int(getattr(self.cfg, "xense_post_close_settle_steps", 80)))
+        if steps > 0:
+            self.delay(steps, is_save=is_save)
  
     def delay(self, steps=20, is_save:bool=False, force:bool=False):
         if not force and not self.plan_success:

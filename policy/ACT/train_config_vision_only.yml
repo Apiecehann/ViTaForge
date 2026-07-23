@@ -32,13 +32,10 @@ camera_names:
   - cam_high
   - cam_wrist
 
-# tactile args
-tactile_names:
-  - tac_left
-  - tac_right
-lr_tactile_backbone: 0.00001
+# Vision-only baseline: keep both RGB cameras and remove tactile inputs.
+tactile_names: []
+lr_tactile_backbone: 0.0
 tactile_masks: false
 tactile_backbone: resnet18
-# tactile_ckpt: encoder/checkpoints/resnet18/20251202-114847/best.pth
 tactile_ckpt: encoder/checkpoints/resnet18/20251128-125750/best.pth
 tactile_dilation: false

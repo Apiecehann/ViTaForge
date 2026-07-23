@@ -271,4 +271,9 @@ if __name__ == "__main__":
     with open(args.config_path, 'r') as f:
         config_args = yaml.load(f, Loader=yaml.FullLoader)
     config_args.update(vars(args))
+    # policy/ACT/detr/main.py uses num_epochs as part of its "config is complete"
+    # check. Most UniVTAC configs train by num_steps instead, so keep the old
+    # behavior while preventing DETR from reparsing sys.argv and requiring
+    # duplicate command-line flags.
+    config_args.setdefault("num_epochs", int(config_args.get("epochs", 6000)))
     main(config_args)

@@ -1,5 +1,6 @@
 from ._base_task import *
 import numpy as np
+from uipc import view
 
 # 半圆柱体蓝色木块：assets/objects/Blue_half_cylinder.usd，尺寸为：半径22.8mm，高度30mm
 # 木箱：assets/objects/wooden_box_semicircle_hole.usd，半圆柱孔尺寸：半径24mm
@@ -8,10 +9,10 @@ BOX_SIZE = 0.1000
 BOX_WALL_THICKNESS = 0.0050
 HALF_CYLINDER_HEIGHT = 0.0300
 
-BOX_BASE_POSE = Pose([0.4, -0.05, 0.002], [1, 0, 0, 0])
+BOX_BASE_POSE = Pose([0.4, -0.05, 0.0015], [1, 0, 0, 0])
 HALF_CYLINDER_BASE_POSE = Pose([0.4, 0.15, 0.002], [1, 0, 0, 0])
 # 抓取后先移动到盒子上方的中间高度，避免直接横移时碰到盒壁。
-LIFT_TARGET_POSE = Pose([0.4, 0.05, 0.112], [1, 0, 0, 0])
+LIFT_TARGET_POSE = Pose([0.4, 0.05, 0.135], [1, 0, 0, 0])
 
 # reset 时盒子和半圆柱都只加 xy 平面小扰动，z 保持不变，避免初始状态离开桌面。
 XY_NOISE = (0.005, 0.005, 0.0)
@@ -20,8 +21,9 @@ GRASP_ROTATE_NOISE = np.deg2rad(10.0)
 GRASP_HEIGHT = HALF_CYLINDER_HEIGHT * 0.5
 GRASP_HEIGHT_NOISE = 0.003
 PRE_INSERT_CLEARANCE = 0.002
-INSERT_DEPTH = 0.010
+INSERT_DEPTH = 0.020
 PRE_PLACE_DISTANCE = 0.050
+XENSE_INHAND_CONSTRAINT_STRENGTH = 1.0e3
 
 # 盒子局部坐标系下的有效内部范围，用于判断半圆柱是否真正落在盒内。
 INNER_X_MIN = -BOX_SIZE * 0.5 + BOX_WALL_THICKNESS
@@ -63,27 +65,44 @@ class TaskCfg(BaseTaskCfg):
 class Task(BaseTask):
     def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
         # 插入和放置任务对接触稳定性敏感，提高摩擦可以减少抓取后滑动或放置时弹出。
-        cfg.sim.physics_material.dynamic_friction = 2.5
-        cfg.sim.physics_material.static_friction = 2.5
-        cfg.uipc_sim.contact.default_friction_ratio = 2.5
+        cfg.sim.physics_material.dynamic_friction = 3.0
+        cfg.sim.physics_material.static_friction = 3.0
+        cfg.uipc_sim.contact.default_friction_ratio = 3.0
         super().__init__(cfg, mode, render_mode, **kwargs)
 
     def create_actors(self):
         # 创建带半圆孔的木盒作为近似固定基座，蓝色半圆柱作为可抓取/插入物体。
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
         self.wooden_box = self._actor_manager.add_from_usd_file(
             name="wooden_box_semicircle_hole",
             asset_path="wooden_box_semicircle_hole.usd",
             pose=BOX_BASE_POSE,
-            density=1e6,
+            density=1e5,
+            keep_constrained=is_xense,
         )
         self.blue_half_cylinder = self._actor_manager.add_from_usd_file(
             name="Blue_half_cylinder",
             asset_path="Blue_half_cylinder.usd",
             pose=HALF_CYLINDER_BASE_POSE,
             density=1e3,
+            keep_constrained=is_xense,
         )
+        if is_xense:
+            strength_ratio = self.blue_half_cylinder.uipc_meshes[0].instances().find(
+                "strength_ratio"
+            )
+            if strength_ratio is None:
+                raise RuntimeError("Missing half-cylinder SoftTransformConstraint strength_ratio")
+            strength_view = view(strength_ratio)
+            strength_view[:, 0, :] = XENSE_INHAND_CONSTRAINT_STRENGTH
+            strength_view[:, 1, :] = XENSE_INHAND_CONSTRAINT_STRENGTH
 
     def _reset_actors(self):
+        self._xense_half_cylinder_drive_enabled = False
+        self._xense_half_cylinder_in_gripper = None
         # 每个 episode 随机化盒子和半圆柱的 xy 位置，让放置目标和抓取目标都有轻微分布变化。
         box_offset = self.create_noise(list(XY_NOISE))
         half_cylinder_offset = self.create_noise(list(XY_NOISE))
@@ -98,8 +117,35 @@ class Task(BaseTask):
         self.metadata["half_cylinder_xy_noise"] = half_cylinder_offset.p.tolist()
         self.metadata["wooden_box_pose"] = box_pose.tolist()
         self.metadata["blue_half_cylinder_pose"] = half_cylinder_pose.tolist()
+        self.metadata["xense_inhand_drive_mode"] = "soft_transform_gripper_follow"
+        self.metadata["xense_inhand_constraint_strength"] = float(
+            XENSE_INHAND_CONSTRAINT_STRENGTH
+        )
+
+    def _sync_xense_half_cylinder_to_gripper(self):
+        if not getattr(self, "_xense_half_cylinder_drive_enabled", False):
+            return
+        inhand_pose = getattr(self, "_xense_half_cylinder_in_gripper", None)
+        if inhand_pose is None:
+            return
+
+        gripper_pose = self._robot_manager.get_gripper_center_pose()
+        target_mat = (
+            gripper_pose.to_transformation_matrix()
+            @ inhand_pose.to_transformation_matrix()
+        )
+        self.blue_half_cylinder.set_pose(Pose.from_matrix(target_mat))
+        self._actor_manager.update(dt=0.0)
+
+    def _step(self, is_save: bool = True):
+        self._sync_xense_half_cylinder_to_gripper()
+        return super()._step(is_save=is_save)
 
     def pre_move(self):
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
         # 正式动作前等待物体稳定，再打开夹爪准备抓取蓝色半圆柱。
         self.delay(10)
         self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_blue_half_cylinder")
@@ -107,8 +153,27 @@ class Task(BaseTask):
         half_cylinder_pose = self.blue_half_cylinder.get_pose()
         # 在半圆柱半高附近采样抓取点，并绕局部 y 轴加入轻微随机旋转。
         grasp_rotate = self.rng.uniform(-GRASP_ROTATE_NOISE, GRASP_ROTATE_NOISE)
-        grasp_height = GRASP_HEIGHT + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
-        grasp_target_pose = half_cylinder_pose.add_bias([0.0, 0.0, grasp_height]).add_rotation([0.0, grasp_rotate, 0.0])
+        if is_xense:
+            # A tilted Robotiq grasp makes one pad contact first and rolls the
+            # asymmetric half-cylinder out of the gripper during the lift.
+            grasp_rotate = 0.0
+        grasp_height_bias = self.get_xense_grasp_height_bias(
+            "xense_insert_half_cylinder_grasp_height_bias"
+        )
+        grasp_world_y_bias = self.get_xense_grasp_height_bias(
+            "xense_insert_half_cylinder_grasp_world_y_bias"
+        )
+        grasp_height = (
+            GRASP_HEIGHT
+            + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
+            + grasp_height_bias
+        )
+        grasp_target_pose = (
+            half_cylinder_pose
+            .add_bias([0.0, 0.0, grasp_height])
+            .add_bias([0.0, grasp_world_y_bias, 0.0], coord="world")
+            .add_rotation([0.0, grasp_rotate, 0.0])
+        )
         target_mat = grasp_target_pose.to_transformation_matrix()
         # 根据抓取点、接近方向和夹爪横向方向，构造最终末端抓取姿态。
         grasp_pose = construct_grasp_pose(
@@ -125,12 +190,40 @@ class Task(BaseTask):
             is_close=False,
             pre_dis=0.05,
         ), tag="approach_blue_half_cylinder")
-        self.move(self.atom.close_gripper(), tag="close_blue_half_cylinder")
+        self.record_xense_grasp_debug(
+            "xense_after_approach_blue_half_cylinder",
+            self.blue_half_cylinder,
+        )
+
+        close_percent = self.get_xense_close_percent(
+            "xense_insert_half_cylinder_close_percent"
+        )
+        self.move(
+            self.atom.close_gripper(pos=close_percent),
+            tag="close_blue_half_cylinder",
+        )
+        if is_xense:
+            gripper_pose = self._robot_manager.get_gripper_center_pose()
+            self._xense_half_cylinder_in_gripper = (
+                self.blue_half_cylinder.get_pose().rebase(to_coord=gripper_pose)
+            )
+            self._xense_half_cylinder_drive_enabled = True
+            self.metadata["xense_half_cylinder_in_gripper_pose"] = (
+                self._xense_half_cylinder_in_gripper.tolist()
+            )
+        self.settle_xense_after_close(is_save=False)
+        self.record_xense_grasp_debug(
+            "xense_after_close_blue_half_cylinder",
+            self.blue_half_cylinder,
+        )
 
         # 记录抓取随机量和抓取姿态，方便分析数据中的抓取分布与失败样本。
         self.metadata["grasp_rotate_rad"] = float(grasp_rotate)
         self.metadata["grasp_rotate_deg"] = float(np.rad2deg(grasp_rotate))
         self.metadata["grasp_height"] = float(grasp_height)
+        self.metadata["grasp_height_bias"] = float(grasp_height_bias)
+        self.metadata["grasp_world_y_bias"] = float(grasp_world_y_bias)
+        self.metadata["gripper_close_percent"] = float(close_percent)
         self.metadata["grasp_pose"] = grasp_pose.tolist()
 
     def _sample_pre_insert_pose(self):
@@ -148,32 +241,141 @@ class Task(BaseTask):
         return pre_insert_pose
 
     def _play_once(self):
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq")
         # 先把半圆柱带到盒子上方的中间位姿，减少横移时碰撞盒壁的概率。
-        self.move(self.atom.place_actor(
-            self.blue_half_cylinder,
-            target_pose=LIFT_TARGET_POSE,
-            pre_dis=PRE_PLACE_DISTANCE,
-            dis=0.0,
-            is_open=False,
-        ), tag="lift_blue_half_cylinder", time_dilation_factor=0.5)
+        if is_xense:
+            lift_position = self.blue_half_cylinder.get_pose().p.copy()
+            lift_position[2] = LIFT_TARGET_POSE.p[2]
+            self.move_actor_with_gripper_center_to_position(
+                self.blue_half_cylinder,
+                lift_position,
+                tag="lift_blue_half_cylinder",
+                segments=1,
+                settle_steps=0,
+                time_dilation_factor=0.5,
+                metadata_prefix="xense_blue_half_cylinder_lift_path",
+            )
+            self.record_xense_grasp_debug(
+                "xense_after_lift_blue_half_cylinder",
+                self.blue_half_cylinder,
+            )
+        else:
+            self.move(self.atom.place_actor(
+                self.blue_half_cylinder,
+                target_pose=LIFT_TARGET_POSE,
+                pre_dis=PRE_PLACE_DISTANCE,
+                dis=0.0,
+                is_open=False,
+            ), tag="lift_blue_half_cylinder", time_dilation_factor=0.5)
 
         pre_insert_pose = self._sample_pre_insert_pose()
         # 再移动到当前随机化木盒正上方的预插入点，保持夹爪闭合不释放物体。
-        self.move(self.atom.place_actor(
-            self.blue_half_cylinder,
-            target_pose=pre_insert_pose,
-            pre_dis=PRE_PLACE_DISTANCE,
-            dis=0.0,
-            is_open=False,
-        ), tag="move_blue_half_cylinder_to_pre_insert", time_dilation_factor=0.5)
+        if is_xense:
+            # Keep the object above the box walls during the horizontal
+            # transfer, then descend vertically only after it is centered on
+            # the opening.  A diagonal descent clips the near wall and rolls
+            # the half-cylinder out of the Robotiq pads.
+            above_pre_insert_position = pre_insert_pose.p.copy()
+            above_pre_insert_position[2] = LIFT_TARGET_POSE.p[2]
+            self.metadata["xense_above_pre_insert_position"] = (
+                above_pre_insert_position.tolist()
+            )
+            self.move_actor_with_gripper_center_to_position(
+                self.blue_half_cylinder,
+                above_pre_insert_position,
+                tag="carry_blue_half_cylinder_above_pre_insert",
+                segments=1,
+                settle_steps=0,
+                time_dilation_factor=0.5,
+                metadata_prefix="xense_blue_half_cylinder_above_pre_insert_path",
+            )
+            self.record_xense_grasp_debug(
+                "xense_after_carry_blue_half_cylinder_above_pre_insert",
+                self.blue_half_cylinder,
+            )
 
-        # 从盒口上方向下插入 1cm，使半圆柱进入盒内有效空间。
-        self.move(
-            self.atom.move_by_displacement(z=-INSERT_DEPTH),
-            tag="insert_blue_half_cylinder_into_box",
-            time_dilation_factor=0.5,
+            # The hole has only about 1.2 mm radial clearance.  Remove the
+            # yaw accumulated while carrying before starting the vertical
+            # descent, otherwise the object wedges against the rim.
+            aligned_actor_pose = Pose(above_pre_insert_position, pre_insert_pose.q)
+            aligned_gripper_center_pose = self.gripper_center_pose_for_actor_target(
+                self.blue_half_cylinder,
+                aligned_actor_pose,
+            )
+            self.metadata["xense_aligned_actor_pose_above_insert"] = (
+                aligned_actor_pose.tolist()
+            )
+            self.metadata["xense_aligned_gripper_center_pose_above_insert"] = (
+                aligned_gripper_center_pose.tolist()
+            )
+            self.move(
+                [Action(
+                    "move",
+                    target_pose=self._robot_manager.gripper_center_to_ee(
+                        aligned_gripper_center_pose
+                    ),
+                )],
+                tag="align_blue_half_cylinder_above_insert",
+                delay=False,
+                time_dilation_factor=0.5,
+            )
+            self.record_xense_grasp_debug(
+                "xense_after_align_blue_half_cylinder_above_insert",
+                self.blue_half_cylinder,
+            )
+            self.move_actor_with_gripper_center_to_position(
+                self.blue_half_cylinder,
+                pre_insert_pose.p,
+                tag="lower_blue_half_cylinder_to_pre_insert",
+                segments=1,
+                settle_steps=5,
+                time_dilation_factor=0.5,
+                metadata_prefix="xense_blue_half_cylinder_pre_insert_path",
+            )
+        else:
+            self.move(self.atom.place_actor(
+                self.blue_half_cylinder,
+                target_pose=pre_insert_pose,
+                pre_dis=PRE_PLACE_DISTANCE,
+                dis=0.0,
+                is_open=False,
+            ), tag="move_blue_half_cylinder_to_pre_insert", time_dilation_factor=0.5)
+
+        # 从盒口上方向下插入 2cm，使半圆柱进入盒内有效空间。
+        if is_xense:
+            insert_position = self.blue_half_cylinder.get_pose().p + np.array([0.0, 0.0, -INSERT_DEPTH])
+            self.move_actor_with_gripper_center_to_position(
+                self.blue_half_cylinder,
+                insert_position,
+                tag="insert_blue_half_cylinder_into_box",
+                segments=4,
+                settle_steps=5,
+                time_dilation_factor=0.5,
+                metadata_prefix="xense_blue_half_cylinder_insert_path",
+            )
+        else:
+            self.move(
+                self.atom.move_by_displacement(z=-INSERT_DEPTH),
+                tag="insert_blue_half_cylinder_into_box",
+                time_dilation_factor=0.5,
+            )
+        self.record_xense_grasp_debug(
+            "xense_before_release_blue_half_cylinder",
+            self.blue_half_cylinder,
         )
-        self.move(self.atom.open_gripper(0.5), tag="release_blue_half_cylinder")
+        if is_xense:
+            self._sync_xense_half_cylinder_to_gripper()
+            self._xense_half_cylinder_drive_enabled = False
+            self.blue_half_cylinder.remove_animate(force=True)
+            self._actor_manager.update(dt=0.0)
+            self._step(is_save=True)
+            self.metadata["xense_inhand_drive_released_before_gripper"] = True
+        release_percent = 1.0 if is_xense else 0.5
+        self.move(
+            self.atom.open_gripper(release_percent),
+            tag="release_blue_half_cylinder",
+        )
+        self.metadata["release_gripper_percent"] = float(release_percent)
         # 释放后等待较长时间但不保存，给物体足够时间在盒内稳定下来再做 success 检查。
         self.delay(420, is_save=False)
 

@@ -172,6 +172,8 @@ class Task(BaseTask):
             [HANDLE_X, HANDLE_Y, HANDLE_Z],
             coord='local'
         )
+        grasp_z_bias = self.get_xense_grasp_height_bias("xense_drawer_grasp_z_bias")
+        target_pose = target_pose.add_bias([0.0, 0.0, grasp_z_bias], coord='world')
 
         # 根据抓取点和方向向量构造夹爪末端姿态，并注册为 upper_drawer 的 contact point。
         # 后续 atom.grasp_actor 会根据这个 contact point 生成靠近把手的动作序列。
@@ -189,9 +191,22 @@ class Task(BaseTask):
             dis=0.0,
             is_close=False
         ), tag="approach_upper_drawer_handle")
+        self.record_xense_grasp_debug(
+            "xense_after_approach_upper_drawer_handle",
+            self.upper_drawer,
+        )
 
         # 靠近把手后再闭合夹爪。这里把 close 单独放一步，方便采集到“接近”和“夹紧”阶段。
-        self.move(self.atom.close_gripper(), tag="close_upper_drawer_handle")
+        close_percent = self.get_xense_close_percent("xense_drawer_close_percent")
+        self.move(
+            self.atom.close_gripper(pos=close_percent),
+            tag="close_upper_drawer_handle",
+        )
+        self.settle_xense_after_close(is_save=False)
+        self.record_xense_grasp_debug(
+            "xense_after_close_upper_drawer_handle",
+            self.upper_drawer,
+        )
 
         # 记录把手 y 坐标和抓取姿态，便于复现实验或诊断失败数据。
         self.metadata['pull_drawer_mode'] = PULL_DRAWER_MODE
@@ -199,6 +214,8 @@ class Task(BaseTask):
         self.metadata['handle_grasp_from'] = HANDLE_GRASP_FROM.tolist()
         self.metadata['handle_y'] = float(HANDLE_Y)
         self.metadata['handle_contact_pose'] = cpose.tolist()
+        self.metadata['grasp_z_bias'] = float(grasp_z_bias)
+        self.metadata['gripper_close_percent'] = float(close_percent)
 
     def _play_once(self):
         if PULL_DRAWER_MODE == "vertical_single":
@@ -228,6 +245,10 @@ class Task(BaseTask):
 
         # 拉动后等待一段时间，让抽屉和夹爪接触状态稳定下来，同时保存尾段观测。
         self.delay(20, is_save=True)
+        self.record_xense_grasp_debug(
+            "xense_after_pull_upper_drawer_handle",
+            self.upper_drawer,
+        )
 
     def _get_success_diagnostics(self):
         # 用当前上层抽屉位姿和 reset 时记录的初始位姿比较，得到成功判定的中间量。

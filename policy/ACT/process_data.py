@@ -8,21 +8,22 @@ import h5py
 import numpy as np
 import argparse
 import json
+import shutil
 from tqdm import tqdm
 from envs.utils.data import HDF5Handler
 
 
-def load_hdf5(dataset_paths, camera_type, downsample_factor, tactile_key="rgb_marker"):
+def _select_data_paths(sample_hdf5_path, camera_type, tactile_key="rgb_marker"):
     data_paths = [
         'embodiment/joint',
     ]
     if camera_type == 'all':
-        data_paths.append(f'observation/head/rgb')
-        data_paths.append(f'observation/wrist/rgb')
+        data_paths.append('observation/head/rgb')
+        data_paths.append('observation/wrist/rgb')
     else:
-        data_paths.append(f'observation/{camera_type}/rgb')    
-    
-    with h5py.File(str(dataset_paths[0]), 'r') as f:
+        data_paths.append(f'observation/{camera_type}/rgb')
+
+    with h5py.File(str(sample_hdf5_path), 'r') as f:
         candidates = [
             (f'tactile/left_tactile/{tactile_key}', f'tactile/right_tactile/{tactile_key}'),
             ('tactile/left_tactile/rgb_marker', 'tactile/right_tactile/rgb_marker'),
@@ -35,8 +36,42 @@ def load_hdf5(dataset_paths, camera_type, downsample_factor, tactile_key="rgb_ma
                 data_paths.append(right_path)
                 break
         else:
-            raise KeyError(f"Could not find tactile key '{tactile_key}' in {dataset_paths[0]}")
+            raise KeyError(f"Could not find tactile key '{tactile_key}' in {sample_hdf5_path}")
 
+    return data_paths
+
+
+def _read_dataset(handler, h5_file, data_path):
+    endpoint = data_path.rsplit('/', 1)[-1]
+    data = h5_file[data_path][()]
+    if 'rgb' in endpoint:
+        return handler.stream_to_img(data, resize=False, convert_channels=False, path=data_path)
+    return data
+
+
+def _episode_pair_count(hdf5_path, downsample_factor):
+    with h5py.File(str(hdf5_path), 'r') as f:
+        return len(np.arange(0, len(f['embodiment/joint']) - 1, downsample_factor))
+
+
+def _load_episode_hdf5(hdf5_path, data_paths, downsample_factor):
+    handler = HDF5Handler()
+    result = {}
+    with h5py.File(str(hdf5_path), 'r') as f:
+        joint = f['embodiment/joint'][()]
+        downsample_arange = np.arange(0, len(joint) - 1, downsample_factor)
+        result['embodiment/joint_state'] = joint[:-1][downsample_arange, 0:8]
+        result['embodiment/joint_action'] = joint[1:][downsample_arange, 0:8]
+
+        for data_path in data_paths[1:]:
+            data = _read_dataset(handler, f, data_path)
+            result[data_path] = data[:-1][downsample_arange]
+
+    return result
+
+
+def load_hdf5(dataset_paths, camera_type, downsample_factor, tactile_key="rgb_marker"):
+    data_paths = _select_data_paths(dataset_paths[0], camera_type, tactile_key)
     data = HDF5Handler().batch_gather_hdf5(
         dataset_paths,
         data_paths=data_paths,
@@ -47,7 +82,7 @@ def load_hdf5(dataset_paths, camera_type, downsample_factor, tactile_key="rgb_ma
     left_path, right_path = data_paths[-2:]
     data['tactile/left_tactile/train_image'] = data[left_path]
     data['tactile/right_tactile/train_image'] = data[right_path]
- 
+
     return data
 
 
@@ -58,13 +93,9 @@ def data_transform(path, episode_num, save_path, tactile_key="rgb_marker"):
         if len(list(hdf5_dir.glob('*.hdf5'))) == 0:
             print(f"HDF5 directory does not exist at \n{hdf5_dir}\n")
             raise FileNotFoundError(f"HDF5 directory not found: {hdf5_dir}")
-    
-    # 获取所有 episode 文件
+
     hdf5_files = sorted(hdf5_dir.glob('*.hdf5'), key=lambda x: int(x.stem))
     assert episode_num <= len(hdf5_files), f"data num not enough: requested {episode_num}, found {len(hdf5_files)}"
-
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
 
     global task_name
     with open('../task_settings.json', 'r') as f:
@@ -77,52 +108,49 @@ def data_transform(path, episode_num, save_path, tactile_key="rgb_marker"):
         f"tactile key '{tactile_key}', downsample factor {downsample_factor}."
     )
 
-    # 批量加载所有 episode
     dataset_paths = [str(hdf5_files[i]) for i in range(episode_num)]
-    data = load_hdf5(dataset_paths[:episode_num], camera_type, downsample_factor, tactile_key=tactile_key)
-    
-    # 提取批量数据
-    joint_state_all = data['embodiment/joint_state'][:, 0:8]  # (T_total, 8)
-    joint_action_all = data['embodiment/joint_action'][:, 0:8]  # (T_total, 8)
-    if camera_type == 'all':
-        head_cam_all = data[f'observation/head/rgb']  # (T_total, H, W, 3)
-        wrist_cam_all = data[f'observation/wrist/rgb']  # (T_total, H, W, 3)
-    else:
-        head_cam_all = data[f'observation/{camera_type}/rgb']  # (T_total, H, W, 3)
-    left_tac_all = data['tactile/left_tactile/train_image']  # (T_total, H, W, 3)
-    right_tac_all = data['tactile/right_tactile/train_image']  # (T_total, H, W, 3)
-    episode_ends = data['episode_ends']
-    
-    start_idx = 0
-    for i in tqdm(range(episode_num), desc='Writing episodes'):
-        end_idx = episode_ends[i]
-        
-        joint_state = joint_state_all[start_idx:end_idx]
-        joint_action = joint_action_all[start_idx:end_idx]
-        if camera_type == 'all':
-            head_cam = head_cam_all[start_idx:end_idx]
-            wrist_cam = wrist_cam_all[start_idx:end_idx]
-        else:
-            head_cam = head_cam_all[start_idx:end_idx]
-        left_tac = left_tac_all[start_idx:end_idx]
-        right_tac = right_tac_all[start_idx:end_idx]
+    data_paths = _select_data_paths(dataset_paths[0], camera_type, tactile_key)
+    left_path, right_path = data_paths[-2:]
+    total_pairs = sum(_episode_pair_count(p, downsample_factor) for p in dataset_paths)
+    print(f"Total data pairs: {total_pairs}")
 
-        # 保存为 ACT 格式的 HDF5
-        hdf5path = os.path.join(save_path, f"episode_{i}.hdf5")
-        with h5py.File(hdf5path, "w") as f:
-            f.create_dataset("action", data=np.array(joint_action))
-            obs = f.create_group("observations")
-            obs.create_dataset("qpos", data=np.array(joint_state))
-            image = obs.create_group("images")
-            # 只保存头部相机和触觉传感器
-            if camera_type == 'all':
-                image.create_dataset("cam_high", data=np.stack(head_cam), dtype=np.uint8)
-                image.create_dataset("cam_wrist", data=np.stack(wrist_cam), dtype=np.uint8)
-            else:
-                image.create_dataset("cam_high", data=np.stack(head_cam), dtype=np.uint8)
-            image.create_dataset("tac_left", data=np.stack(left_tac), dtype=np.uint8)
-            image.create_dataset("tac_right", data=np.stack(right_tac), dtype=np.uint8)
-        start_idx = end_idx
+    tmp_save_path = f"{save_path}.tmp"
+    if os.path.exists(tmp_save_path):
+        shutil.rmtree(tmp_save_path)
+    os.makedirs(tmp_save_path, exist_ok=True)
+
+    try:
+        for i, hdf5_path in enumerate(tqdm(dataset_paths, desc='Processing episodes', unit='episode')):
+            episode = _load_episode_hdf5(hdf5_path, data_paths, downsample_factor)
+            joint_state = episode['embodiment/joint_state']
+            joint_action = episode['embodiment/joint_action']
+            left_tac = episode[left_path]
+            right_tac = episode[right_path]
+
+            hdf5path = os.path.join(tmp_save_path, f"episode_{i}.hdf5")
+            with h5py.File(hdf5path, "w") as f:
+                f.create_dataset("action", data=np.asarray(joint_action))
+                obs = f.create_group("observations")
+                obs.create_dataset("qpos", data=np.asarray(joint_state))
+                image = obs.create_group("images")
+                if camera_type == 'all':
+                    image.create_dataset("cam_high", data=np.asarray(episode['observation/head/rgb']), dtype=np.uint8)
+                    image.create_dataset("cam_wrist", data=np.asarray(episode['observation/wrist/rgb']), dtype=np.uint8)
+                else:
+                    image.create_dataset(
+                        "cam_high",
+                        data=np.asarray(episode[f'observation/{camera_type}/rgb']),
+                        dtype=np.uint8,
+                    )
+                image.create_dataset("tac_left", data=np.asarray(left_tac), dtype=np.uint8)
+                image.create_dataset("tac_right", data=np.asarray(right_tac), dtype=np.uint8)
+
+        if os.path.exists(save_path):
+            shutil.rmtree(save_path)
+        os.replace(tmp_save_path, save_path)
+    except Exception:
+        shutil.rmtree(tmp_save_path, ignore_errors=True)
+        raise
 
     return episode_num, camera_type
 
@@ -149,7 +177,7 @@ if __name__ == "__main__":
 
     input_path = os.path.join("../../data/", task_name, task_config)
     output_path = f"./data/sim-{task_name}/{task_config}-{expert_data_num}"
-    
+
     begin, cam_type = data_transform(input_path, expert_data_num, output_path, tactile_key=tactile_key)
 
     SIM_TASK_CONFIGS_PATH = "./SIM_TASK_CONFIGS.json"
@@ -164,11 +192,10 @@ if __name__ == "__main__":
         "dataset_dir": f"./data/sim-{task_name}/{task_config}-{expert_data_num}",
         "num_episodes": expert_data_num,
         "episode_len": 1000,
-        "camera_names": ["cam_high", "tac_left", "tac_right"] if cam_type != 'all' \
+        "camera_names": ["cam_high", "tac_left", "tac_right"] if cam_type != 'all'
             else ["cam_high", "cam_wrist", "tac_left", "tac_right"],
         "tactile_key": tactile_key,
     }
 
     with open(SIM_TASK_CONFIGS_PATH, "w") as f:
         json.dump(SIM_TASK_CONFIGS, f, indent=4)
-    

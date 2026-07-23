@@ -53,6 +53,7 @@ class ActorCfg(UipcObjectCfg):
     visual_asset: str | None = None
     visual_prim_paths: list[str] = []
     show_physics_mesh: bool = True
+    keep_constrained: bool = False
 
 class Actor(UipcObject):
     cfg: ActorCfg
@@ -101,6 +102,7 @@ class Actor(UipcObject):
         density=1e3,
         visual_asset_path=None,
         show_physics_mesh: bool = True,
+        keep_constrained: bool = False,
     ):
         asset_path = Path(asset_path)
         if not asset_path.is_absolute():
@@ -125,6 +127,7 @@ class Actor(UipcObject):
             visual_asset=visual_asset,
             visual_prim_paths=visual_prim_paths,
             show_physics_mesh=show_physics_mesh,
+            keep_constrained=keep_constrained,
             prim_path=f"/World/envs/env_.*/{name}",
             init_state=AssetBaseCfg.InitialStateCfg(pos=pose.p, rot=pose.q),
             spawn=sim_utils.UsdFileCfg(
@@ -241,8 +244,9 @@ class Actor(UipcObject):
         self.next_mat = mat.cpu().numpy()
         self.next_status = 'set'
     
-    def remove_animate(self):
-        self.next_status = 'unset'
+    def remove_animate(self, force: bool = False):
+        if force or not self.cfg.keep_constrained:
+            self.next_status = 'unset'
 
     def set_texture(self, mdl_path:str, rng=None):
         prim = self._prim_view.prims[0]
@@ -357,12 +361,14 @@ class ActorManager:
         density=1e3,
         visual_asset_path: str | None = None,
         show_physics_mesh: bool = True,
+        keep_constrained: bool = False,
     ):
         actor = Actor.from_usd_file(
             self.task, name, asset_path, pose,
             constitution_cfg=constitution_cfg, density=density,
             visual_asset_path=visual_asset_path,
             show_physics_mesh=show_physics_mesh,
+            keep_constrained=keep_constrained,
         )
         self.actors[actor.cfg.name] = actor
         return actor
