@@ -8,12 +8,12 @@ FRAME_INNER_SIZE = 0.0900
 FRAME_THICKNESS = 0.0020
 CUBE_SIZE = 0.0300
 
-FRAME_BASE_POSE = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
-CUBE_BASE_POSE = Pose([0.35, 0.25, 0.002], [1, 0, 0, 0])
+FRAME_BASE_POSE = Pose([0.4, -0.1, 0.002], [1, 0, 0, 0])
+CUBE_BASE_POSE = Pose([0.35, 0.2, 0.002], [1, 0, 0, 0])
 
-# reset 时只在 xy 平面加小扰动，z 维保持 0，避免物体初始高度被随机噪声带离桌面。
-XY_NOISE = (0.01, 0.01, 0.0)
-PLACE_XY_NOISE = 0.01
+# reset 时只在 xy 平面加入 +/-5cm 扰动，z 维保持 0，避免物体初始高度被带离桌面。
+XY_NOISE = (0.05, 0.05, 0.0)
+PLACE_XY_NOISE = 0.02
 GRASP_ROTATE_NOISE = np.deg2rad(10.0)
 GRASP_HEIGHT = CUBE_SIZE * 0.5
 GRASP_HEIGHT_NOISE = 0.003
@@ -73,7 +73,7 @@ class Task(BaseTask):
         )
 
     def _reset_actors(self):
-        # 每个 episode 都重新采样黄色区域和方块的初始 xy 位置，让策略看到轻微的位姿变化。
+        # 每个 episode 都独立采样黄色区域和木块的初始 xy 位置。
         area_offset = self.create_noise(list(XY_NOISE))
         cube_offset = self.create_noise(list(XY_NOISE))
         area_pose = FRAME_BASE_POSE.add_offset(area_offset)

@@ -8,12 +8,16 @@ FRAME_INNER_SIZE = 0.0900
 FRAME_THICKNESS = 0.0020
 CUBE_SIZE = 0.0300
 
-FRAME_BASE_POSE = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
-CUBE_BASE_POSE = Pose([0.35, 0.25, 0.002], [1, 0, 0, 0])
+YELLOW_FRAME_BASE_POSE = Pose([0.38, -0.1, 0.002], [1, 0, 0, 0])
+BLUE_FRAME_BASE_POSE = Pose([0.5, -0.1, 0.002], [1, 0, 0, 0])
+CUBE_BASE_POSE = Pose([0.4, 0.1, 0.002], [1, 0, 0, 0])
 
-# reset 时只在 xy 平面加小扰动，z 维保持 0，避免物体初始高度被随机噪声带离桌面。
-XY_NOISE = (0.01, 0.01, 0.0)
-PLACE_XY_NOISE = 0.01
+# reset 时只在 xy 平面加入扰动，z 维保持不变，避免物体初始高度偏离桌面。
+FRAME_XY_NOISE = (0.03, 0.03, 0.0)
+CUBE_XY_NOISE = (0.05, 0.05, 0.0)
+PLACE_XY_NOISE = 0.02
+PLACE_TARGET_Z = 0.020
+RELEASE_TARGET_Z = 0.010
 GRASP_ROTATE_NOISE = np.deg2rad(10.0)
 GRASP_HEIGHT = CUBE_SIZE * 0.5
 GRASP_HEIGHT_NOISE = 0.003
@@ -21,10 +25,14 @@ PRE_GRASP_HEIGHT = 0.0200
 LIFT_HEIGHT = 0.0300
 SUCCESS_TABLE_HEIGHT_TOLERANCE = 0.003
 SUCCESS_MIN_GRIPPER_OPEN_RATIO = 0.4
+TARGET_AREA_COLORS = ("yellow", "blue")
 
 
 @configclass
 class TaskCfg(BaseTaskCfg):
+    # "random" 表示每个 episode 随机选择目标框，也可设为 "yellow" 或 "blue"。
+    target_area: Literal["random", "yellow", "blue"] = "yellow"
+
     cameras = [
         CameraCfg(
             name="head",
@@ -53,6 +61,10 @@ class TaskCfg(BaseTaskCfg):
 
 class Task(BaseTask):
     def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
+        if cfg.target_area not in ("random", *TARGET_AREA_COLORS):
+            raise ValueError(
+                f"target_area must be one of ('random', 'yellow', 'blue'), got {cfg.target_area!r}"
+            )
         cfg.sim.physics_material.dynamic_friction = 2.5
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
@@ -62,91 +74,105 @@ class Task(BaseTask):
         self.yellow_area = self._actor_manager.add_from_usd_file(
             name="yellow_area",
             asset_path="yellow_square_frame.usd",
-            pose=FRAME_BASE_POSE,
+            pose=YELLOW_FRAME_BASE_POSE,
+            density=1e6,
+        )
+        self.blue_area = self._actor_manager.add_from_usd_file(
+            name="blue_area",
+            asset_path="blue_square_frame.usd",
+            pose=BLUE_FRAME_BASE_POSE,
             density=1e6,
         )
         self.wooden_cube = self._actor_manager.add_from_usd_file(
             name="wooden_cube",
             asset_path="wooden_cube.usd",
             pose=CUBE_BASE_POSE,
-            density=1e3
+            density=1e3,
         )
 
+    def _select_target_area(self):
+        if self.cfg.target_area == "random":
+            self.target_area_color = str(self.rng.choice(TARGET_AREA_COLORS))
+        else:
+            self.target_area_color = self.cfg.target_area
+        self.target_area = {
+            "yellow": self.yellow_area,
+            "blue": self.blue_area,
+        }[self.target_area_color]
+
     def _reset_actors(self):
-        # 每个 episode 都重新采样黄色区域和方块的初始 xy 位置，让策略看到轻微的位姿变化。
-        area_offset = self.create_noise(list(XY_NOISE))
-        cube_offset = self.create_noise(list(XY_NOISE))
-        area_pose = FRAME_BASE_POSE.add_offset(area_offset)
+        # 两个框和木块分别独立采样 xy 扰动。
+        yellow_offset = self.create_noise(list(FRAME_XY_NOISE))
+        blue_offset = self.create_noise(list(FRAME_XY_NOISE))
+        cube_offset = self.create_noise(list(CUBE_XY_NOISE))
+        yellow_pose = YELLOW_FRAME_BASE_POSE.add_offset(yellow_offset)
+        blue_pose = BLUE_FRAME_BASE_POSE.add_offset(blue_offset)
         cube_pose = CUBE_BASE_POSE.add_offset(cube_offset)
 
-        self.yellow_area.set_pose(area_pose)
+        self.yellow_area.set_pose(yellow_pose)
+        self.blue_area.set_pose(blue_pose)
         self.wooden_cube.set_pose(cube_pose)
+        self._select_target_area()
 
-        self.metadata["area_xy_noise"] = area_offset.p.tolist()
+        self.metadata["yellow_area_xy_noise"] = yellow_offset.p.tolist()
+        self.metadata["blue_area_xy_noise"] = blue_offset.p.tolist()
         self.metadata["cube_xy_noise"] = cube_offset.p.tolist()
-        self.metadata["yellow_area_pose"] = area_pose.tolist()
+        self.metadata["yellow_area_pose"] = yellow_pose.tolist()
+        self.metadata["blue_area_pose"] = blue_pose.tolist()
         self.metadata["wooden_cube_pose"] = cube_pose.tolist()
+        self.metadata["target_area_color"] = self.target_area_color
 
     def _get_local_z_bounds(self, actor, fallback_half_height):
-        # 优先使用 actor 预先缓存的表面点估计局部 z 上下界；这样比硬编码高度更适配非规则几何。
+        # 优先使用 actor 缓存的表面点估计局部 z 上下界。
         if hasattr(actor, "origin_surf_pts"):
             local_points = np.asarray(actor.origin_surf_pts)
             return float(np.min(local_points[:, 2])), float(np.max(local_points[:, 2]))
-        # 如果没有表面点，就退回到传入的半高估计，保持采样逻辑可用。
         return -fallback_half_height, fallback_half_height
 
     def _get_world_z_bounds(self, actor, actor_pose, fallback_half_height):
-        # 使用最终位姿将局部表面点变换到世界坐标，倾斜时也能得到真实的最低表面高度。
+        # 使用最终位姿将局部表面点变换到世界坐标，倾斜时也能得到真实最低表面高度。
         if hasattr(actor, "origin_surf_pts"):
             local_points = np.asarray(actor.origin_surf_pts)
             world_points = local_points @ actor_pose.R.T + actor_pose.p
             return float(np.min(world_points[:, 2])), float(np.max(world_points[:, 2]))
-        # 缺少表面点时退回以 actor 原点为中心的尺寸估计，保证 success 诊断仍可执行。
         return (
             float(actor_pose.p[2] - fallback_half_height),
             float(actor_pose.p[2] + fallback_half_height),
         )
 
     def _sample_place_pose(self):
-        area_pose = self.yellow_area.get_pose()
+        area_pose = self.target_area.get_pose()
         cube_min_z, cube_max_z = self._get_local_z_bounds(self.wooden_cube, CUBE_SIZE * 0.5)
-        area_min_z, area_max_z = self._get_local_z_bounds(self.yellow_area, FRAME_THICKNESS * 0.5)
-        # 放置点在黄色区域中心附近随机 +/-10mm，避免每条轨迹完全重合。
+        area_min_z, area_max_z = self._get_local_z_bounds(self.target_area, FRAME_THICKNESS * 0.5)
         place_xy_noise = self.rng.uniform(-PLACE_XY_NOISE, PLACE_XY_NOISE, size=2)
-        # 目标 z 让方块底面刚好落在黄色区域表面：area_z + area_top - cube_bottom。
-        place_z = area_pose.p[2] + area_max_z - cube_min_z
         place_pose = Pose(
             [
                 area_pose.p[0] + place_xy_noise[0],
                 area_pose.p[1] + place_xy_noise[1],
-                place_z,
+                PLACE_TARGET_Z,
             ],
             [1, 0, 0, 0],
         )
         self.metadata["place_xy_noise"] = place_xy_noise.tolist()
-        self.metadata["area_local_z_bounds"] = [area_min_z, area_max_z]
+        self.metadata["target_area_local_z_bounds"] = [area_min_z, area_max_z]
         self.metadata["cube_local_z_bounds"] = [cube_min_z, cube_max_z]
         self.metadata["target_place_pose"] = place_pose.tolist()
         return place_pose
 
     def pre_move(self):
-        # 初始先等待若干仿真步，让物体在物理引擎中稳定，再打开夹爪准备抓取。
         self.delay(10)
         self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_cube")
 
         cube_pose = self.wooden_cube.get_pose()
-        # 抓取姿态以方块中心为基准，上移到半高附近；绕局部 y 轴加少量随机旋转，提高数据多样性。
         grasp_rotate = self.rng.uniform(-GRASP_ROTATE_NOISE, GRASP_ROTATE_NOISE)
         grasp_height = GRASP_HEIGHT + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
         target_pose = cube_pose.add_bias([0.0, 0.0, grasp_height]).add_rotation([0.0, grasp_rotate, 0.0])
         target_mat = target_pose.to_transformation_matrix()
-        # construct_grasp_pose 需要抓取点、接近方向和夹爪横向方向；这里沿目标局部 z 方向接近。
         grasp_pose = construct_grasp_pose(
             target_pose.p,
             target_mat[:3, 2],
             target_mat[:3, 0],
         )
-        # 先显式移动到抓取点世界 z 方向上方 2cm；move_to_pose 接收的是末端执行器位姿，因此需要转换。
         pre_grasp_gripper_center_pose = Pose(
             grasp_pose.p + np.array([0.0, 0.0, PRE_GRASP_HEIGHT]),
             grasp_pose.q,
@@ -157,7 +183,6 @@ class Task(BaseTask):
             tag="move_above_wooden_cube",
         )
 
-        # 从预抓取位移动到最终抓取点，不再让 planner 额外生成隐式预抓取段。
         contact_point_id = self.wooden_cube.register_point(grasp_pose, type="contact")
         self.move(self.atom.grasp_actor(
             self.wooden_cube,
@@ -177,34 +202,42 @@ class Task(BaseTask):
         self.metadata["grasp_pose"] = grasp_pose.tolist()
 
     def _play_once(self):
-        # 抓牢后先竖直上提 3cm，给方块离开桌面和越过黄色区域边框留出余量。
         self.move(self.atom.move_by_displacement(z=LIFT_HEIGHT), tag="lift_wooden_cube")
 
-        # 根据当前黄色区域位置采样本轮放置目标；该函数同时会把噪声和目标位姿写入 metadata。
         place_pose = self._sample_place_pose()
         self.move(self.atom.place_actor(
             self.wooden_cube,
             target_pose=place_pose,
             pre_dis=0.02,
-            dis=0.005,
+            dis=0.00,
             is_open=False,
-        ), tag="place_wooden_cube_on_yellow_area", time_dilation_factor=0.5)
+        ), tag=f"place_wooden_cube_on_{self.target_area_color}_area", time_dilation_factor=0.5)
+
+        cube_pose_before_descent = self.wooden_cube.get_pose()
+        descent_z = RELEASE_TARGET_Z - cube_pose_before_descent.p[2]
+        self.move(
+            self.atom.move_by_displacement(z=descent_z),
+            tag="lower_wooden_cube_to_release_height"
+        )
+        self.metadata["release_target_z"] = float(RELEASE_TARGET_Z)
+        self.metadata["cube_pose_before_descent"] = cube_pose_before_descent.tolist()
+        self.metadata["descent_z"] = float(descent_z)
+        self.metadata["cube_pose_before_release"] = self.wooden_cube.get_pose().tolist()
+
         self.move(self.atom.open_gripper(0.5), tag="release_wooden_cube")
-        # 松爪后不保存等待帧，避免把纯稳定过程混入动作数据，同时让 success 检查读到更稳定的物理状态。
         self.delay(20, is_save=False)
 
     def _get_success_diagnostics(self):
-        area_pose = self.yellow_area.get_pose()
+        target_area_pose = self.target_area.get_pose()
         cube_pose = self.wooden_cube.get_pose()
-        # 将方块位姿转到黄色区域坐标系下，后续 xy 判断就可以直接和方框内半径比较。
-        cube_in_area = cube_pose.rebase(area_pose)
+        # 只相对于本轮指定区域检查位置，放入另一个框不会判定成功。
+        cube_in_target_area = cube_pose.rebase(target_area_pose)
         inner_half_size = FRAME_INNER_SIZE * 0.5
         cube_half_size = CUBE_SIZE * 0.5
-        # center_* 只检查方块中心是否在框内；footprint_* 进一步要求方块外轮廓也完全落在内框里。
-        center_x_ok = bool(abs(cube_in_area.p[0]) <= inner_half_size)
-        center_y_ok = bool(abs(cube_in_area.p[1]) <= inner_half_size)
-        footprint_x_ok = bool(abs(cube_in_area.p[0]) + cube_half_size <= inner_half_size)
-        footprint_y_ok = bool(abs(cube_in_area.p[1]) + cube_half_size <= inner_half_size)
+        center_x_ok = bool(abs(cube_in_target_area.p[0]) <= inner_half_size)
+        center_y_ok = bool(abs(cube_in_target_area.p[1]) <= inner_half_size)
+        footprint_x_ok = bool(abs(cube_in_target_area.p[0]) + cube_half_size <= inner_half_size)
+        footprint_y_ok = bool(abs(cube_in_target_area.p[1]) + cube_half_size <= inner_half_size)
         cube_min_world_z, cube_max_world_z = self._get_world_z_bounds(
             self.wooden_cube,
             cube_pose,
@@ -219,10 +252,13 @@ class Task(BaseTask):
         gripper_open_ratio = gripper_qpos / gripper_max_qpos if gripper_max_qpos > 0.0 else 0.0
         gripper_open_ok = bool(gripper_open_ratio >= SUCCESS_MIN_GRIPPER_OPEN_RATIO)
         return {
-            "yellow_area_pose": area_pose.tolist(),
+            "target_area_color": self.target_area_color,
+            "target_area_pose": target_area_pose.tolist(),
+            "yellow_area_pose": self.yellow_area.get_pose().tolist(),
+            "blue_area_pose": self.blue_area.get_pose().tolist(),
             "wooden_cube_pose": cube_pose.tolist(),
-            "cube_pose_in_area": cube_in_area.tolist(),
-            "cube_xy_in_area": cube_in_area.p[:2].tolist(),
+            "cube_pose_in_target_area": cube_in_target_area.tolist(),
+            "cube_xy_in_target_area": cube_in_target_area.p[:2].tolist(),
             "frame_outer_half_size": float(FRAME_OUTER_SIZE * 0.5),
             "frame_inner_half_size": float(inner_half_size),
             "cube_half_size": float(cube_half_size),
@@ -245,7 +281,6 @@ class Task(BaseTask):
         }
 
     def check_success(self):
-        # 成功要求木块完全位于框内、已经落桌，并且夹爪实际开度表明木块已被松开。
         diagnostics = self._get_success_diagnostics()
         self.metadata["success_diagnostics"] = diagnostics
         return bool(
