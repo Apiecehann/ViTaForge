@@ -18,6 +18,8 @@ Each policy action is held for two simulator steps, matching the demonstration
 For tasks where `Pre_Move` establishes the grasp, the learned action controls the
 seven arm joints and keeps the planner's gripper target unchanged. Use
 `--control-gripper` only for tasks whose action phase intentionally opens or closes it.
+Joint commands use physical PD targets by default so FEM contact sees continuous motion.
+`--force-control` is reserved for direct-position diagnostics.
 
 The BC and RL feature extractors start from the same multimodal encoder weights. The
 encoder can stay frozen for the first comparison or be fine-tuned with

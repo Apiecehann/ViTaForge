@@ -20,6 +20,7 @@ class ResidualTactileEnv(gym.Env):
         residual_scale=0.5,
         action_repeat=2,
         control_gripper=False,
+        force_control=False,
         seed=0,
         device="cuda:0",
     ):
@@ -29,6 +30,7 @@ class ResidualTactileEnv(gym.Env):
         self.residual_scale = float(residual_scale)
         self.action_repeat = int(action_repeat)
         self.control_gripper = bool(control_gripper)
+        self.force_control = bool(force_control)
         self.controlled_action_dim = 8 if self.control_gripper else 7
         self.next_seed = int(seed)
         self.device = torch.device(device)
@@ -145,7 +147,7 @@ class ResidualTactileEnv(gym.Env):
         raw_observation, reward, terminated, truncated, info = self.task.env_step(
             final_action,
             action_type="qpos",
-            force=True,
+            force=self.force_control,
             action_repeat=self.action_repeat,
         )
         self.last_observation = self.encode_observation(raw_observation)
