@@ -41,6 +41,8 @@ class ImageEncoder(nn.Module):
     ):
         super().__init__()
         self.imagenet_normalize = imagenet_normalize
+        normalization_mean = (0.485, 0.456, 0.406)
+        normalization_std = (0.229, 0.224, 0.225)
         if backbone == "act_resnet18":
             model = resnet18(weights="DEFAULT" if pretrained else None)
             self.output_dim = model.fc.in_features
@@ -63,17 +65,25 @@ class ImageEncoder(nn.Module):
                 global_pool="avg",
             )
             self.output_dim = int(self.model.num_features)
+            normalization_mean = self.model.pretrained_cfg.get(
+                "mean",
+                normalization_mean,
+            )
+            normalization_std = self.model.pretrained_cfg.get(
+                "std",
+                normalization_std,
+            )
         else:
             raise ValueError(f"Unsupported image backbone: {backbone}")
         _load_partial(self.model, checkpoint_path)
         self.register_buffer(
             "mean",
-            torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
+            torch.tensor(normalization_mean).view(1, 3, 1, 1),
             persistent=False,
         )
         self.register_buffer(
             "std",
-            torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1),
+            torch.tensor(normalization_std).view(1, 3, 1, 1),
             persistent=False,
         )
 

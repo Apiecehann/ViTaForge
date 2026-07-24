@@ -45,3 +45,4 @@ use `timm:<model_name>`, for example
 `timm:vit_base_patch32_clip_224.openai`. LingBot variants can be selected the same
 way when their timm model identifiers are locally registered, with weights supplied
 through `--visual-checkpoint`. Tactile defaults to the ACT-style ResNet18.
+Use `--image-size 224` for fixed-size ViT/CLIP backbones.
