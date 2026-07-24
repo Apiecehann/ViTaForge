@@ -1,0 +1,31 @@
+import argparse
+import json
+from pathlib import Path
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Summarize BC, SAC, and PPO evaluation results.")
+    parser.add_argument("run_root")
+    args = parser.parse_args()
+    run_root = Path(args.run_root)
+    comparison = {}
+    for algorithm in ("bc", "sac", "ppo"):
+        result_path = run_root / "evaluation" / algorithm / "evaluation.json"
+        with open(result_path, "r", encoding="utf-8") as result_file:
+            result = json.load(result_file)
+        comparison[algorithm] = {
+            "episodes": result["episodes"],
+            "successes": result["successes"],
+            "success_rate": result["success_rate"],
+            "mean_reward": result["mean_reward"],
+        }
+    best = max(comparison, key=lambda name: comparison[name]["success_rate"])
+    summary = {"best_success_rate": best, "comparison": comparison}
+    output_path = run_root / "comparison.json"
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        json.dump(summary, output_file, indent=2)
+    print(json.dumps(summary))
+
+
+if __name__ == "__main__":
+    main()
