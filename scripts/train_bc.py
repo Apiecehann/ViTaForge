@@ -47,6 +47,7 @@ def main():
     parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--camera-keys",
@@ -121,6 +122,7 @@ def main():
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
     history = []
     best_validation_loss = float("inf")
+    epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
         model.train()
         training_losses = []
@@ -156,7 +158,20 @@ def main():
         torch.save(model.checkpoint(metadata), output_dir / "bc_last.pt")
         if validation_loss < best_validation_loss:
             best_validation_loss = validation_loss
+            epochs_without_improvement = 0
             torch.save(model.checkpoint(metadata), output_dir / "bc_best.pt")
+        else:
+            epochs_without_improvement += 1
+        if epochs_without_improvement >= args.patience:
+            print(
+                json.dumps(
+                    {
+                        "early_stop_epoch": epoch,
+                        "best_validation_loss": best_validation_loss,
+                    }
+                )
+            )
+            break
     with open(output_dir / "training_history.json", "w", encoding="utf-8") as history_file:
         json.dump(history, history_file, indent=2)
 

@@ -17,7 +17,8 @@ mkdir -p "$run_root/logs" "$run_root/evaluation"
   2>&1 | tee "$run_root/logs/validate_dataset.log"
 
 "$python_bin" scripts/train_bc.py "$dataset_root/hdf5" "$run_root/bc" \
-  --epochs 30 --batch-size 32 --workers 4 --image-size 128 \
+  --epochs 30 --patience 5 --batch-size 32 --workers 4 --image-size 128 \
+  --visual-pretrained --tactile-pretrained \
   2>&1 | tee "$run_root/logs/train_bc.log"
 
 bc_checkpoint="$run_root/bc/bc_best.pt"
