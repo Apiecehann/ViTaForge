@@ -103,7 +103,25 @@ def log(msg):
         f.write(msg + '\n')
     print(msg)
 
-def run(task: 'BaseTask', episode_num, use_seed, start_seed, max_seed):
+def get_task_instruction(task_module, enabled: bool):
+    if not enabled:
+        return None
+    instruction = getattr(task_module, "TASK_INSTRUCTION", None)
+    if not instruction:
+        raise ValueError(
+            f"save_instruction is enabled, but envs.{Path(task_module.__file__).stem} "
+            "does not define TASK_INSTRUCTION."
+        )
+    return str(instruction)
+
+
+def reset_for_collect(task: 'BaseTask', seed: int, instruction: str | None):
+    task.reset(seed=seed)
+    if instruction is not None:
+        task.set_instruction(instruction)
+
+
+def run(task: 'BaseTask', episode_num, use_seed, start_seed, max_seed, instruction: str | None = None):
     suc_num, seed = 0, 0
     suc_map = []
     
@@ -123,7 +141,7 @@ def run(task: 'BaseTask', episode_num, use_seed, start_seed, max_seed):
     while suc_num < episode_num and (max_seed == -1 or seed <= max_seed):
         try:
             start_t = time.perf_counter()
-            task.reset(seed=seed)
+            reset_for_collect(task, seed, instruction)
             task.play_once()
             cost_t = time.perf_counter() - start_t
         except Exception as e:
@@ -179,6 +197,9 @@ def main():
     })
 
     task_module = importlib.import_module(f"envs.{task_file_name}")
+    instruction = get_task_instruction(
+        task_module, enabled=task_config.get("save_instruction", False)
+    )
     env_cfg:'BaseTaskCfg' = task_module.TaskCfg()
     env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
     env_cfg.save_dir = Path(task_config.get("save_dir", "./data")) / task_file_name / task_config_file.stem
@@ -199,6 +220,8 @@ def main():
     log_path = task.save_root / f"{time.strftime(r'%Y-%m-%d_%H:%M:%S')}.log"
     log(f"Task Name: {task_file_name}")
     log(f"Config Name: {task_config_file.stem}")
+    if instruction is not None:
+        log(f"Instruction: {instruction}")
     log(f"Task Config: \n{json.dumps(task_config, ensure_ascii=False, indent=4)}\n{'-' * 20}\n")
     log(f"Env Config: \n{env_cfg}\n{'-' * 20}\n")
     log(f"Init cost {init_cost:.2f} seconds, devices: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
@@ -208,6 +231,7 @@ def main():
         use_seed=task_config.get("use_seed", True),
         start_seed=start_seed,
         max_seed=max_seed,
+        instruction=instruction,
     )
 
 if __name__ == "__main__":

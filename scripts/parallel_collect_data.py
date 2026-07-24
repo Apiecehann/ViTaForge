@@ -40,6 +40,24 @@ def split_devices(cuda_visible_devices: str, workers: int):
     return assignment
 
 
+def get_task_instruction(task_module, enabled: bool):
+    if not enabled:
+        return None
+    instruction = getattr(task_module, "TASK_INSTRUCTION", None)
+    if not instruction:
+        raise ValueError(
+            f"save_instruction is enabled, but envs.{Path(task_module.__file__).stem} "
+            "does not define TASK_INSTRUCTION."
+        )
+    return str(instruction)
+
+
+def reset_for_collect(task: 'BaseTask', seed: int, instruction: str | None):
+    task.reset(seed=seed)
+    if instruction is not None:
+        task.set_instruction(instruction)
+
+
 def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
                progress, stop_event: Event, log_file: Path, device_list,
                status_dict, result_q: Queue):
@@ -67,6 +85,9 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
 
     try:
         task_module = importlib.import_module(f"envs.{task_file_name}")
+        instruction = get_task_instruction(
+            task_module, enabled=task_config.get("save_instruction", False)
+        )
 
         env_cfg: 'BaseTaskCfg' = task_module.TaskCfg()
         worker_id = current_process().name.split('-')[-1]
@@ -93,6 +114,8 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
 
         init_cost = time.perf_counter() - init_start
         print(f"[Worker {worker_id}] Task init in {init_cost:.2f}s; save_dir={base_save_dir}")
+        if instruction is not None:
+            print(f"[Worker {worker_id}] Instruction: {instruction}")
 
         mean_steps = 0.0
         status_dict['state'] = 'idle'
@@ -116,7 +139,7 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
                 status_dict['state'] = 'running'
                 status_dict['current_seed'] = seed
                 start_t = time.perf_counter()
-                task.reset(seed=seed)
+                reset_for_collect(task, seed, instruction)
                 task.play_once()
                 cost_t = time.perf_counter() - start_t
             except Exception:

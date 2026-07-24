@@ -1,6 +1,7 @@
 import sys
 import json
 import time
+import h5py
 import torch
 import pickle
 import torchvision
@@ -383,7 +384,7 @@ class BaseTask(UipcRLEnv):
         if self.cfg.video_frequency > 0:
             self.video_handler.reset(self.save_video_path, self.cfg.video_size)
         if instructions is not None:
-            self.instruction = self.rng.choice(instructions)
+            self.set_instruction(self.rng.choice(instructions))
         
         self.in_pre_move = True
         if self.first_frame is None:
@@ -658,6 +659,14 @@ class BaseTask(UipcRLEnv):
     def save_to_hdf5(self):
         self.save_path.parent.mkdir(parents=True, exist_ok=True)
         HDF5Handler().pkls_to_hdf5(self.tmp_save_dir, self.save_path)
+        if self.instruction:
+            with h5py.File(self.save_path, "a") as f:
+                f.attrs["instruction"] = self.instruction
+
+    def set_instruction(self, instruction: str | None):
+        self.instruction = "" if instruction is None else str(instruction)
+        if self.instruction:
+            self.metadata["instruction"] = self.instruction
     
     def _save_metadata(self):
         if self.metadata_path.exists():

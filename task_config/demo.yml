@@ -20,3 +20,5 @@ observations:
   actor: true
 
 save_pre_move: true
+
+save_instruction: true
