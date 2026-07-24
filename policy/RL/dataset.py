@@ -95,7 +95,11 @@ class ActionPhaseDataset(Dataset):
             observation = {
                 "qpos": torch.from_numpy(
                     hdf5_file["embodiment/joint"][frame_index, :8].astype(np.float32)
-                )
+                ),
+                "policy_step": torch.tensor(
+                    [hdf5_file["phase/policy_step"][frame_index]],
+                    dtype=torch.float32,
+                ),
             }
             for key, hdf5_path in self.layout.camera_paths.items():
                 observation[key] = _decode_image(
@@ -138,6 +142,7 @@ def split_episode_paths(dataset_root, validation_fraction=0.1, seed=0):
 def compute_joint_statistics(paths):
     qpos_values = []
     action_values = []
+    policy_steps = []
     for path in paths:
         with h5py.File(path, "r") as hdf5_file:
             joints = hdf5_file["embodiment/joint"][:, :8].astype(np.float32)
@@ -149,9 +154,11 @@ def compute_joint_statistics(paths):
                 ]
             qpos_values.append(joints[pair_indices])
             action_values.append(joints[pair_indices + 1])
+            policy_steps.append(hdf5_file["phase/policy_step"][pair_indices])
     qpos = np.concatenate(qpos_values)
     action = np.concatenate(action_values)
     delta = action - qpos
+    policy_step = np.concatenate(policy_steps).astype(np.float32)
     return {
         "qpos_mean": qpos.mean(axis=0),
         "qpos_std": np.maximum(qpos.std(axis=0), 1e-4),
@@ -159,4 +166,8 @@ def compute_joint_statistics(paths):
         "delta_std": np.maximum(delta.std(axis=0), 1e-5),
         "joint_min": action.min(axis=0),
         "joint_max": action.max(axis=0),
+        "policy_step_scale": np.array(
+            [max(float(policy_step.max()), 1.0)],
+            dtype=np.float32,
+        ),
     }

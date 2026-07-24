@@ -100,6 +100,7 @@ class MultiModalEncoder(nn.Module):
     def __init__(
         self,
         qpos_dim: int,
+        policy_step_dim: int,
         camera_keys: list[str],
         tactile_keys: list[str],
         feature_dim: int = 512,
@@ -117,7 +118,7 @@ class MultiModalEncoder(nn.Module):
         self.feature_dim = feature_dim
         self.visual_encoder = None
         self.tactile_encoder = None
-        input_dim = qpos_dim
+        input_dim = qpos_dim + policy_step_dim
         if self.camera_keys:
             self.visual_encoder = ImageEncoder(
                 backbone=visual_backbone,
@@ -156,6 +157,8 @@ class MultiModalEncoder(nn.Module):
 
     def forward(self, observation: dict[str, torch.Tensor]):
         features = [observation["qpos"].float()]
+        if "policy_step" in observation:
+            features.append(observation["policy_step"].float())
         if self.visual_encoder is not None:
             features.extend(
                 self._encode_modalities(

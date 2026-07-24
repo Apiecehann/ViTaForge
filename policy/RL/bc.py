@@ -28,6 +28,12 @@ class MultiModalBC(nn.Module):
         normalized["qpos"] = (
             observation["qpos"].float() - self.qpos_mean
         ) / self.qpos_std
+        if "policy_step" in observation:
+            normalized["policy_step"] = torch.clamp(
+                observation["policy_step"].float() / self.policy_step_scale,
+                min=0.0,
+                max=1.5,
+            )
         return normalized
 
     def forward_normalized(self, observation):
@@ -49,6 +55,7 @@ class MultiModalBC(nn.Module):
                 "delta_std",
                 "joint_min",
                 "joint_max",
+                "policy_step_scale",
             )
         }
         return {

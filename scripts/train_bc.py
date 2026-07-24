@@ -103,6 +103,7 @@ def main():
     )
     model_config = {
         "qpos_dim": 8,
+        "policy_step_dim": 1,
         "camera_keys": args.camera_keys,
         "tactile_keys": args.tactile_keys,
         "feature_dim": 512,

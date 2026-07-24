@@ -6,11 +6,14 @@ The planner owns reset and `Pre_Move`. The learned policy only receives frames w
 At runtime the action is:
 
 ```text
-z = multimodal_encoder(qpos, cameras, tactile)
+z = multimodal_encoder(qpos, policy_step, cameras, tactile)
 a_BC = qpos + delta_bc_head(z)
 delta = SAC_or_PPO(z)
 action = clip(a_BC + residual_scale * delta_std * delta_rl)
 ```
+
+The encoder also receives normalized `phase/policy_step`, allowing it to represent
+the acceleration and deceleration portions of the post-grasp trajectory.
 
 Each policy action is held for two simulator steps, matching the demonstration
 `save_frequency: 2` sampling interval.

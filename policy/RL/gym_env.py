@@ -43,6 +43,7 @@ class ResidualTactileEnv(gym.Env):
         self.tactile_keys = list(config["tactile_keys"])
         observation_spaces = {
             "qpos": spaces.Box(-np.inf, np.inf, shape=(8,), dtype=np.float32),
+            "policy_step": spaces.Box(0.0, np.inf, shape=(1,), dtype=np.float32),
         }
         for key in self.camera_keys + self.tactile_keys:
             observation_spaces[key] = spaces.Box(
@@ -60,6 +61,7 @@ class ResidualTactileEnv(gym.Env):
         )
         self.last_observation = None
         self.gripper_hold_target = None
+        self.policy_step = 0
 
     def _image(self, image):
         if isinstance(image, torch.Tensor):
@@ -83,7 +85,10 @@ class ResidualTactileEnv(gym.Env):
         joint = raw_observation["embodiment"]["joint"]
         if isinstance(joint, torch.Tensor):
             joint = joint.detach().cpu().numpy()
-        encoded = {"qpos": np.asarray(joint[:8], dtype=np.float32)}
+        encoded = {
+            "qpos": np.asarray(joint[:8], dtype=np.float32),
+            "policy_step": np.asarray([self.policy_step], dtype=np.float32),
+        }
         if "cam_high" in self.camera_keys:
             encoded["cam_high"] = self._image(
                 raw_observation["observation"]["head"]["rgb"]
@@ -116,6 +121,7 @@ class ResidualTactileEnv(gym.Env):
         episode_seed = self.next_seed if seed is None else int(seed)
         self.next_seed = episode_seed + 1
         self.task.reset(seed=episode_seed)
+        self.policy_step = self.action_repeat
         self.gripper_hold_target = self.task._robot_manager.get_gripper_target_qpos()
         raw_observation = self.task._get_observations()
         self.last_observation = self.encode_observation(raw_observation)
@@ -150,6 +156,7 @@ class ResidualTactileEnv(gym.Env):
             force=self.force_control,
             action_repeat=self.action_repeat,
         )
+        self.policy_step += self.action_repeat
         self.last_observation = self.encode_observation(raw_observation)
         info.update(
             {
