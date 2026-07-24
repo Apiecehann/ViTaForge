@@ -31,7 +31,8 @@ def evaluate(model, loader, device):
     with torch.no_grad():
         for observation, action in loader:
             observation, action = move_batch(observation, action, device)
-            target = (action - model.action_mean) / model.action_std
+            target_delta = action - observation["qpos"]
+            target = (target_delta - model.delta_mean) / model.delta_std
             prediction = model.forward_normalized(observation)
             losses.append(nn.functional.smooth_l1_loss(prediction, target).item())
     return float(sum(losses) / max(len(losses), 1))
@@ -128,7 +129,8 @@ def main():
         training_losses = []
         for observation, action in train_loader:
             observation, action = move_batch(observation, action, device)
-            target = (action - model.action_mean) / model.action_std
+            target_delta = action - observation["qpos"]
+            target = (target_delta - model.delta_mean) / model.delta_std
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
                 prediction = model.forward_normalized(observation)

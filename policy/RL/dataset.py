@@ -151,11 +151,12 @@ def compute_joint_statistics(paths):
             action_values.append(joints[pair_indices + 1])
     qpos = np.concatenate(qpos_values)
     action = np.concatenate(action_values)
+    delta = action - qpos
     return {
         "qpos_mean": qpos.mean(axis=0),
         "qpos_std": np.maximum(qpos.std(axis=0), 1e-4),
-        "action_mean": action.mean(axis=0),
-        "action_std": np.maximum(action.std(axis=0), 1e-4),
-        "action_min": action.min(axis=0),
-        "action_max": action.max(axis=0),
+        "delta_mean": delta.mean(axis=0),
+        "delta_std": np.maximum(delta.std(axis=0), 1e-5),
+        "joint_min": action.min(axis=0),
+        "joint_max": action.max(axis=0),
     }

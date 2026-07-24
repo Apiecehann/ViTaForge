@@ -7,9 +7,9 @@ At runtime the action is:
 
 ```text
 z = multimodal_encoder(qpos, cameras, tactile)
-a_BC = bc_head(z)
+a_BC = qpos + delta_bc_head(z)
 delta = SAC_or_PPO(z)
-action = clip(a_BC + residual_scale * action_std * delta)
+action = clip(a_BC + residual_scale * delta_std * delta_rl)
 ```
 
 Each policy action is held for two simulator steps, matching the demonstration

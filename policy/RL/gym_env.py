@@ -112,15 +112,15 @@ class ResidualTactileEnv(gym.Env):
     def step(self, residual_action):
         residual_action = np.asarray(residual_action, dtype=np.float32)
         bc_action = self._bc_action(self.last_observation)
-        action_std = self.bc_model.action_std.detach().cpu().numpy()
-        final_action = bc_action + self.residual_scale * action_std * residual_action
-        action_min = self.bc_model.action_min.detach().cpu().numpy()
-        action_max = self.bc_model.action_max.detach().cpu().numpy()
-        safety_margin = np.maximum(action_std, 1e-4)
+        delta_std = self.bc_model.delta_std.detach().cpu().numpy()
+        final_action = bc_action + self.residual_scale * delta_std * residual_action
+        joint_min = self.bc_model.joint_min.detach().cpu().numpy()
+        joint_max = self.bc_model.joint_max.detach().cpu().numpy()
+        safety_margin = np.maximum(delta_std, 1e-4)
         final_action = np.clip(
             final_action,
-            action_min - safety_margin,
-            action_max + safety_margin,
+            joint_min - safety_margin,
+            joint_max + safety_margin,
         )
         raw_observation, reward, terminated, truncated, info = self.task.env_step(
             final_action,

@@ -35,8 +35,9 @@ class MultiModalBC(nn.Module):
         return self.action_head(features)
 
     def forward(self, observation):
-        normalized_action = self.forward_normalized(observation)
-        return normalized_action * self.action_std + self.action_mean
+        normalized_delta = self.forward_normalized(observation)
+        delta = normalized_delta * self.delta_std + self.delta_mean
+        return observation["qpos"].float() + delta
 
     def checkpoint(self, metadata=None):
         statistics = {
@@ -44,14 +45,15 @@ class MultiModalBC(nn.Module):
             for name in (
                 "qpos_mean",
                 "qpos_std",
-                "action_mean",
-                "action_std",
-                "action_min",
-                "action_max",
+                "delta_mean",
+                "delta_std",
+                "joint_min",
+                "joint_max",
             )
         }
         return {
             "model_config": self.model_config,
+            "action_representation": "delta_qpos_v1",
             "statistics": statistics,
             "model_state": self.state_dict(),
             "metadata": metadata or {},
