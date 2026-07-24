@@ -1356,16 +1356,23 @@ class BaseTask(UipcRLEnv):
             raise ValueError('action_repeat must be at least 1')
         previous_metrics = self.get_rl_metrics()
         action_tensor = torch.as_tensor(action, dtype=torch.float32, device=self.device)
+        first_action = action_tensor
+        initial_qpos = None
+        if action_type == 'qpos' and action_repeat > 1:
+            initial_qpos = self._robot_manager.get_observations(['joint'])['joint'][:len(action_tensor)]
+            first_action = initial_qpos + (action_tensor - initial_qpos) / action_repeat
         exec_success, success = self.take_action(
-            action_tensor,
+            first_action,
             action_type=action_type,
             force=force,
         )
-        for _ in range(action_repeat - 1):
+        for repeat_index in range(1, action_repeat):
             if not exec_success or success or action_type != 'qpos':
                 break
-            self._robot_manager.set_arm(action_tensor[:-1], force=force)
-            self._robot_manager.set_gripper(action_tensor[-1], force=force)
+            interpolation = (repeat_index + 1) / action_repeat
+            repeated_action = initial_qpos + (action_tensor - initial_qpos) * interpolation
+            self._robot_manager.set_arm(repeated_action[:-1], force=force)
+            self._robot_manager.set_gripper(repeated_action[-1], force=force)
             self._step()
             if self.check_success():
                 self.eval_success = True
