@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
@@ -46,6 +47,7 @@ class ImageEncoder(nn.Module):
             model.fc = nn.Identity()
             self.model = model
         elif backbone.startswith("timm:"):
+            os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
             try:
                 import timm
             except ImportError as exc:

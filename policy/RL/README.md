@@ -41,6 +41,7 @@ python scripts/train_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
 
 `act_resnet18` matches the current ACT backbone family. Alternative visual encoders
 use `timm:<model_name>`, for example
-`timm:vit_small_patch16_dinov3.lvd1689m`. CLIP and LingBot variants can be selected
-the same way when their timm model identifiers or locally registered checkpoints are
-available. Tactile defaults to the ACT-style ResNet18.
+`timm:vit_small_patch16_dinov3.lvd1689m` or
+`timm:vit_base_patch32_clip_224.openai`. LingBot variants can be selected the same
+way when their timm model identifiers are locally registered, with weights supplied
+through `--visual-checkpoint`. Tactile defaults to the ACT-style ResNet18.
