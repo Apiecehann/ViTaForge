@@ -271,3 +271,31 @@ class Task(BaseTask):
         diagnostics = self._get_success_diagnostics()
         self.metadata["success_diagnostics"] = diagnostics
         return diagnostics["height_ok"]
+
+    def get_rl_metrics(self):
+        target_pose = self.target_block.get_pose()
+        gripper_pose = self._robot_manager.get_gripper_center_pose()
+        lifted_height = float(target_pose.p[2] - self.target_initial_pose.p[2])
+        gripper_distance = float(np.linalg.norm(target_pose.p - gripper_pose.p))
+        return {
+            "lifted_height": lifted_height,
+            "normalized_lift": float(lifted_height / SUCCESS_MIN_LIFT),
+            "gripper_distance": gripper_distance,
+            "dropped": bool(lifted_height < -0.02 or gripper_distance > 0.18),
+        }
+
+    def compute_rl_reward(self, previous_metrics, current_metrics, action, success):
+        previous_lift = float(previous_metrics.get("normalized_lift", 0.0))
+        current_lift = float(current_metrics["normalized_lift"])
+        progress_reward = 5.0 * (current_lift - previous_lift)
+        height_reward = 0.05 * float(np.clip(current_lift, -1.0, 1.25))
+        control_penalty = 1e-3 * float(np.mean(np.square(action)))
+        reward = progress_reward + height_reward - control_penalty
+        if success:
+            reward += 10.0
+        if current_metrics["dropped"]:
+            reward -= 5.0
+        return float(reward)
+
+    def check_rl_early_stop(self, metrics):
+        return bool(metrics.get("dropped", False))

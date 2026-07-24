@@ -1334,6 +1334,71 @@ class BaseTask(UipcRLEnv):
     def check_early_stop(self):
         return False
 
+    def get_rl_metrics(self):
+        return {}
+
+    def compute_rl_reward(self, previous_metrics, current_metrics, action, success):
+        action_array = np.asarray(action, dtype=np.float32)
+        control_penalty = 1e-3 * float(np.mean(np.square(action_array)))
+        return (10.0 if success else 0.0) - control_penalty
+
+    def check_rl_early_stop(self, metrics):
+        return False
+
+    def env_step(
+        self,
+        action,
+        action_type: Literal['qpos', 'ee', 'delta_ee'] = 'qpos',
+        force: bool = True,
+        action_repeat: int = 1,
+    ):
+        if action_repeat < 1:
+            raise ValueError('action_repeat must be at least 1')
+        previous_metrics = self.get_rl_metrics()
+        action_tensor = torch.as_tensor(action, dtype=torch.float32, device=self.device)
+        exec_success, success = self.take_action(
+            action_tensor,
+            action_type=action_type,
+            force=force,
+        )
+        for _ in range(action_repeat - 1):
+            if not exec_success or success or action_type != 'qpos':
+                break
+            self._robot_manager.set_arm(action_tensor[:-1], force=force)
+            self._robot_manager.set_gripper(action_tensor[-1], force=force)
+            self._step()
+            if self.check_success():
+                self.eval_success = True
+                success = True
+                break
+        current_metrics = self.get_rl_metrics()
+        reward = self.compute_rl_reward(
+            previous_metrics,
+            current_metrics,
+            action_tensor.detach().cpu().numpy(),
+            bool(success),
+        )
+        rl_early_stop = bool(self.check_rl_early_stop(current_metrics))
+        task_early_stop = bool(self.check_early_stop())
+        terminated = bool(success)
+        truncated = bool(
+            not exec_success
+            or self.take_action_cnt >= self.cfg.step_lim
+            or rl_early_stop
+            or task_early_stop
+        )
+        observation = self._get_observations()
+        info = {
+            'exec_success': bool(exec_success),
+            'success': bool(success),
+            'rl_early_stop': rl_early_stop,
+            'task_early_stop': task_early_stop,
+            'take_action_count': int(self.take_action_cnt),
+            'action_repeat': int(action_repeat),
+            'metrics': current_metrics,
+        }
+        return observation, float(reward), terminated, truncated, info
+
     def take_action(self, action:torch.Tensor, action_type:Literal['qpos', 'ee', 'delta_ee']='qpos', force:bool=True):
         '''
             qpos     : actions is Tensor([8]), qpos (7 DOFS + gripper)

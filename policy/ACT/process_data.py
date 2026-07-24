@@ -51,7 +51,17 @@ def _read_dataset(handler, h5_file, data_path):
 
 def _episode_pair_count(hdf5_path, downsample_factor):
     with h5py.File(str(hdf5_path), 'r') as f:
-        return len(np.arange(0, len(f['embodiment/joint']) - 1, downsample_factor))
+        return len(_valid_pair_indices(f, downsample_factor))
+
+
+def _valid_pair_indices(h5_file, downsample_factor):
+    pair_indices = np.arange(0, len(h5_file['embodiment/joint']) - 1)
+    if 'phase/id' in h5_file:
+        phase_ids = h5_file['phase/id'][()]
+        pair_indices = pair_indices[
+            (phase_ids[:-1] == 1) & (phase_ids[1:] == 1)
+        ]
+    return pair_indices[::downsample_factor]
 
 
 def _load_episode_hdf5(hdf5_path, data_paths, downsample_factor):
@@ -59,7 +69,7 @@ def _load_episode_hdf5(hdf5_path, data_paths, downsample_factor):
     result = {}
     with h5py.File(str(hdf5_path), 'r') as f:
         joint = f['embodiment/joint'][()]
-        downsample_arange = np.arange(0, len(joint) - 1, downsample_factor)
+        downsample_arange = _valid_pair_indices(f, downsample_factor)
         result['embodiment/joint_state'] = joint[:-1][downsample_arange, 0:8]
         result['embodiment/joint_action'] = joint[1:][downsample_arange, 0:8]
 
@@ -129,6 +139,7 @@ def data_transform(path, episode_num, save_path, tactile_key="rgb_marker"):
 
             hdf5path = os.path.join(tmp_save_path, f"episode_{i}.hdf5")
             with h5py.File(hdf5path, "w") as f:
+                f.attrs['source_phase'] = 'action'
                 f.create_dataset("action", data=np.asarray(joint_action))
                 obs = f.create_group("observations")
                 obs.create_dataset("qpos", data=np.asarray(joint_state))
