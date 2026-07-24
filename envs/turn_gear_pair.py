@@ -2,13 +2,47 @@ from ._base_task import *
 import numpy as np
 
 
+TASK_INSTRUCTION = "Grasp the red gear and rotate it to turn the gear pair."
+GEAR_PHASE_OFFSET_DEG = 6.0
 GEAR_RED_Q = (1.0, 0.0, 0.0, 0.0)
 GEAR_BLUE_Q = (
-    float(np.cos(np.deg2rad(6.0) * 0.5)),
+    float(np.cos(np.deg2rad(GEAR_PHASE_OFFSET_DEG) * 0.5)),
     0.0,
     0.0,
-    float(np.sin(np.deg2rad(6.0) * 0.5)),
+    float(np.sin(np.deg2rad(GEAR_PHASE_OFFSET_DEG) * 0.5)),
 )
+
+# 齿轮组物体初始化位姿。齿轮局部 z=0 是底面，底座局部 z=0 也是底面。
+BASE_INITIAL_POSITION = (0.45, 0.0, 0.002)
+GEAR_CENTER_DISTANCE = 0.072
+RED_GEAR_INITIAL_POSITION = (
+    BASE_INITIAL_POSITION[0] - GEAR_CENTER_DISTANCE * 0.5,
+    BASE_INITIAL_POSITION[1],
+    0.010,
+)
+BLUE_GEAR_INITIAL_POSITION = (
+    BASE_INITIAL_POSITION[0] + GEAR_CENTER_DISTANCE * 0.5,
+    BASE_INITIAL_POSITION[1],
+    0.010,
+)
+RESET_XY_NOISE = (0.03, 0.03, 0.0)
+
+# 红色齿轮高度为 30mm；抓取点位于中上部，减少夹爪与底座碰撞的概率。
+RED_GEAR_HEIGHT = 0.030
+GEAR_GRASP_HEIGHT_RATIO = 0.66
+PRE_GRASP_DISTANCE = 0.050
+
+# 与 insert_USB_0724 任务保持一致的机械臂初始状态。
+TASK_INITIAL_JOINT_POS = {
+    "panda_joint1": -0.010809095,
+    "panda_joint2": 0.096037410,
+    "panda_joint3": 0.000734462,
+    "panda_joint4": -2.433035851,
+    "panda_joint5": 0.035354517,
+    "panda_joint6": 2.500859022,
+    "panda_joint7": 0.741,
+    "panda_finger.*": 0.02,
+}
 
 
 @configclass
@@ -58,14 +92,15 @@ class Task(BaseTask):
         cfg.uipc_sim.contact.default_friction_ratio = 1.0
         super().__init__(cfg, mode, render_mode, **kwargs)
 
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        return cfg
+
     def create_actors(self):
-        # base 中心放在 x=0.45；底座局部 z=0 是底面，所以世界 z=0.002 表示放在桌面上方 2mm。
-        base_pose = Pose([0.45, 0.0, 0.002], GEAR_RED_Q)
-        # 两个齿轮中心距取 0.072m，所以红色在 0.45-0.036，蓝色在 0.45+0.036。
-        # 齿轮局部 z=0 是底面；底板 5mm + 小方柱 2mm，顶面约 0.002+0.007=0.009m。
-        # 齿轮底面设 0.010m，留约 1mm 初始间隙。
-        red_pose = Pose([0.45 - 0.036, 0.0, 0.010], GEAR_RED_Q)
-        blue_pose = Pose([0.45 + 0.036, 0.0, 0.010], GEAR_BLUE_Q)
+        base_pose = Pose(BASE_INITIAL_POSITION, GEAR_RED_Q)
+        red_pose = Pose(RED_GEAR_INITIAL_POSITION, GEAR_RED_Q)
+        blue_pose = Pose(BLUE_GEAR_INITIAL_POSITION, GEAR_BLUE_Q)
 
         self.base = self._actor_manager.add_from_usd_file(
             name="base",
@@ -87,21 +122,20 @@ class Task(BaseTask):
         )
 
     def _reset_actors(self):
-        # 三个物体整体在 xy 平面内随机平移，范围是 +/-5mm，保持相对位置不变。
-        xy_offset = self.rng.uniform(-0.005, 0.005, size=2)
-        offset = np.array([xy_offset[0], xy_offset[1], 0.0])
+        # 三个物体整体共享同一世界坐标系下的 XY 偏移，保持齿轮啮合关系不变。
+        offset = self.create_noise(list(RESET_XY_NOISE))
 
-        base_pose = Pose(np.array([0.45, 0.0, 0.002]) + offset, GEAR_RED_Q)
-        red_pose = Pose(np.array([0.45 - 0.036, 0.0, 0.010]) + offset, GEAR_RED_Q)
-        blue_pose = Pose(np.array([0.45 + 0.036, 0.0, 0.010]) + offset, GEAR_BLUE_Q)
+        base_pose = Pose(BASE_INITIAL_POSITION, GEAR_RED_Q).add_offset(offset, coord="world")
+        red_pose = Pose(RED_GEAR_INITIAL_POSITION, GEAR_RED_Q).add_offset(offset, coord="world")
+        blue_pose = Pose(BLUE_GEAR_INITIAL_POSITION, GEAR_BLUE_Q).add_offset(offset, coord="world")
         self.base.set_pose(base_pose)
         self.red_gear.set_pose(red_pose)
         self.blue_gear.set_pose(blue_pose)
 
         self.metadata["base_pose"] = base_pose.tolist()
-        self.metadata["reset_xy_offset"] = xy_offset.tolist()
-        self.metadata["gear_center_distance"] = 0.072
-        self.metadata["gear_phase_offset_deg"] = 6.0
+        self.metadata["reset_xy_offset"] = offset.p[:2].tolist()
+        self.metadata["gear_center_distance"] = GEAR_CENTER_DISTANCE
+        self.metadata["gear_phase_offset_deg"] = GEAR_PHASE_OFFSET_DEG
         self.metadata["red_gear_pose"] = red_pose.tolist()
         self.metadata["blue_gear_pose"] = blue_pose.tolist()
 
@@ -122,8 +156,10 @@ class Task(BaseTask):
         self.move(self.atom.open_gripper(0.5), delay=False)
 
         red_pose = self.red_gear.get_pose()
-        # 齿轮高度是 30mm，抓 66% 高度处：0.030*0.66=0.0198m，尽量抓在齿轮中上部。
-        target_pose = red_pose.add_bias([0.0, 0.0, 0.030 * 0.66], coord="world")
+        target_pose = red_pose.add_bias(
+            [0.0, 0.0, RED_GEAR_HEIGHT * GEAR_GRASP_HEIGHT_RATIO],
+            coord="world",
+        )
         # grasp_from=[0,0,1] 表示从目标点上方沿 -Z 方向接近，爪子姿态尽量竖直向下。
         grasp_pose = construct_grasp_pose(
             target_pose.p,
@@ -131,18 +167,17 @@ class Task(BaseTask):
             np.array([1.0, 0.0, 0.0]),
         )
 
-        self.metadata["gear_grasp_height_ratio"] = 0.66
-        self.metadata["gear_grasp_height"] = 0.030 * 0.66
-        self.metadata["pre_grasp_dis"] = 0.050
+        self.metadata["gear_grasp_height_ratio"] = GEAR_GRASP_HEIGHT_RATIO
+        self.metadata["gear_grasp_height"] = RED_GEAR_HEIGHT * GEAR_GRASP_HEIGHT_RATIO
+        self.metadata["pre_grasp_dis"] = PRE_GRASP_DISTANCE
         self.metadata["red_grasp_pose"] = grasp_pose.tolist()
 
         cid = self.red_gear.register_point(grasp_pose, type="contact")
-        # pre_dis=0.050 会让 planner 先到抓取点正上方 5cm，再沿竖直方向下压到抓取高度。
         self.move(
             self.atom.grasp_actor(
                 self.red_gear,
                 contact_point_id=cid,
-                pre_dis=0.050,
+                pre_dis=PRE_GRASP_DISTANCE,
                 dis=0.0,
                 is_close=False,
             ),

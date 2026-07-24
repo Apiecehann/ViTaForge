@@ -8,13 +8,13 @@ FRAME_INNER_SIZE = 0.0900
 FRAME_THICKNESS = 0.0020
 CUBE_SIZE = 0.0300
 
-YELLOW_FRAME_BASE_POSE = Pose([0.38, -0.1, 0.002], [1, 0, 0, 0])
-BLUE_FRAME_BASE_POSE = Pose([0.5, -0.1, 0.002], [1, 0, 0, 0])
-CUBE_BASE_POSE = Pose([0.4, 0.1, 0.002], [1, 0, 0, 0])
+LEFT_FRAME_BASE_POSE = Pose([0.5, -0.08, 0.002], [1, 0, 0, 0])
+RIGHT_FRAME_BASE_POSE = Pose([0.5, 0.08, 0.002], [1, 0, 0, 0])
+CUBE_BASE_POSE = Pose([0.38, 0.0, 0.002], [1, 0, 0, 0])
 
 # reset 时只在 xy 平面加入扰动，z 维保持不变，避免物体初始高度偏离桌面。
-FRAME_XY_NOISE = (0.03, 0.03, 0.0)
-CUBE_XY_NOISE = (0.05, 0.05, 0.0)
+FRAME_XY_NOISE = (0.01, 0.01, 0.0)
+CUBE_XY_NOISE = (0.02, 0.04, 0.0)
 PLACE_XY_NOISE = 0.02
 PLACE_TARGET_Z = 0.020
 RELEASE_TARGET_Z = 0.010
@@ -26,18 +26,32 @@ LIFT_HEIGHT = 0.0300
 SUCCESS_TABLE_HEIGHT_TOLERANCE = 0.003
 SUCCESS_MIN_GRIPPER_OPEN_RATIO = 0.4
 TARGET_AREA_COLORS = ("yellow", "blue")
+FRAME_ORDERS = ("yellow_left", "blue_left")
+TASK_INSTRUCTION = "Place the red cube on the yellow area."
+TASK_INITIAL_JOINT_POS = {
+    "panda_joint1": -0.010809095,
+    "panda_joint2": 0.096037410,
+    "panda_joint3": 0.000734462,
+    "panda_joint4": -2.433035851,
+    "panda_joint5": 0.035354517,
+    "panda_joint6": 2.500859022,
+    "panda_joint7": 0.741,
+    "panda_finger.*": 0.02,
+}
 
 
 @configclass
 class TaskCfg(BaseTaskCfg):
     # "random" 表示每个 episode 随机选择目标框，也可设为 "yellow" 或 "blue"。
     target_area: Literal["random", "yellow", "blue"] = "yellow"
+    # 左右按照 head 相机视野定义：世界 -Y 为左，+Y 为右。
+    frame_order: Literal["yellow_left", "blue_left"] = "blue_left"
 
     cameras = [
         CameraCfg(
             name="head",
             prim_path="/World/envs/env_.*/Camera",
-            offset=CameraCfg.OffsetCfg(pos=(0.8, 0.0, 0.15), rot=(0.555057, 0.465748, 0.443006, 0.527954), convention="opengl"),
+            offset=CameraCfg.OffsetCfg(pos=(0.8, 0.0, 0.15), rot=(0.54167522, 0.454519478, 0.454519478, 0.54167522), convention="opengl"),
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.6, focus_distance=1.0, horizontal_aperture=2.4, clipping_range=(0.1, 100.0)
@@ -60,32 +74,49 @@ class TaskCfg(BaseTaskCfg):
 
 
 class Task(BaseTask):
-    def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: TaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
         if cfg.target_area not in ("random", *TARGET_AREA_COLORS):
             raise ValueError(
                 f"target_area must be one of ('random', 'yellow', 'blue'), got {cfg.target_area!r}"
             )
+        if cfg.frame_order not in FRAME_ORDERS:
+            raise ValueError(
+                f"frame_order must be one of ('yellow_left', 'blue_left'), got {cfg.frame_order!r}"
+            )
+        self.frame_order = cfg.frame_order
+        if self.frame_order == "yellow_left":
+            self.yellow_frame_base_pose = LEFT_FRAME_BASE_POSE
+            self.blue_frame_base_pose = RIGHT_FRAME_BASE_POSE
+        else:
+            self.yellow_frame_base_pose = RIGHT_FRAME_BASE_POSE
+            self.blue_frame_base_pose = LEFT_FRAME_BASE_POSE
         cfg.sim.physics_material.dynamic_friction = 2.5
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
         super().__init__(cfg, mode, render_mode, **kwargs)
 
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        # 仅覆盖本任务的默认关节位置，不影响 robot_cfg.py 中其他任务的配置。
+        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        return cfg
+
     def create_actors(self):
         self.yellow_area = self._actor_manager.add_from_usd_file(
             name="yellow_area",
-            asset_path="yellow_square_frame.usd",
-            pose=YELLOW_FRAME_BASE_POSE,
+            asset_path="square_frame_yellow.usd",
+            pose=self.yellow_frame_base_pose,
             density=1e6,
         )
         self.blue_area = self._actor_manager.add_from_usd_file(
             name="blue_area",
-            asset_path="blue_square_frame.usd",
-            pose=BLUE_FRAME_BASE_POSE,
+            asset_path="square_frame_blue.usd",
+            pose=self.blue_frame_base_pose,
             density=1e6,
         )
         self.wooden_cube = self._actor_manager.add_from_usd_file(
             name="wooden_cube",
-            asset_path="wooden_cube.usd",
+            asset_path="Cube_red.usd",
             pose=CUBE_BASE_POSE,
             density=1e3,
         )
@@ -101,12 +132,11 @@ class Task(BaseTask):
         }[self.target_area_color]
 
     def _reset_actors(self):
-        # 两个框和木块分别独立采样 xy 扰动。
-        yellow_offset = self.create_noise(list(FRAME_XY_NOISE))
-        blue_offset = self.create_noise(list(FRAME_XY_NOISE))
+        # 两个框共用同一 xy 扰动，保持相对位置和朝向不变。
+        frame_offset = self.create_noise(list(FRAME_XY_NOISE))
         cube_offset = self.create_noise(list(CUBE_XY_NOISE))
-        yellow_pose = YELLOW_FRAME_BASE_POSE.add_offset(yellow_offset)
-        blue_pose = BLUE_FRAME_BASE_POSE.add_offset(blue_offset)
+        yellow_pose = self.yellow_frame_base_pose.add_offset(frame_offset)
+        blue_pose = self.blue_frame_base_pose.add_offset(frame_offset)
         cube_pose = CUBE_BASE_POSE.add_offset(cube_offset)
 
         self.yellow_area.set_pose(yellow_pose)
@@ -114,13 +144,14 @@ class Task(BaseTask):
         self.wooden_cube.set_pose(cube_pose)
         self._select_target_area()
 
-        self.metadata["yellow_area_xy_noise"] = yellow_offset.p.tolist()
-        self.metadata["blue_area_xy_noise"] = blue_offset.p.tolist()
+        self.metadata["yellow_area_xy_noise"] = frame_offset.p.tolist()
+        self.metadata["blue_area_xy_noise"] = frame_offset.p.tolist()
         self.metadata["cube_xy_noise"] = cube_offset.p.tolist()
         self.metadata["yellow_area_pose"] = yellow_pose.tolist()
         self.metadata["blue_area_pose"] = blue_pose.tolist()
         self.metadata["wooden_cube_pose"] = cube_pose.tolist()
         self.metadata["target_area_color"] = self.target_area_color
+        self.metadata["frame_order"] = self.frame_order
 
     def _get_local_z_bounds(self, actor, fallback_half_height):
         # 优先使用 actor 缓存的表面点估计局部 z 上下界。
@@ -188,7 +219,7 @@ class Task(BaseTask):
             self.wooden_cube,
             contact_point_id=contact_point_id,
             is_close=False,
-            pre_dis=0.0,
+            pre_dis=0.01,
             dis=0.0,
         ), tag="approach_wooden_cube")
         self.move(self.atom.close_gripper(), tag="close_wooden_cube")

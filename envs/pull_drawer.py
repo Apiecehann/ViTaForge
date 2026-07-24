@@ -6,6 +6,7 @@ import numpy as np
 # - "vertical_single": 使用原来的竖直抓取姿态，并一次性沿世界 -X 拉动。
 # - "tilted_segmented": 使用 30 度倾斜抓取姿态，并分段沿世界 -X 拉动。
 PULL_DRAWER_MODE = "tilted_segmented"
+TASK_INSTRUCTION = "Grasp the upper drawer handle and pull the upper drawer open."
 
 
 # 本任务实现“抓住上层抽屉把手并向外拉开”的脚本式采集/评测逻辑。
@@ -16,10 +17,10 @@ PULL_DRAWER_MODE = "tilted_segmented"
 ROT90_Z_Q = [np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)]
 
 # 柜体在世界坐标系中的基准位姿。z=0.002 用于让模型略高于桌面，减少穿模。
-CABINET_BASE_POSE = Pose([0.8, 0.0, 0.002], ROT90_Z_Q)
+CABINET_BASE_POSE = Pose([0.75, 0.0, 0.002], ROT90_Z_Q)
 
 # 每次 reset 时对柜体 xy 位置加入的随机扰动幅度，z 不随机。
-CABINET_XY_NOISE = (0.005, 0.005, 0.0)
+CABINET_XY_NOISE = (0.02, 0.02, 0.0)
 
 # cabinet_body 和 drawer 网格的前表面 y 坐标不同，这里计算抽屉相对柜体
 # 需要补偿的局部 y 偏移，使抽屉面板和柜体正面在初始状态下对齐。
@@ -57,6 +58,16 @@ PULL_DISTANCE = 0.10
 PULL_STEPS = 5
 SUCCESS_PULL_DISTANCE = 0.08
 SUCCESS_Z_THRESHOLD = 0.01
+TASK_INITIAL_JOINT_POS = {
+    "panda_joint1": -0.010809095,
+    "panda_joint2": 0.096037410,
+    "panda_joint3": 0.000734462,
+    "panda_joint4": -2.433035851,
+    "panda_joint5": 0.035354517,
+    "panda_joint6": 2.500859022,
+    "panda_joint7": 0.741,
+    "panda_finger.*": 0.02,
+}
 
 if PULL_DRAWER_MODE not in ["vertical_single", "tilted_segmented"]:
     raise ValueError(f"Unsupported PULL_DRAWER_MODE: {PULL_DRAWER_MODE}")
@@ -101,6 +112,11 @@ class Task(BaseTask):
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
         super().__init__(cfg, mode, render_mode, **kwargs)
+
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        return cfg
 
     def _drawer_pose(self, cabinet_pose: Pose, z_offset: float) -> Pose:
         """根据柜体位姿和抽屉层高，计算抽屉在世界坐标系中的初始位姿。"""
