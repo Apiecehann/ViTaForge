@@ -62,6 +62,7 @@ class ResidualTactileEnv(gym.Env):
         self.last_observation = None
         self.gripper_hold_target = None
         self.policy_step = 0
+        self.command_qpos = None
 
     def _image(self, image):
         if isinstance(image, torch.Tensor):
@@ -125,6 +126,8 @@ class ResidualTactileEnv(gym.Env):
         self.gripper_hold_target = self.task._robot_manager.get_gripper_target_qpos()
         raw_observation = self.task._get_observations()
         self.last_observation = self.encode_observation(raw_observation)
+        self.command_qpos = self.last_observation["qpos"].copy()
+        self.command_qpos[-1] = self.gripper_hold_target
         return self.last_observation, {
             "seed": episode_seed,
             "metrics": self.task.get_rl_metrics(),
@@ -133,8 +136,10 @@ class ResidualTactileEnv(gym.Env):
     def step(self, residual_action):
         residual_action = np.asarray(residual_action, dtype=np.float32)
         bc_action = self._bc_action(self.last_observation)
+        bc_delta = bc_action - self.last_observation["qpos"]
         delta_std = self.bc_model.delta_std.detach().cpu().numpy()
-        final_action = bc_action.copy()
+        final_action = self.command_qpos.copy()
+        final_action[:self.controlled_action_dim] += bc_delta[:self.controlled_action_dim]
         final_action[:self.controlled_action_dim] += (
             self.residual_scale
             * delta_std[:self.controlled_action_dim]
@@ -150,6 +155,7 @@ class ResidualTactileEnv(gym.Env):
         )
         if not self.control_gripper:
             final_action[-1] = self.gripper_hold_target
+        self.command_qpos = final_action.copy()
         raw_observation, reward, terminated, truncated, info = self.task.env_step(
             final_action,
             action_type="qpos",
@@ -161,6 +167,7 @@ class ResidualTactileEnv(gym.Env):
         info.update(
             {
                 "bc_action": bc_action,
+                "bc_delta": bc_delta,
                 "residual_action": residual_action,
                 "final_action": final_action,
                 "gripper_hold_target": self.gripper_hold_target,
