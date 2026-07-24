@@ -27,7 +27,6 @@ AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
 args.num_envs = 1
-args.headless = True
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 

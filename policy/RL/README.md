@@ -24,6 +24,11 @@ seven arm joints and keeps the planner's gripper target unchanged. Use
 Joint commands use physical PD targets by default so FEM contact sees continuous motion.
 `--force-control` is reserved for direct-position diagnostics.
 
+Do not pass `--headless` for GelSight/UIPC training or evaluation. The tactile/contact
+pipeline requires the same rendered application mode used during demonstration
+collection; forcing headless mode can leave the grasp visually aligned but unable to
+retain the object during lift.
+
 The BC and RL feature extractors start from the same multimodal encoder weights. The
 encoder can stay frozen for the first comparison or be fine-tuned with
 `--no-freeze-encoder`.

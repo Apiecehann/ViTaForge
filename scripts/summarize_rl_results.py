@@ -6,11 +6,12 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description="Summarize BC, SAC, and PPO evaluation results.")
     parser.add_argument("run_root")
+    parser.add_argument("--evaluation-dir", default="evaluation")
     args = parser.parse_args()
     run_root = Path(args.run_root)
     comparison = {}
     for algorithm in ("bc", "sac", "ppo"):
-        result_path = run_root / "evaluation" / algorithm / "evaluation.json"
+        result_path = run_root / args.evaluation_dir / algorithm / "evaluation.json"
         with open(result_path, "r", encoding="utf-8") as result_file:
             result = json.load(result_file)
         comparison[algorithm] = {

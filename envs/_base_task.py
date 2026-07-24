@@ -778,7 +778,7 @@ class BaseTask(UipcRLEnv):
             self.sim.step(render=False)
 
         if render_freq or (self.mode == 'collect' and is_save and save_freq) or (is_save and video_freq) \
-            or (self.mode == 'eval' and not self.in_pre_move):
+            or self.mode == 'eval':
             self._update_render()
 
         obs = None

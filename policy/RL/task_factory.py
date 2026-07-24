@@ -6,7 +6,15 @@ from pathlib import Path
 import yaml
 
 
-def create_task(task_name, task_config, save_dir, video_frequency=0, step_limit=300):
+def create_task(
+    task_name,
+    task_config,
+    save_dir,
+    video_frequency=0,
+    step_limit=300,
+    mode="eval",
+    save_pre_move=None,
+):
     config_path = Path(task_config)
     if config_path.suffix not in (".yml", ".yaml"):
         config_path = Path("task_config") / f"{task_config}.yml"
@@ -23,7 +31,9 @@ def create_task(task_name, task_config, save_dir, video_frequency=0, step_limit=
     env_config.render_frequency = 0
     env_config.obs_data_type = source.get("observations", {})
     env_config.random_texture = bool(source.get("random_texture", False))
-    env_config.save_pre_move = False
+    if save_pre_move is None:
+        save_pre_move = source.get("save_pre_move", False)
+    env_config.save_pre_move = bool(save_pre_move)
     env_config.eval_start_delay_steps = 0
     env_config.step_lim = int(step_limit)
     env_config.tactile_video_key = source.get(
@@ -37,4 +47,4 @@ def create_task(task_name, task_config, save_dir, video_frequency=0, step_limit=
             source["adaptive_grasp_depth_threshold"]
         )
     env_config.scene.num_envs = 1
-    return task_module.Task(env_config, mode="eval")
+    return task_module.Task(env_config, mode=mode)

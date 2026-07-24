@@ -25,11 +25,11 @@ parser.add_argument("--action-repeat", type=int, default=2)
 parser.add_argument("--control-gripper", action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument("--force-control", action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument("--step-limit", type=int, default=100)
+parser.add_argument("--save-traces", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
 args.num_envs = 1
-args.headless = True
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
@@ -73,6 +73,7 @@ def main():
         terminated = truncated = False
         episode_reward = 0.0
         last_info = {}
+        trace = []
         while not terminated and not truncated:
             if model is None:
                 residual_action = np.zeros(environment.action_space.shape, dtype=np.float32)
@@ -82,6 +83,18 @@ def main():
                 residual_action
             )
             episode_reward += reward
+            if args.save_traces:
+                trace.append(
+                    {
+                        "action_index": len(trace),
+                        "qpos": observation["qpos"].tolist(),
+                        "policy_step": observation["policy_step"].tolist(),
+                        "bc_delta": np.asarray(last_info["bc_delta"]).tolist(),
+                        "final_action": np.asarray(last_info["final_action"]).tolist(),
+                        "reward": float(reward),
+                        "metrics": last_info.get("metrics", {}),
+                    }
+                )
         success = bool(last_info.get("success", False))
         task.clean_cache(result="success" if success else "failed")
         result = {
@@ -93,6 +106,8 @@ def main():
             "initial_metrics": reset_info.get("metrics", {}),
             "metrics": last_info.get("metrics", {}),
         }
+        if args.save_traces:
+            result["trace"] = trace
         print(json.dumps(result))
         results.append(result)
     summary = {
