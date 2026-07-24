@@ -84,7 +84,6 @@ def main():
             train_freq=1,
             gradient_steps=1,
             ent_coef="auto",
-            optimize_memory_usage=True,
             seed=args.seed,
             device="cuda:0",
             verbose=1,
