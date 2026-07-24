@@ -5,6 +5,7 @@ import os
 import torch
 import pickle
 import torchvision
+import h5py
 
 from envs.utils.data import HDF5Handler, VideoHandler
 from warp import Function
@@ -333,6 +334,10 @@ class BaseTask(UipcRLEnv):
         self.plan_success = True
         self.eval_success = False
         self.in_pre_move = False
+        self.policy_start_step = None
+        self.policy_start_saved_index = None
+        self.last_saved_phase_id = None
+        self.phase_saved_counts = {0: 0, 1: 0}
         self.last_qpos = None
         self.keep_still_times = 0
         self.atom_tag = ''
@@ -536,6 +541,7 @@ class BaseTask(UipcRLEnv):
 
         self.pre_move()
         self.in_pre_move = False
+        self.policy_start_step = int(self.step_count)
 
         # update render to avoid artifacts
         for _ in range(5):
@@ -576,6 +582,10 @@ class BaseTask(UipcRLEnv):
         self.start_time = time.perf_counter()
         self.last_qpos = None
         self.keep_still_times = 0
+        self.policy_start_step = None
+        self.policy_start_saved_index = None
+        self.last_saved_phase_id = None
+        self.phase_saved_counts = {0: 0, 1: 0}
         self.metadata = {}
         self.log = ''
 
@@ -825,6 +835,10 @@ class BaseTask(UipcRLEnv):
         self._save_metadata()
 
     def _get_observations(self):
+        phase_id = 0 if self.in_pre_move else 1
+        policy_step = -1
+        if phase_id == 1 and self.policy_start_step is not None:
+            policy_step = int(self.step_count - self.policy_start_step)
         obs = {
             'observation': {},
             'embodiment': {},
@@ -834,6 +848,12 @@ class BaseTask(UipcRLEnv):
             'atom': {
                 'id': self.atom_id,
                 'tag': self.atom_tag
+            },
+            'phase': {
+                'id': phase_id,
+                'name': 'pre_move' if phase_id == 0 else 'action',
+                'policy_step': policy_step,
+                'is_boundary': int(self.last_saved_phase_id != phase_id),
             }
         }
 
@@ -864,6 +884,20 @@ class BaseTask(UipcRLEnv):
     def save_to_hdf5(self):
         self.save_path.parent.mkdir(parents=True, exist_ok=True)
         HDF5Handler().pkls_to_hdf5(self.tmp_save_dir, self.save_path)
+        with h5py.File(self.save_path, 'a') as hdf5_file:
+            phase_group = hdf5_file.require_group('phase')
+            phase_group.attrs['schema_version'] = 1
+            phase_group.attrs['pre_move_id'] = 0
+            phase_group.attrs['action_id'] = 1
+            phase_group.attrs['policy_start_sim_step'] = int(self.policy_start_step or 0)
+            phase_group.attrs['policy_start_saved_index'] = int(
+                self.policy_start_saved_index
+                if self.policy_start_saved_index is not None
+                else -1
+            )
+            phase_group.attrs['pre_move_saved_frames'] = int(self.phase_saved_counts[0])
+            phase_group.attrs['action_saved_frames'] = int(self.phase_saved_counts[1])
+            phase_group.attrs['save_frequency'] = int(self.cfg.save_frequency)
         if 'vertex_force' in self.cfg.obs_data_type.get('tactile', []):
             try:
                 self._tactile_manager.dump_force_field_meta(self.save_root)
@@ -897,6 +931,11 @@ class BaseTask(UipcRLEnv):
         self.tmp_save_dir.mkdir(parents=True, exist_ok=True)
         with open(self.tmp_save_dir / f'{self.save_count}.pkl', 'wb') as f:
             pickle.dump(to_cpu(obs), f)
+        phase_id = int(obs['phase']['id'])
+        if phase_id == 1 and self.policy_start_saved_index is None:
+            self.policy_start_saved_index = int(self.save_count)
+        self.phase_saved_counts[phase_id] += 1
+        self.last_saved_phase_id = phase_id
         self.save_count += 1
  
     def check_success(self):
