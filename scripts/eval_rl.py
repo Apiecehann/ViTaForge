@@ -65,7 +65,7 @@ def main():
     results = []
     for episode_index in range(args.episodes):
         seed = args.start_seed + episode_index
-        observation, _ = environment.reset(seed=seed)
+        observation, reset_info = environment.reset(seed=seed)
         terminated = truncated = False
         episode_reward = 0.0
         last_info = {}
@@ -86,6 +86,7 @@ def main():
             "success": success,
             "reward": float(episode_reward),
             "actions": int(task.take_action_cnt),
+            "initial_metrics": reset_info.get("metrics", {}),
             "metrics": last_info.get("metrics", {}),
         }
         print(json.dumps(result))

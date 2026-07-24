@@ -107,7 +107,10 @@ class ResidualTactileEnv(gym.Env):
         self.task.reset(seed=episode_seed)
         raw_observation = self.task._get_observations()
         self.last_observation = self.encode_observation(raw_observation)
-        return self.last_observation, {"seed": episode_seed}
+        return self.last_observation, {
+            "seed": episode_seed,
+            "metrics": self.task.get_rl_metrics(),
+        }
 
     def step(self, residual_action):
         residual_action = np.asarray(residual_action, dtype=np.float32)

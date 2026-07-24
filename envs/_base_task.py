@@ -105,6 +105,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     reset_first_frame_steps = 5
     reset_after_actor_steps = 20
     reset_final_steps = 5
+    eval_start_delay_steps = 20
 
     decimation = 1
     # simulation
@@ -548,7 +549,9 @@ class BaseTask(UipcRLEnv):
             self._update_render()
 
         if self.mode == 'eval':
-            self.delay()
+            eval_start_delay_steps = int(getattr(self.cfg, 'eval_start_delay_steps', 20))
+            if eval_start_delay_steps > 0:
+                self.delay(eval_start_delay_steps)
 
         # ToBeCheck.
         if not self.save_pre_move:

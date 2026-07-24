@@ -24,6 +24,7 @@ def create_task(task_name, task_config, save_dir, video_frequency=0, step_limit=
     env_config.obs_data_type = source.get("observations", {})
     env_config.random_texture = bool(source.get("random_texture", False))
     env_config.save_pre_move = False
+    env_config.eval_start_delay_steps = 0
     env_config.step_lim = int(step_limit)
     env_config.tactile_video_key = source.get(
         "tactile_video_key",
