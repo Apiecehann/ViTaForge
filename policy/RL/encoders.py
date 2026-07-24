@@ -131,7 +131,9 @@ class MultiModalEncoder(nn.Module):
                 backbone=tactile_backbone,
                 pretrained=tactile_pretrained,
                 checkpoint_path=tactile_checkpoint,
-                imagenet_normalize=False,
+                imagenet_normalize=(
+                    tactile_pretrained and tactile_checkpoint is None
+                ),
             )
             input_dim += len(self.tactile_keys) * self.tactile_encoder.output_dim
         self.projection = nn.Sequential(
