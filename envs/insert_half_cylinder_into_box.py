@@ -154,7 +154,17 @@ class Task(BaseTask):
             "xensews_robotiq",
         )
         # 正式动作前等待物体稳定，再打开夹爪准备抓取蓝色半圆柱。
-        self.delay(10)
+        initial_settle_steps = 10
+        if is_xense:
+            initial_settle_steps = int(
+                getattr(
+                    self.cfg,
+                    "xense_insert_half_cylinder_initial_settle_steps",
+                    getattr(self.cfg, "xense_initial_settle_steps", 1),
+                )
+            )
+        if initial_settle_steps > 0:
+            self.delay(initial_settle_steps)
         self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_blue_half_cylinder")
 
         half_cylinder_pose = self.blue_half_cylinder.get_pose()
@@ -208,6 +218,12 @@ class Task(BaseTask):
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_blue_half_cylinder",
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_insert_half_cylinder_adaptive_grasp_depth_threshold"
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_insert_half_cylinder_adaptive_grasp_require_both_contacts"
+            ),
         )
         if is_xense:
             gripper_pose = self._robot_manager.get_gripper_center_pose()

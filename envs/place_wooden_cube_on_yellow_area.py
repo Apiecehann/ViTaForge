@@ -124,7 +124,12 @@ class Task(BaseTask):
 
     def pre_move(self):
         # 初始先等待若干仿真步，让物体在物理引擎中稳定，再打开夹爪准备抓取。
-        self.delay(10)
+        # Xense/Robotiq 的前几次空仿真步非常贵；保留 settle，但避免十个纯等待步把正式视频验证拖到超时。
+        initial_settle_steps = 10
+        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            initial_settle_steps = int(getattr(self.cfg, "xense_cube_initial_settle_steps", 1))
+        if initial_settle_steps > 0:
+            self.delay(initial_settle_steps)
         self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_cube")
 
         cube_pose = self.wooden_cube.get_pose()
@@ -163,7 +168,16 @@ class Task(BaseTask):
         self.record_xense_grasp_debug("xense_after_approach_wooden_cube", self.wooden_cube)
 
         close_percent = self.get_xense_close_percent("xense_cube_close_percent")
-        self.move(self.atom.close_gripper(pos=close_percent), tag="close_wooden_cube")
+        self.move(
+            self.atom.close_gripper(pos=close_percent),
+            tag="close_wooden_cube",
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_cube_adaptive_grasp_depth_threshold"
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_cube_adaptive_grasp_require_both_contacts"
+            ),
+        )
         self.settle_xense_after_close(is_save=False)
         self.record_xense_grasp_debug("xense_after_close_wooden_cube", self.wooden_cube)
 

@@ -54,6 +54,12 @@ class TaskCfg(BaseTaskCfg):
 
 class Task(BaseTask):
     def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
+        if getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            # Full gear meshes with Xense contacts make the reset/save loop extremely slow.
+            # Keep save_pre_move enabled, but let the visible pre_move/action frames carry the video.
+            cfg.reset_first_frame_steps = 0
+            cfg.reset_after_actor_steps = 0
+            cfg.reset_final_steps = 0
         cfg.sim.physics_material.dynamic_friction = 1.0
         cfg.sim.physics_material.static_friction = 1.0
         cfg.uipc_sim.contact.default_friction_ratio = 1.0
@@ -227,6 +233,12 @@ class Task(BaseTask):
             self.atom.close_gripper(pos=close_percent),
             tag="close_gripper",
             delay=False,
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_gear_adaptive_grasp_depth_threshold"
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_gear_adaptive_grasp_require_both_contacts"
+            ),
         )
         self._gear_drive_angle = 0.0
         self._gear_drive_prev_gripper_pose = self._robot_manager.get_gripper_center_pose()

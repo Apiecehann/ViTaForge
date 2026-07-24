@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import cv2
 import omni.usd
+import isaaclab.utils.math as math_utils
 
 from tacex_uipc import UipcObject
 
@@ -72,10 +73,16 @@ class ManiSkillSimulator(GelSightSimulator):
             sub_marker_num=self.cfg.sub_marker_num,
             marker_radius=self.radius,
             num_markers=self.cfg.marker_params.num_markers,
+            camera_to_surface=self.cfg.camera_to_surface,
+            real_size=self.cfg.real_size,
         )
 
         self.marker_motion_sim._gen_marker_grid()
         self.canonical_marker_uv = self._canonical_marker_uv()
+        self._marker_flow_is_visual = False
+        self._xsense_visual_contact_weight_baseline = None
+        self._xsense_depth_motion_baseline_mm = None
+        self._xsense_marker_force_baseline = None
 
         # create buffers
         self.marker_data = torch.zeros(
@@ -89,9 +96,130 @@ class ManiSkillSimulator(GelSightSimulator):
 
     def marker_motion_simulation(self):
         marker_flow = self.marker_motion_sim.gen_marker_flow()
+        self._marker_flow_is_visual = False
+        if str(self.cfg.sensor_type).startswith("xense"):
+            marker_flow = self._xsense_marker_flow(marker_flow)
+            self._marker_flow_is_visual = True
         # todo do it properly for multi env, currently marker flow has shape [2, num_markers, 2] and we want [num_envs, 2, num_markers, 2]
-        self.marker_data[0] = marker_flow
+        self.marker_data[0] = torch.as_tensor(
+            marker_flow, dtype=self.marker_data.dtype, device=self.marker_data.device
+        )
         return self.marker_data
+
+    def _as_marker_tensor(self, value, device: torch.device | str) -> torch.Tensor:
+        if torch.is_tensor(value):
+            return value.detach().to(device=device, dtype=torch.float32)
+        return torch.as_tensor(value, device=device, dtype=torch.float32)
+
+    def _marker_surface_displacement_camera(self, device: torch.device | str) -> torch.Tensor | None:
+        marker_sim = self.marker_motion_sim
+        try:
+            marker_idx = torch.as_tensor(marker_sim.marker_surf_idx, device=device, dtype=torch.long)
+            marker_weight = torch.as_tensor(marker_sim.marker_weight, device=device, dtype=torch.float32)
+            reference = self._as_marker_tensor(marker_sim.reference_surface_vertices_camera, device)
+            current = self._as_marker_tensor(marker_sim.get_surface_vertices_camera(), device)
+            ref_pts = (reference[marker_idx] * marker_weight[..., None]).sum(1)
+            curr_pts = (current[marker_idx] * marker_weight[..., None]).sum(1)
+
+            constrain_ids = torch.as_tensor(marker_sim.constrain_ids, device=device, dtype=torch.long)
+            if constrain_ids.numel() > 0:
+                vertices = self._as_marker_tensor(marker_sim.get_vertices_camera(), device)
+                constrain_pts = self._as_marker_tensor(marker_sim.constrain_pts, device)
+                mean_motion = (vertices[constrain_ids] - constrain_pts).mean(dim=0)
+                curr_pts[:, :2] -= mean_motion[:2]
+            return curr_pts - ref_pts
+        except Exception:
+            return None
+
+    def _marker_contact_force_sensor(self, device: torch.device | str) -> torch.Tensor | None:
+        if not bool(getattr(self.cfg, "marker_motion_force_enabled", False)):
+            return None
+
+        uipc_sim = getattr(self.gelpad_uipc, "uipc_sim", None)
+        if uipc_sim is None or not hasattr(uipc_sim, "get_contact_gradient"):
+            return None
+
+        marker_sim = self.marker_motion_sim
+        try:
+            idx, grad = uipc_sim.get_contact_gradient()
+            nodal_pos = self.gelpad_uipc.data.nodal_pos_w
+            force_device = nodal_pos.device
+            idx = torch.as_tensor(idx, device=force_device, dtype=torch.long)
+            grad = torch.as_tensor(grad, device=force_device, dtype=torch.float32)
+            offsets = uipc_sim._system_vertex_offsets["uipc::backend::cuda::GlobalVertexManager"]
+            start = int(offsets[self.gelpad_uipc.global_system_id])
+            num_v = int(nodal_pos.shape[0])
+            dense = torch.zeros((num_v, 3), dtype=torch.float32, device=force_device)
+            if idx.numel() > 0:
+                mask = (idx >= start) & (idx < start + num_v)
+                if bool(mask.any()):
+                    dense[idx[mask] - start] = -grad[mask]
+
+            surf_global = torch.as_tensor(marker_sim.vertices_on_surface, device=force_device, dtype=torch.long)
+            marker_idx = torch.as_tensor(marker_sim.marker_surf_idx, device=force_device, dtype=torch.long)
+            marker_weight = torch.as_tensor(marker_sim.marker_weight, device=force_device, dtype=torch.float32)
+            force_surf = dense[surf_global]
+            marker_force = (force_surf[marker_idx] * marker_weight[..., None]).sum(1)
+
+            self.camera._update_poses(self.camera._ALL_INDICES)
+            rot_w_sensor = math_utils.matrix_from_quat(self.camera._data.quat_w_ros)[0]
+            marker_force = marker_force @ rot_w_sensor.to(device=force_device, dtype=marker_force.dtype)
+            return marker_force.to(device=device, dtype=torch.float32)
+        except Exception:
+            return None
+
+    def _radial_marker_direction(self, marker_uv: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
+        if weight is None or weight.numel() == 0 or float(weight.sum().item()) <= 1.0e-8:
+            center = marker_uv.mean(dim=0, keepdim=True)
+        else:
+            center = (marker_uv * weight[:, None]).sum(dim=0, keepdim=True) / weight.sum().clamp_min(1.0e-8)
+        radial = marker_uv - center
+        norm = torch.linalg.norm(radial, dim=-1, keepdim=True).clamp_min(1.0e-6)
+        return torch.nan_to_num(radial / norm)
+
+    def _xsense_subtract_static_baseline(
+        self,
+        value: torch.Tensor | None,
+        attr_name: str,
+        count: int,
+        clamp_min: float | None = 0.0,
+        clamp_max: float | None = None,
+    ) -> torch.Tensor | None:
+        if value is None or value.shape[0] < count:
+            return value
+
+        current = torch.nan_to_num(value[:count]).detach()
+        baseline = getattr(self, attr_name, None)
+        if baseline is None or baseline.shape[0] != count:
+            setattr(self, attr_name, current.clone())
+            return torch.zeros_like(current)
+
+        baseline = baseline.to(device=current.device, dtype=current.dtype)
+        corrected = current - baseline[:count]
+        if clamp_min is not None:
+            corrected = corrected.clamp_min(clamp_min)
+        if clamp_max is not None:
+            corrected = corrected.clamp(max=clamp_max)
+        return corrected
+
+    def _xsense_marker_flow(self, raw_marker_flow) -> torch.Tensor:
+        device = self.canonical_marker_uv.device
+        raw_marker_flow = self._as_marker_tensor(raw_marker_flow, device)
+        num_markers = int(self.cfg.marker_params.num_markers)
+        if raw_marker_flow.shape[1] != num_markers or self.canonical_marker_uv.shape[0] != num_markers:
+            raise RuntimeError(
+                "XSense FEM marker count does not match the canonical grid: "
+                f"raw={raw_marker_flow.shape[1]}, canonical={self.canonical_marker_uv.shape[0]}, "
+                f"expected={num_markers}"
+            )
+
+        canonical_uv = self.canonical_marker_uv.to(device=device, dtype=torch.float32)
+        scale = float(getattr(self.cfg, "marker_visual_motion_scale", 1.0))
+        fem_delta_uv = torch.nan_to_num(raw_marker_flow[1] - raw_marker_flow[0])
+        return torch.stack(
+            (canonical_uv, canonical_uv + scale * fem_delta_uv),
+            dim=0,
+        )
 
     def _canonical_marker_uv(self) -> torch.Tensor:
         sx, sy = self.cfg.marker_shape
@@ -195,42 +323,13 @@ class ManiSkillSimulator(GelSightSimulator):
         return delta - delta[bg_mask].mean(dim=0, keepdim=True)
 
     def marker_rgb_motion(self) -> torch.Tensor:
-        if str(self.cfg.sensor_type).startswith("xense"):
-            scale = float(getattr(self.cfg, "marker_visual_motion_scale", 1.0) or 1.0)
-            marker_flow = self.marker_data[0]
-            init_uv = marker_flow[0]
-            curr_uv = marker_flow[1]
-            delta = curr_uv - init_uv
-            contact_weight = self._sample_visual_contact_weight(self.canonical_marker_uv[: delta.shape[0]])
-            if contact_weight is not None:
-                delta = self._remove_background_visual_drift(delta, contact_weight)
-            else:
-                delta = delta - delta.mean(dim=0, keepdim=True)
-            delta = self._smooth_marker_delta_for_visual(delta)
-            if contact_weight is not None:
-                background_scale = max(
-                    float(getattr(self.cfg, "marker_visual_background_scale", 0.12) or 0.0),
-                    0.0,
-                )
-                contact_gain = max(float(getattr(self.cfg, "marker_visual_contact_gain", 3.0) or 0.0), 0.0)
-                contact_gamma = max(float(getattr(self.cfg, "marker_visual_contact_gamma", 1.35) or 1.35), 0.25)
-                local_gain = background_scale + contact_gain * contact_weight.pow(contact_gamma)
-                delta = delta * local_gain.unsqueeze(-1)
-            clip_px = float(getattr(self.cfg, "marker_visual_motion_clip_px", 0.0))
-            if clip_px > 0.0:
-                norm = torch.linalg.norm(delta, dim=-1, keepdim=True).clamp_min(1.0e-6)
-                delta = delta * torch.clamp(clip_px / norm, max=1.0)
-            marker_uv = self.canonical_marker_uv + scale * delta
-            width, height = self.cfg.tactile_img_res
-            pad = self.radius + 1.0
-            marker_uv[:, 0] = marker_uv[:, 0].clamp(pad, width - pad)
-            marker_uv[:, 1] = marker_uv[:, 1].clamp(pad, height - pad)
-            return marker_uv
-        marker_flow = self.marker_data[0]
-        return marker_flow[1]
+        return self.marker_data[0, 1]
 
     def reset(self):
         self._indentation_depth = torch.zeros((self._num_envs), device=self._device)
+        self._xsense_visual_contact_weight_baseline = None
+        self._xsense_depth_motion_baseline_mm = None
+        self._xsense_marker_force_baseline = None
         # self.init_marker_pos = (self.marker_motion_sim.init_marker_x_pos, self.marker_motion_sim.init_marker_y_pos)
 
     def _set_debug_vis_impl(self, debug_vis: bool):

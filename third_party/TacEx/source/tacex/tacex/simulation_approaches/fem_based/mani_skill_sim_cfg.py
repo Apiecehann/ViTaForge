@@ -47,6 +47,22 @@ class ManiSkillSimulatorCfg(GelSightSimulatorCfg):
 
     marker_visual_background_threshold: float = 0.18
 
+    marker_motion_force_enabled: bool = False
+
+    marker_motion_shear_px_per_n: float = 0.0
+
+    marker_motion_normal_px: float = 0.0
+
+    marker_motion_normal_force_ref: float = 0.01
+
+    marker_motion_normal_gamma: float = 0.8
+
+    marker_motion_depth_px_per_mm: float = 0.0
+
+    marker_motion_depth_ref_mm: float = 0.5
+
+    marker_motion_depth_deadband_mm: float = 0.005
+
     marker_visual_jitter: float = 0.0
 
     marker_visual_jitter_seed: int = 20260623
@@ -55,9 +71,9 @@ class ManiSkillSimulatorCfg(GelSightSimulatorCfg):
 
     normalize: bool = False
 
-    camera_to_surface: float = 0.0283,
+    camera_to_surface: float = 0.0283
 
-    real_size: tuple[float, float] = (0.0266, 0.0209),
+    real_size: tuple[float, float] = (0.0266, 0.0209)
 
     tactile_img_res: tuple[int, int] = (320, 240)
     """Resolution of the Tactile Image.

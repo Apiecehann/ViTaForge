@@ -139,7 +139,17 @@ class Task(BaseTask):
 
     def pre_move(self):
         # 正式动作前等待物理状态稳定，再打开夹爪准备从目标物体上方接近。
-        self.delay(10)
+        initial_settle_steps = 10
+        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            initial_settle_steps = int(
+                getattr(
+                    self.cfg,
+                    "xense_half_cylinder_initial_settle_steps",
+                    getattr(self.cfg, "xense_initial_settle_steps", 1),
+                )
+            )
+        if initial_settle_steps > 0:
+            self.delay(initial_settle_steps)
         self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_half_cylinder")
 
         target_pose = self.target_block.get_pose()
@@ -212,6 +222,12 @@ class Task(BaseTask):
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_half_cylinder",
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_half_cylinder_adaptive_grasp_depth_threshold"
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_half_cylinder_adaptive_grasp_require_both_contacts"
+            ),
         )
         self.settle_xense_after_close(is_save=False)
         self.record_xense_grasp_debug(

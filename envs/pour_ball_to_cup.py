@@ -5,12 +5,13 @@ from uipc.unit import GPa
 
 # python scripts/collect_data.py pour_ball_to_cup pour_ball_to_cup_gui --episode_num 1 --start_seed 0 --max_seed 0 --gpu 0
 
-XENSE_CUP_BASE_Z = 0.020
-XENSE_BALL_BASE_Z = 0.038
+XENSE_CUP_BASE_Z = 0.002
+XENSE_BALL_BASE_Z = 0.020
 XENSE_YELLOW_CUP_Y = -0.100
 
-# Keep the manipulated-object geometry/layout consistent with the original
-# Panda/GelSight task; Xense-specific differences live in grasp/control only.
+# Panda/GelSight keep the original task pose. Xense cups remain constrained
+# through reset, so only their reset pose is lowered to the physically settled
+# ground-contact height; the cup USD geometry and cup/ball relative layout stay unchanged.
 PANDA_CUP_BASE_Z = 0.020
 PANDA_BALL_BASE_Z = 0.038
 PANDA_YELLOW_CUP_Y = -0.100
@@ -191,7 +192,17 @@ class Task(BaseTask):
 
     def pre_move(self):
         # 先等待 10 step 看初始 settling。夹爪开口已经在 init_state 里设成最大值, 不再额外规划 open_gripper。
-        self.delay(10)
+        initial_settle_steps = 10
+        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            initial_settle_steps = int(
+                getattr(
+                    self.cfg,
+                    "xense_pour_initial_settle_steps",
+                    getattr(self.cfg, "xense_initial_settle_steps", 1),
+                )
+            )
+        if initial_settle_steps > 0:
+            self.delay(initial_settle_steps)
         # open_gripper(1.0) 对应的真实 qpos 是 gripper_max_qpos: 单侧约 3.9cm, 总开口约 7.8cm。
         self.metadata["gripper_open_qpos"] = float(self._robot_manager.gripper_max_qpos)
         self.metadata["gripper_open_ratio"] = 1.0
@@ -592,7 +603,17 @@ class Task(BaseTask):
             # it active while both pads squeeze the wall over-constrains UIPC.
             self.blue_cup.remove_animate(force=True)
             self._actor_manager.update(dt=0.0)
-        self.move(self.atom.close_gripper(pos=close_percent), tag="close_blue_cup_rim")
+        self.move(
+            self.atom.close_gripper(pos=close_percent),
+            tag="close_blue_cup_rim",
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_pour_cup_adaptive_grasp_depth_threshold",
+                fallback_key="xense_cup_adaptive_grasp_depth_threshold",
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_pour_cup_adaptive_grasp_require_both_contacts"
+            ),
+        )
         self.settle_xense_after_close(is_save=False)
         self.record_xense_grasp_debug("xense_after_close_blue_cup_rim", self.blue_cup)
         self._blue_cup_shape_after_close = self._record_blue_cup_shape("after_close")

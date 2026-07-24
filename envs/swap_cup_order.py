@@ -5,7 +5,11 @@ import numpy as np
 
 # True 时给初始物体位置和若干 motion target 加小扰动; False 时所有随机量为 0。
 is_random = True
-CUP_BASE_Z = 0.020
+# Panda/GelSight keep the original task pose.  Xense cups stay constrained
+# through reset, so use the physically settled ground-contact pose instead
+# of leaving constrained cups visually floating above the table.
+PANDA_CUP_BASE_Z = 0.020
+XENSE_CUP_BASE_Z = 0.002
 
 
 @configclass
@@ -63,31 +67,38 @@ class Task(BaseTask):
         return cfg
 
     def create_actors(self):
-        keep_constrained = getattr(self.cfg, "tactile_sensor_type", "") in (
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
             "xensews",
             "xensews_robotiq",
         )
+        keep_constrained = is_xense
+        cup_base_z = XENSE_CUP_BASE_Z if is_xense else PANDA_CUP_BASE_Z
         self.yellow_cup = self._actor_manager.add_from_usd_file(
             name="yellow_cup",
             asset_path="cup_yellow.usd",
-            pose=Pose([0.50, 0.00, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
+            pose=Pose([0.50, 0.00, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e3,
             keep_constrained=keep_constrained,
         )
         self.blue_cup = self._actor_manager.add_from_usd_file(
             name="blue_cup",
             asset_path="cup_blue.usd",
-            pose=Pose([0.50, -0.12, CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0)),
+            pose=Pose([0.50, -0.12, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e3,
             keep_constrained=keep_constrained,
         )
 
     def _reset_actors(self):
-        # reset 时两个杯子分别绕各自基准位置做 xy +/-1cm 随机; z 仍保持桌面高度。
+        # reset 时两个杯子分别绕各自基准位置做 xy +/-1cm 随机; z 保持各 sensor 对应的落地高度。
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        cup_base_z = XENSE_CUP_BASE_Z if is_xense else PANDA_CUP_BASE_Z
         yellow_cup_xy_noise = self._random_vec(0.010, size=2)
         blue_cup_xy_noise = self._random_vec(0.010, size=2)
-        yellow_cup_pose = Pose([0.50 + yellow_cup_xy_noise[0], 0.00 + yellow_cup_xy_noise[1], CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0))
-        blue_cup_pose = Pose([0.50 + blue_cup_xy_noise[0], -0.12 + blue_cup_xy_noise[1], CUP_BASE_Z], (1.0, 0.0, 0.0, 0.0))
+        yellow_cup_pose = Pose([0.50 + yellow_cup_xy_noise[0], 0.00 + yellow_cup_xy_noise[1], cup_base_z], (1.0, 0.0, 0.0, 0.0))
+        blue_cup_pose = Pose([0.50 + blue_cup_xy_noise[0], -0.12 + blue_cup_xy_noise[1], cup_base_z], (1.0, 0.0, 0.0, 0.0))
         self.yellow_cup.set_pose(yellow_cup_pose)
         self.blue_cup.set_pose(blue_cup_pose)
         self.metadata["is_random"] = bool(is_random)
@@ -98,7 +109,17 @@ class Task(BaseTask):
 
     def pre_move(self):
         # 默认 robot_cfg 给竖直向下的手臂姿态; 夹爪已在 init_state 里设成最大开口。
-        self.delay(10)
+        initial_settle_steps = 10
+        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            initial_settle_steps = int(
+                getattr(
+                    self.cfg,
+                    "xense_cup_initial_settle_steps",
+                    getattr(self.cfg, "xense_initial_settle_steps", 1),
+                )
+            )
+        if initial_settle_steps > 0:
+            self.delay(initial_settle_steps)
         self.metadata["gripper_open_qpos"] = float(self._robot_manager.gripper_max_qpos)
         self.metadata["gripper_open_ratio"] = 1.0
         self.metadata["gripper_qpos_after_init_delay"] = float(self._robot_manager.get_gripper_qpos())
@@ -210,7 +231,16 @@ class Task(BaseTask):
             # Xense pads squeeze the cup to avoid an over-constrained contact.
             self.blue_cup.remove_animate(force=True)
             self._actor_manager.update(dt=0.0)
-        self.move(self.atom.close_gripper(pos=close_percent), tag="close_blue_cup")
+        self.move(
+            self.atom.close_gripper(pos=close_percent),
+            tag="close_blue_cup",
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_cup_adaptive_grasp_depth_threshold"
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_cup_adaptive_grasp_require_both_contacts"
+            ),
+        )
         self.settle_xense_after_close(is_save=False)
         self.record_xense_grasp_debug("xense_after_close_blue_cup", self.blue_cup)
         self._blue_cup_shape_after_close = self._record_blue_cup_shape("after_close")

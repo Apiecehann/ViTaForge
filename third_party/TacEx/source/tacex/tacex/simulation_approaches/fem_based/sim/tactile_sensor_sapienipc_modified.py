@@ -14,6 +14,7 @@
 ##
 
 import cv2
+import os
 import time
 import math
 import numpy as np
@@ -82,10 +83,7 @@ class VisionTactileSensorUIPC:
 
         self.camera = camera
 
-        use_precomputed_indices = (
-            self.sensor_type in CONSTRAIN_PTS
-            and self.sensor_type != "xensews"
-        )
+        use_precomputed_indices = self.sensor_type in CONSTRAIN_PTS
         if not use_precomputed_indices:
             gelpad_info = get_gelpad_info(self.gelpad_obj.uipc_meshes[0])
             self.constrain_ids = gelpad_info['bottom']['ids']
@@ -93,6 +91,7 @@ class VisionTactileSensorUIPC:
         else:
             self.constrain_ids = CONSTRAIN_PTS[self.sensor_type]
             self.faces_on_surfaces = SURFACE_FACES[self.sensor_type]
+        self._debug_xsense_camera_faces(self.faces_on_surfaces)
         self.vertices_on_surface = np.sort(np.unique(self.faces_on_surfaces.flatten()))
         self.init_surface_vertices = self.get_surface_vertices_world()
 
@@ -132,7 +131,8 @@ class VisionTactileSensorUIPC:
     def init_vertices(self):
         self.init_surface_vertices_camera = self.get_surface_vertices_camera().clone()
         self.reference_surface_vertices_camera = self.get_surface_vertices_camera().clone()
-        self.marker_surf_idx, self.marker_weight = self._gen_marker_weight(self.marker_grid)
+        if not hasattr(self, "marker_surf_idx"):
+            self.marker_surf_idx, self.marker_weight = self._gen_marker_weight(self.marker_grid)
         self.constrain_pts = self.get_vertices_camera()[self.constrain_ids].cpu().numpy()
 
     def get_vertices_world(self):
@@ -201,6 +201,40 @@ class VisionTactileSensorUIPC:
         v_cv = self.transform_world_to_camera_frame(v)
         return v_cv
 
+    def camera_points_to_opencv(self, points):
+        return np.asarray(points)
+
+    def _debug_xsense_camera_faces(self, faces):
+        if not str(self.sensor_type).startswith("xense") or os.environ.get("XENSE_MARKER_BINDING_DEBUG") != "1":
+            return
+        vertices = self.get_vertices_camera().cpu().numpy()
+        face_vertices = vertices[faces]
+        normals = np.cross(face_vertices[:, 1] - face_vertices[:, 0], face_vertices[:, 2] - face_vertices[:, 0])
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True).clip(1e-12)
+        centers = face_vertices.mean(axis=1)
+        depth = centers[:, 2]
+        diagnostics = {
+            "prim_path": str(self.gelpad_obj.cfg.prim_path),
+            "vertex_bounds": [vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()],
+            "face_count": int(len(faces)),
+            "depth_range": [float(depth.min()), float(depth.max())],
+        }
+        for name, mask in (
+            ("negative_y", normals[:, 1] < -0.5),
+            ("positive_y", normals[:, 1] > 0.5),
+            ("aligned_y", np.abs(normals[:, 1]) > 0.5),
+            ("negative_z", normals[:, 2] < -0.5),
+            ("positive_z", normals[:, 2] > 0.5),
+            ("aligned_z", np.abs(normals[:, 2]) > 0.5),
+        ):
+            group_vertices = face_vertices[mask].reshape(-1, 3)
+            diagnostics[name] = {
+                "faces": int(mask.sum()),
+                "depth_range": [float(depth[mask].min()), float(depth[mask].max())] if mask.any() else None,
+                "bounds": [group_vertices.min(axis=0).tolist(), group_vertices.max(axis=0).tolist()] if mask.any() else None,
+            }
+        print("[xense-camera-faces]", diagnostics)
+
     def set_reference_surface_vertices_camera(self):
         self.reference_surface_vertices_camera = self.get_surface_vertices_camera().clone()
 
@@ -255,7 +289,12 @@ class VisionTactileSensorUIPC:
         return marker_grid
     
     def _gen_marker_weight(self, marker_pts):
-        surface_pts = self.init_surface_vertices_camera.cpu().numpy()[:, :2]
+        surface_pts_camera = self.init_surface_vertices_camera.cpu().numpy()
+        surface_pts = self.camera_points_to_opencv(surface_pts_camera)[:, :2]
+        marker_pts = np.asarray(marker_pts).copy()
+        if str(self.sensor_type).startswith("xense"):
+            surface_center = 0.5 * (surface_pts.min(axis=0) + surface_pts.max(axis=0))
+            marker_pts += surface_center
         # marker_on_surface = in_hull(marker_pts, surface_pts)
         # marker_pts = marker_pts[marker_on_surface]
 
@@ -272,7 +311,7 @@ class VisionTactileSensorUIPC:
         faces_v_on_surface = faces_v_on_surface[valid_face_mask]
         f_centers = np.mean(faces_v_on_surface, axis=1)
 
-        n_neighbors = min(8, len(f_centers))
+        n_neighbors = len(f_centers) if str(self.sensor_type).startswith("xense") else min(8, len(f_centers))
         if n_neighbors == 0:
             raise ValueError("No gelpad surface faces found for marker initialization")
         nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="ball_tree").fit(f_centers)
@@ -281,6 +320,7 @@ class VisionTactileSensorUIPC:
         marker_pts_surface_idx = []
         marker_pts_surface_weight = []
         valid_marker_idx = []
+        inside_marker_count = 0
 
         # compute barycentric weight of each vertex
         for i in range(marker_pts.shape[0]):
@@ -288,6 +328,7 @@ class VisionTactileSensorUIPC:
             p = marker_pts[i]
             fallback_idx = None
             fallback_weight = None
+            fallback_distance = np.inf
             for possible_face_id in possible_face_ids.tolist():
                 face_vertices_idx = face_idx_to_surface_idx[surface_faces_for_markers[possible_face_id]]
                 vertices_of_face_i = surface_pts[face_vertices_idx]
@@ -298,13 +339,29 @@ class VisionTactileSensorUIPC:
                     continue
                 w12 = np.linalg.solve(A, p - p0)
                 weight = np.array([1 - w12.sum(), w12[0], w12[1]])
-                if fallback_idx is None:
-                    fallback_idx = face_vertices_idx
-                    fallback_weight = weight
                 if w12[0] >= 0 and w12[1] >= 0 and w12[0] + w12[1] <= 1:
                     fallback_idx = face_vertices_idx
                     fallback_weight = weight
+                    inside_marker_count += 1
                     break
+                for edge_start, edge_end, edge_weights in (
+                    (0, 1, (0, 1)),
+                    (1, 2, (1, 2)),
+                    (2, 0, (2, 0)),
+                ):
+                    edge = vertices_of_face_i[edge_end] - vertices_of_face_i[edge_start]
+                    edge_length_sq = float(np.dot(edge, edge))
+                    if edge_length_sq <= 1e-14:
+                        continue
+                    t = float(np.clip(np.dot(p - vertices_of_face_i[edge_start], edge) / edge_length_sq, 0.0, 1.0))
+                    closest = vertices_of_face_i[edge_start] + t * edge
+                    distance = float(np.dot(p - closest, p - closest))
+                    if distance < fallback_distance:
+                        fallback_distance = distance
+                        fallback_idx = face_vertices_idx
+                        fallback_weight = np.zeros(3, dtype=np.float64)
+                        fallback_weight[edge_weights[0]] = 1.0 - t
+                        fallback_weight[edge_weights[1]] = t
             if fallback_idx is None:
                 nearest_vertex = np.argmin(np.linalg.norm(surface_pts - p, axis=1))
                 fallback_idx = np.array([nearest_vertex, nearest_vertex, nearest_vertex], dtype=np.int32)
@@ -323,10 +380,44 @@ class VisionTactileSensorUIPC:
         marker_fit_err = np.abs(reconstructed_marker_pts - marker_pts).max()
         if self.sensor_type == "xensews" and not np.allclose(reconstructed_marker_pts, marker_pts):
             print(f"[xense-debug] marker_surface_fallback max_err={marker_fit_err}")
+        rounded_weights = np.round(marker_pts_surface_weight, decimals=6)
+        binding_keys = np.concatenate([marker_pts_surface_idx, rounded_weights], axis=1)
+        unique_binding_count = int(np.unique(binding_keys, axis=0).shape[0])
+        if str(self.sensor_type).startswith("xense") and os.environ.get("XENSE_MARKER_BINDING_DEBUG") == "1":
+            print(
+                "[xense-marker-binding]",
+                {
+                    "prim_path": str(self.gelpad_obj.cfg.prim_path),
+                    "marker_bounds": [marker_pts.min(axis=0).tolist(), marker_pts.max(axis=0).tolist()],
+                    "surface_bounds": [surface_pts.min(axis=0).tolist(), surface_pts.max(axis=0).tolist()],
+                    "surface_camera_bounds": [surface_pts_camera.min(axis=0).tolist(), surface_pts_camera.max(axis=0).tolist()],
+                    "surface_vertices": int(surface_pts.shape[0]),
+                    "surface_faces": int(faces_v_on_surface.shape[0]),
+                    "inside_markers": int(inside_marker_count),
+                    "fallback_markers": int(marker_pts.shape[0] - inside_marker_count),
+                    "unique_bindings": unique_binding_count,
+                    "unique_reconstructed": int(np.unique(np.round(reconstructed_marker_pts, decimals=6), axis=0).shape[0]),
+                    "weight_min": float(marker_pts_surface_weight.min()),
+                    "weight_max": float(marker_pts_surface_weight.max()),
+                    "fit_error": float(marker_fit_err),
+                },
+            )
+        if str(self.sensor_type).startswith("xense"):
+            if inside_marker_count != marker_pts.shape[0]:
+                raise RuntimeError(
+                    "Every XSense marker must lie inside a FEM surface triangle: "
+                    f"inside={inside_marker_count}, expected={marker_pts.shape[0]}"
+                )
+            if unique_binding_count != marker_pts.shape[0]:
+                raise RuntimeError(
+                    "Every XSense marker must have a unique FEM binding: "
+                    f"unique={unique_binding_count}, expected={marker_pts.shape[0]}"
+                )
 
         return marker_pts_surface_idx, marker_pts_surface_weight
 
     def gen_marker_uv(self, marker_pts):
+        marker_pts = self.camera_points_to_opencv(marker_pts)
         marker_uv = cv2.projectPoints(
             marker_pts, 
             np.zeros(3, dtype=np.float32),
@@ -338,6 +429,7 @@ class VisionTactileSensorUIPC:
         return marker_uv
 
     def gen_marker_flow(self):
+        is_xsense = str(self.sensor_type).startswith("xense")
         init_marker_pts = (
             self.reference_surface_vertices_camera[self.marker_surf_idx].cpu().numpy()
             * self.marker_weight[..., None]
@@ -349,30 +441,44 @@ class VisionTactileSensorUIPC:
 
         mean_motion = np.mean(
             self.get_vertices_camera()[self.constrain_ids].cpu().numpy() - self.constrain_pts, axis=0)
-        curr_marker_pts[:, :2] -= mean_motion[:2]
+        curr_marker_pts -= mean_motion
 
         init_marker_uv = self.gen_marker_uv(init_marker_pts)
         curr_marker_uv = self.gen_marker_uv(curr_marker_pts)
-        marker_mask = np.logical_and.reduce([
-            curr_marker_uv[:, 0] > 0,
-            curr_marker_uv[:, 0] < self.tactile_img_width,
-            curr_marker_uv[:, 1] > 0,
-            curr_marker_uv[:, 1] < self.tactile_img_height,
-        ])
         marker_flow = np.stack([init_marker_uv, curr_marker_uv], axis=0)
-        marker_flow = marker_flow[:, marker_mask]
+
+        if not is_xsense:
+            marker_mask = np.logical_and.reduce([
+                curr_marker_uv[:, 0] > 0,
+                curr_marker_uv[:, 0] < self.tactile_img_width,
+                curr_marker_uv[:, 1] > 0,
+                curr_marker_uv[:, 1] < self.tactile_img_height,
+            ])
+            marker_flow = marker_flow[:, marker_mask]
 
         # post processing
-        no_lose_tracking_mask = np.random.rand(marker_flow.shape[1]) > self.marker_lose_tracking_probability
-        marker_flow = marker_flow[:, no_lose_tracking_mask, :]
-        noise = np.random.randn(*marker_flow.shape) * self.marker_random_noise
-        marker_flow += noise
+        if not is_xsense and self.marker_lose_tracking_probability > 0:
+            no_lose_tracking_mask = np.random.rand(marker_flow.shape[1]) > self.marker_lose_tracking_probability
+            marker_flow = marker_flow[:, no_lose_tracking_mask, :]
+        if not is_xsense:
+            noise = np.random.randn(*marker_flow.shape) * self.marker_random_noise
+            marker_flow += noise
 
         original_point_num = marker_flow.shape[1]
 
-        if original_point_num >= self.num_markers:
-            chosen = np.random.choice(original_point_num, self.num_markers, replace=False)
-            ret = marker_flow[:, chosen, ...]
+        if is_xsense:
+            if original_point_num != self.num_markers:
+                raise RuntimeError(
+                    "XSense must preserve every FEM marker binding: "
+                    f"got {original_point_num}, expected {self.num_markers}"
+                )
+            ret = marker_flow.copy()
+        elif original_point_num >= self.num_markers:
+            if original_point_num == self.num_markers:
+                ret = marker_flow[:, : self.num_markers, ...].copy()
+            else:
+                chosen = np.random.choice(original_point_num, self.num_markers, replace=False)
+                ret = marker_flow[:, chosen, ...]
         else:
             ret = np.zeros((marker_flow.shape[0], self.num_markers, marker_flow.shape[-1]))
             if original_point_num > 0:
@@ -384,7 +490,7 @@ class VisionTactileSensorUIPC:
             ret -= 1.0
 
         ret = torch.tensor(ret, device="cuda:0")
-        self.curr_marker_uv = curr_marker_uv
+        self.curr_marker_uv = ret[1]
         return ret
 
     def get_marker_img(self):

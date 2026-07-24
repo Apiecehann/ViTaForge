@@ -115,15 +115,23 @@ XSENSE_TAXIM_RESPONSE_INDENT_GAMMA = _env_float("XSENSE_TAXIM_RESPONSE_INDENT_GA
 XSENSE_TAXIM_RESPONSE_INDENT_SUPPORT = _env_float("XSENSE_TAXIM_RESPONSE_INDENT_SUPPORT", 0.35)
 XSENSE_TAXIM_RESPONSE_TAXIM_RESIDUAL_MIX = _env_float("XSENSE_TAXIM_RESPONSE_TAXIM_RESIDUAL_MIX", 0.0)
 
-XSENSE_MARKER_VISUAL_MOTION_SCALE = _env_float("XSENSE_MARKER_VISUAL_MOTION_SCALE", 0.15)
-XSENSE_MARKER_VISUAL_FLOW_SMOOTHING = max(_env_int("XSENSE_MARKER_VISUAL_FLOW_SMOOTHING", 1), 0)
-XSENSE_MARKER_VISUAL_MOTION_CLIP_PX = _env_float("XSENSE_MARKER_VISUAL_MOTION_CLIP_PX", 30.0)
+XSENSE_MARKER_VISUAL_MOTION_SCALE = _env_float("XSENSE_MARKER_VISUAL_MOTION_SCALE", 1.0)
+XSENSE_MARKER_VISUAL_FLOW_SMOOTHING = max(_env_int("XSENSE_MARKER_VISUAL_FLOW_SMOOTHING", 0), 0)
+XSENSE_MARKER_VISUAL_MOTION_CLIP_PX = _env_float("XSENSE_MARKER_VISUAL_MOTION_CLIP_PX", 0.0)
 XSENSE_MARKER_VISUAL_NOISE = _env_float("XSENSE_MARKER_VISUAL_NOISE", 8.0)
 XSENSE_MARKER_VISUAL_BOUNDS = _env_float_quad("XSENSE_MARKER_VISUAL_BOUNDS", (0.05, 0.12, 0.95, 0.88))
 XSENSE_MARKER_VISUAL_BACKGROUND_SCALE = _env_float("XSENSE_MARKER_VISUAL_BACKGROUND_SCALE", 0.01)
 XSENSE_MARKER_VISUAL_CONTACT_GAIN = _env_float("XSENSE_MARKER_VISUAL_CONTACT_GAIN", 8.0)
 XSENSE_MARKER_VISUAL_CONTACT_GAMMA = _env_float("XSENSE_MARKER_VISUAL_CONTACT_GAMMA", 1.10)
 XSENSE_MARKER_VISUAL_BACKGROUND_THRESHOLD = _env_float("XSENSE_MARKER_VISUAL_BACKGROUND_THRESHOLD", 0.18)
+XSENSE_MARKER_MOTION_FORCE_ENABLED = _env_bool("XSENSE_MARKER_MOTION_FORCE_ENABLED", True)
+XSENSE_MARKER_MOTION_SHEAR_PX_PER_N = _env_float("XSENSE_MARKER_MOTION_SHEAR_PX_PER_N", 850.0)
+XSENSE_MARKER_MOTION_NORMAL_PX = _env_float("XSENSE_MARKER_MOTION_NORMAL_PX", 5.0)
+XSENSE_MARKER_MOTION_NORMAL_FORCE_REF = _env_float("XSENSE_MARKER_MOTION_NORMAL_FORCE_REF", 0.012)
+XSENSE_MARKER_MOTION_NORMAL_GAMMA = _env_float("XSENSE_MARKER_MOTION_NORMAL_GAMMA", 0.75)
+XSENSE_MARKER_MOTION_DEPTH_PX_PER_MM = _env_float("XSENSE_MARKER_MOTION_DEPTH_PX_PER_MM", 1.5)
+XSENSE_MARKER_MOTION_DEPTH_REF_MM = _env_float("XSENSE_MARKER_MOTION_DEPTH_REF_MM", 0.55)
+XSENSE_MARKER_MOTION_DEPTH_DEADBAND_MM = _env_float("XSENSE_MARKER_MOTION_DEPTH_DEADBAND_MM", 0.005)
 XSENSE_OUTPUT_ORIENTATION = os.environ.get("XSENSE_OUTPUT_ORIENTATION", "none").strip().lower()
 TACTILE_ATTACHMENT_DEBUG = _env_bool("TACTILE_ATTACHMENT_DEBUG", False)
 
@@ -259,7 +267,10 @@ def create_xensews_cfg(
         marker_motion_sim_cfg=ManiSkillSimulatorCfg(
             tactile_img_res=resolution,
             marker_shape=(11, 20),
-            marker_interval=(16.42 / 10, 27.84 / 19),
+            marker_interval=(
+                16.42 * (XSENSE_MARKER_VISUAL_BOUNDS[2] - XSENSE_MARKER_VISUAL_BOUNDS[0]) / 10,
+                27.84 * (XSENSE_MARKER_VISUAL_BOUNDS[3] - XSENSE_MARKER_VISUAL_BOUNDS[1]) / 19,
+            ),
             sub_marker_num=0,
             marker_radius=3,
             sensor_type='xensews',
@@ -271,6 +282,14 @@ def create_xensews_cfg(
             marker_visual_contact_gain=XSENSE_MARKER_VISUAL_CONTACT_GAIN,
             marker_visual_contact_gamma=XSENSE_MARKER_VISUAL_CONTACT_GAMMA,
             marker_visual_background_threshold=XSENSE_MARKER_VISUAL_BACKGROUND_THRESHOLD,
+            marker_motion_force_enabled=XSENSE_MARKER_MOTION_FORCE_ENABLED,
+            marker_motion_shear_px_per_n=XSENSE_MARKER_MOTION_SHEAR_PX_PER_N,
+            marker_motion_normal_px=XSENSE_MARKER_MOTION_NORMAL_PX,
+            marker_motion_normal_force_ref=XSENSE_MARKER_MOTION_NORMAL_FORCE_REF,
+            marker_motion_normal_gamma=XSENSE_MARKER_MOTION_NORMAL_GAMMA,
+            marker_motion_depth_px_per_mm=XSENSE_MARKER_MOTION_DEPTH_PX_PER_MM,
+            marker_motion_depth_ref_mm=XSENSE_MARKER_MOTION_DEPTH_REF_MM,
+            marker_motion_depth_deadband_mm=XSENSE_MARKER_MOTION_DEPTH_DEADBAND_MM,
             marker_visual_bounds=XSENSE_MARKER_VISUAL_BOUNDS,
             # XSense images are 400x700 portrait: width is the 16.42mm short axis,
             # height is the 27.84mm long axis.
@@ -1033,6 +1052,26 @@ class VisualTactileSensor:
             return False
         marker_motion_sim.init_vertices()
         return True
+
+    def reset_marker_reference(self):
+        marker_simulator = getattr(self.sensor, "marker_motion_simulator", None)
+        marker_motion_sim = getattr(marker_simulator, "marker_motion_sim", None)
+        if marker_motion_sim is None:
+            return False
+
+        marker_motion_sim.init_vertices()
+        marker_simulator.marker_data.zero_()
+        output = self.sensor.data.output
+        if 'marker_motion' in output:
+            output['marker_motion'].zero_()
+            output['marker_motion'][:] = marker_simulator.marker_motion_simulation()
+        if 'marker_rgb' in output and 'tactile_rgb' in output:
+            marker_uv = marker_simulator.marker_rgb_motion()
+            marker_img = marker_simulator.draw_markers(marker_uv=marker_uv)
+            tactile_rgb = output['tactile_rgb'].to(dtype=torch.float32) / 255.0
+            tactile_rgb *= torch.dstack([marker_img / 255.0] * 3)
+            output['marker_rgb'] = (tactile_rgb * 255.0).to(dtype=torch.uint8)
+        return True
     
     def get_min_depth(self):
         return torch.min(self.sensor.data.output['height_map']).item()
@@ -1085,6 +1124,12 @@ class TactileManager:
         results = {}
         for name, tact in self.tactiles.items():
             results[name] = bool(tact.reset_reference())
+        return results
+
+    def reset_marker_reference(self):
+        results = {}
+        for name, tact in self.tactiles.items():
+            results[name] = bool(tact.reset_marker_reference())
         return results
 
     def _reset_idx(self):

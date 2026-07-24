@@ -169,6 +169,27 @@ class BaseTaskCfg(DirectRLEnvCfg):
 
     use_adaptive_grasp: bool = True
     adaptive_grasp_depth_threshold = None # in mm
+    # Optional per-task Xense adaptive thresholds.  If unset, each close uses
+    # adaptive_grasp_depth_threshold.  Larger values stop earlier / press less.
+    xense_usb_adaptive_grasp_depth_threshold: float | None = None
+    xense_half_cylinder_adaptive_grasp_depth_threshold: float | None = None
+    xense_insert_half_cylinder_adaptive_grasp_depth_threshold: float | None = None
+    xense_cube_adaptive_grasp_depth_threshold: float | None = None
+    xense_cup_adaptive_grasp_depth_threshold: float | None = None
+    xense_pour_cup_adaptive_grasp_depth_threshold: float | None = None
+    xense_drawer_adaptive_grasp_depth_threshold: float | None = None
+    xense_gear_adaptive_grasp_depth_threshold: float | None = None
+    # Optional per-task Xense contact stop policies.  If unset, each close uses
+    # xense_adaptive_grasp_require_both_contacts.  Rigid/centered grasps usually
+    # benefit from both pads contacting; soft cups often need an earlier any-pad stop.
+    xense_usb_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_half_cylinder_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_insert_half_cylinder_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_cube_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_cup_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_pour_cup_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_drawer_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_gear_adaptive_grasp_require_both_contacts: bool | None = None
     # Xense-specific grasp tuning. These are ignored by GelSight/Neote branches.
     xense_usb_close_percent: float = 0.185
     xense_half_cylinder_close_percent: float = 0.0
@@ -216,10 +237,27 @@ class BaseTaskCfg(DirectRLEnvCfg):
     xense_carry_max_step: float = 0.04
     xense_post_close_settle_steps: int = 80
     xense_adaptive_grasp_max_steps: int = 180
-    xense_adaptive_grasp_check_interval: int = 10
-    xense_adaptive_grasp_qpos_step: float = 0.012
+    # Extra Robotiq tracking steps after the nominal plan_gripper path.
+    # Xense/Robotiq physical qpos lags the commanded target, so contact often
+    # appears during this short monitored tail rather than during the original
+    # plan.  Keeping this bounded preserves runtime while avoiding blind
+    # post-close squeezing.
+    xense_adaptive_grasp_tail_steps: int = 80
+    xense_adaptive_grasp_check_interval: int = 2
+    xense_adaptive_grasp_qpos_step: float = 0.006
     xense_adaptive_grasp_target_tolerance: float = 0.006
-    xense_adaptive_grasp_min_target_margin: float = 0.02
+    # Legacy name kept for old configs; the Xense implementation no longer
+    # waits until the hard close target before allowing tactile stop.
+    xense_adaptive_grasp_min_target_margin: float = 0.0
+    # Robotiq needs a tiny sustained closing command after tactile stop;
+    # otherwise the physical finger joint can relax and drop the object even
+    # though contact was detected.  The hold target is capped by the requested
+    # close qpos, so the per-task close_percent remains the hard maximum.
+    xense_adaptive_grasp_hold_margin: float = 0.0
+    xense_adaptive_grasp_hold_velocity: float = 0.0
+    xense_adaptive_grasp_min_steps_before_contact: int = 2
+    xense_adaptive_grasp_min_travel: float = 0.0
+    xense_adaptive_grasp_require_both_contacts: bool = False
     reset_time_limit: float = 120.0  # in seconds
 
     cameras: list[CameraCfg] = [
@@ -489,6 +527,12 @@ class BaseTask(UipcRLEnv):
                     f'Timeout: reset exceed time limit of {self.cfg.reset_time_limit} s, cost {reset_test_cost} s.'
                 )
         self._update_render()
+
+        if str(self.cfg.tactile_sensor_type).startswith('xense'):
+            self.metadata['xense_marker_reference_reset_result'] = (
+                self._tactile_manager.reset_marker_reference()
+            )
+            self.metadata['xense_marker_reference_reset_step'] = int(self.step_count)
 
         self.pre_move()
         self.in_pre_move = False
@@ -866,7 +910,8 @@ class BaseTask(UipcRLEnv):
         delay: bool = True,
         constraint_pose = None,
         time_dilation_factor = None,
-        gripper_depth_threshold = None
+        gripper_depth_threshold = None,
+        gripper_require_both_contacts = None,
     ):
         """
         Take action for the robot.
@@ -908,11 +953,30 @@ class BaseTask(UipcRLEnv):
                 if self.mode in ['collect', 'eval_test'] or (self.mode == 'eval' and self.in_pre_move):
                     if self.cfg.use_adaptive_grasp:
                         target_pos = self._robot_manager.gripper_percent2qpos(action.target_gripper_pos)
+                        action_depth_threshold = action.args.get('gripper_depth_threshold', None)
+                        # A task-level move(..., gripper_depth_threshold=...) is the
+                        # most specific tuning knob; otherwise use the action arg and
+                        # finally the sensor default.  This keeps per-task YAML values
+                        # from being shadowed by atom.close_gripper()'s auto default.
+                        depth_threshold = (
+                            gripper_depth_threshold
+                            if gripper_depth_threshold is not None
+                            else action_depth_threshold
+                        )
+                        if depth_threshold is None:
+                            depth_threshold = self.cfg.adaptive_grasp_depth_threshold
+                        action_require_both_contacts = action.args.get('gripper_require_both_contacts', None)
+                        require_both_contacts = (
+                            gripper_require_both_contacts
+                            if gripper_require_both_contacts is not None
+                            else action_require_both_contacts
+                        )
                         control_seq['gripper'] = {
                             'status': 'success',
                             'num_steps': -1,
                             'target': target_pos,
-                            'threshold': action.args.get('gripper_depth_threshold', gripper_depth_threshold)
+                            'threshold': depth_threshold,
+                            'require_both_contacts': require_both_contacts,
                         }
                     else:
                         control_seq['gripper'] = self._robot_manager.plan_gripper(
@@ -1129,6 +1193,28 @@ class BaseTask(UipcRLEnv):
             return 0.0
         return float(getattr(self.cfg, key, default))
 
+    def get_xense_adaptive_grasp_depth_threshold(
+        self,
+        key: str,
+        fallback_key: str = "adaptive_grasp_depth_threshold",
+    ) -> float | None:
+        threshold = getattr(self.cfg, key, None)
+        if threshold is None:
+            threshold = getattr(self.cfg, fallback_key, None)
+        return None if threshold is None else float(threshold)
+
+    def get_xense_adaptive_grasp_require_both_contacts(
+        self,
+        key: str,
+        fallback_key: str = "xense_adaptive_grasp_require_both_contacts",
+    ) -> bool | None:
+        if getattr(self.cfg, "tactile_sensor_type", "") not in ("xensews", "xensews_robotiq"):
+            return None
+        value = getattr(self.cfg, key, None)
+        if value is None:
+            value = getattr(self.cfg, fallback_key, None)
+        return None if value is None else bool(value)
+
     def record_xense_grasp_debug(self, prefix: str, actor: Actor | None = None):
         if getattr(self.cfg, "tactile_sensor_type", "") not in ("xensews", "xensews_robotiq"):
             return
@@ -1173,7 +1259,10 @@ class BaseTask(UipcRLEnv):
         if gripper_steps == -1: # adaptive grasp
             idx, gripper_active = 0, True
             gripper_planner = self.adaptive_set_gripper(
-                gripper_seq['target'], gripper_seq['threshold'])
+                gripper_seq['target'],
+                gripper_seq['threshold'],
+                gripper_seq.get('require_both_contacts'),
+            )
             while True:
                 if idx >= arm_steps and not gripper_active:
                     break
@@ -1244,9 +1333,9 @@ class BaseTask(UipcRLEnv):
 
         return exec_success, self.eval_success
 
-    def adaptive_set_gripper(self, qpos, depth_threshold:float=None):
-        if self.cfg.tactile_sensor_type == "xensews":
-            yield from self._adaptive_set_xense_gripper(qpos, depth_threshold)
+    def adaptive_set_gripper(self, qpos, depth_threshold:float=None, require_both_contacts: bool | None = None):
+        if self.cfg.tactile_sensor_type in ("xensews", "xensews_robotiq"):
+            yield from self._adaptive_set_xense_gripper(qpos, depth_threshold, require_both_contacts)
             return
 
         max_steps = 1000
@@ -1318,74 +1407,179 @@ class BaseTask(UipcRLEnv):
         final_position = torch.full((cmd_dim,), final_target_qpos, device=self._robot_manager.device)
         yield final_position, torch.zeros_like(final_position), False
 
-    def _adaptive_set_xense_gripper(self, qpos, depth_threshold: float = None):
+    def _adaptive_set_xense_gripper(
+        self,
+        qpos,
+        depth_threshold: float = None,
+        require_both_contacts: bool | None = None,
+    ):
+        """Xense/Robotiq adaptive close.
+
+        The important compatibility rule is that, when tactile contact does not
+        reach the threshold, this follows RobotManager.plan_gripper(qpos) rather
+        than inventing a different gripper trajectory.  Therefore enabling
+        use_adaptive_grasp cannot slow down or otherwise perturb tasks that do
+        not actually trigger tactile early-stop.  If threshold contact is seen,
+        the plan is truncated at the current physical qpos, matching GelSight's
+        "close target is a maximum, tactile contact may stop earlier" semantics.
+        """
         qpos = float(qpos)
         max_steps = max(1, int(getattr(self.cfg, "xense_adaptive_grasp_max_steps", 180)))
-        check_interval = max(1, int(getattr(self.cfg, "xense_adaptive_grasp_check_interval", 10)))
-        qpos_step = max(1e-6, float(getattr(self.cfg, "xense_adaptive_grasp_qpos_step", 0.012)))
+        tail_steps = max(0, int(getattr(self.cfg, "xense_adaptive_grasp_tail_steps", 80)))
+        check_interval = max(1, int(getattr(self.cfg, "xense_adaptive_grasp_check_interval", 2)))
         target_tolerance = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_target_tolerance", 0.006)))
-        min_target_margin = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_min_target_margin", 0.02)))
+        legacy_min_target_margin = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_min_target_margin", 0.0)))
+        hold_margin = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_hold_margin", 0.0)))
+        hold_velocity = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_hold_velocity", 0.0)))
+        min_steps_before_contact = max(0, int(getattr(self.cfg, "xense_adaptive_grasp_min_steps_before_contact", 2)))
+        min_travel = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_min_travel", 0.0)))
+        if require_both_contacts is None:
+            require_both_contacts = bool(getattr(self.cfg, "xense_adaptive_grasp_require_both_contacts", False))
+        else:
+            require_both_contacts = bool(require_both_contacts)
 
         direct = 'open' if self._robot_manager.is_gripper_opening(qpos) else 'close'
         cmd_dim = len(self._robot_manager._gripper_ids)
-        velocity_limit = float(getattr(self._robot_manager, "gripper_velocity_limit", 1.0))
         threshold = None
         if depth_threshold is not None:
             threshold = torch.as_tensor(depth_threshold, dtype=torch.float32, device=self.device)
 
         start_qpos = float(self._robot_manager.get_gripper_qpos())
+        target_direction = 1.0 if qpos >= start_qpos else -1.0
         last_depth = None
-        stop_reason = 'max_steps'
+        last_contact_mask = None
+        stop_reason = 'target'
         steps_run = 0
+        plan_steps_run = 0
+        tail_steps_run = 0
 
-        def is_near_target(current_qpos: float) -> bool:
-            return abs(current_qpos - qpos) <= target_tolerance
+        gripper_plan = self._robot_manager.plan_gripper(qpos, type='qpos')
+        plan_steps = int(gripper_plan.get('num_steps', 0) or 0)
+        positions = gripper_plan.get('position')
+        velocities = gripper_plan.get('velocity')
+        steps_to_run = min(plan_steps, max_steps)
+        plan_step = float(getattr(self._robot_manager, "gripper_plan_step", 0.0))
 
-        def close_has_enough_angle(current_qpos: float) -> bool:
+        def has_moved_enough_for_contact_stop(current_qpos: float, step_idx: int) -> bool:
             if direct != 'close':
                 return True
-            if qpos >= start_qpos:
-                return current_qpos >= qpos - min_target_margin
-            return current_qpos <= qpos + min_target_margin
+            if step_idx < min_steps_before_contact:
+                return False
+            return abs(current_qpos - start_qpos) >= min_travel
 
-        for i in range(max_steps):
-            current_qpos = float(self._robot_manager.get_gripper_qpos())
-            near_target = is_near_target(current_qpos)
-            should_check_depth = threshold is not None and (
-                i == 0 or i % check_interval == 0 or near_target
+        def contact_stop_reached(contact_mask: torch.Tensor) -> bool:
+            return bool(torch.all(contact_mask)) if require_both_contacts else bool(torch.any(contact_mask))
+
+        def should_check_depth(step_idx: int) -> bool:
+            return (
+                direct == 'close'
+                and threshold is not None
+                and (step_idx == 0 or step_idx % check_interval == 0 or step_idx == steps_to_run - 1)
             )
 
-            if should_check_depth:
+        def should_check_tail_depth(step_idx: int, tail_idx: int, tail_limit: int) -> bool:
+            return (
+                direct == 'close'
+                and threshold is not None
+                and (tail_idx == 0 or step_idx % check_interval == 0 or tail_idx == tail_limit - 1)
+            )
+
+        def physical_target_reached(current_qpos: float) -> bool:
+            return target_direction * (current_qpos - qpos) >= -target_tolerance
+
+        def plan_terminal_velocity() -> torch.Tensor:
+            if velocities is None or plan_steps <= 0 or plan_steps_run <= 0:
+                return torch.zeros((cmd_dim,), dtype=torch.float32, device=self._robot_manager.device)
+            velocity = torch.as_tensor(
+                velocities[min(plan_steps_run - 1, plan_steps - 1)],
+                dtype=torch.float32,
+                device=self._robot_manager.device,
+            ).flatten()
+            if velocity.numel() == 1 and cmd_dim != 1:
+                velocity = velocity.repeat(cmd_dim)
+            return velocity
+
+        for i in range(steps_to_run):
+            current_qpos = float(self._robot_manager.get_gripper_qpos())
+            if should_check_depth(i):
                 tactile_depth = self._tactile_manager.get_min_depth()
+                contact_mask = tactile_depth < threshold
                 last_depth = tactile_depth.detach().cpu().tolist()
-                if direct == 'close':
-                    if bool(torch.all(tactile_depth < threshold)) and close_has_enough_angle(current_qpos):
+                last_contact_mask = contact_mask.detach().cpu().tolist()
+                if contact_stop_reached(contact_mask) and has_moved_enough_for_contact_stop(current_qpos, i):
+                    stop_reason = 'depth_threshold'
+                    break
+
+            plan_steps_run = i + 1
+            steps_run = plan_steps_run
+            yield positions[i], velocities[i], True
+
+        if plan_steps > max_steps and stop_reason != 'depth_threshold':
+            stop_reason = 'max_steps'
+
+        # Robotiq closes physically slower than plan_gripper's target sequence.
+        # Contact often appears while the joint is still chasing the final
+        # target, i.e. in the post-plan settle window.  Monitor a bounded tail
+        # here so adaptive grasp can stop on tactile contact before the later
+        # task-level settle blindly squeezes the object.
+        if stop_reason != 'depth_threshold' and direct == 'close' and threshold is not None:
+            tail_limit = min(tail_steps, max(0, max_steps - steps_run))
+            tail_position = torch.full((cmd_dim,), qpos, device=self._robot_manager.device)
+            tail_velocity = plan_terminal_velocity()
+            for tail_idx in range(tail_limit):
+                current_qpos = float(self._robot_manager.get_gripper_qpos())
+                global_step_idx = plan_steps_run + tail_idx
+                if should_check_tail_depth(global_step_idx, tail_idx, tail_limit):
+                    tactile_depth = self._tactile_manager.get_min_depth()
+                    contact_mask = tactile_depth < threshold
+                    last_depth = tactile_depth.detach().cpu().tolist()
+                    last_contact_mask = contact_mask.detach().cpu().tolist()
+                    if contact_stop_reached(contact_mask) and has_moved_enough_for_contact_stop(current_qpos, global_step_idx):
                         stop_reason = 'depth_threshold'
                         break
-                else:
-                    if bool(torch.all(tactile_depth > threshold)):
-                        stop_reason = 'depth_threshold'
-                        break
+                if physical_target_reached(current_qpos):
+                    stop_reason = 'target_reached_physical'
+                    break
 
-            if near_target:
-                stop_reason = 'target'
-                break
-
-            delta = qpos - current_qpos
-            step = float(np.clip(delta, -qpos_step, qpos_step))
-            target_qpos = qpos if abs(delta) <= qpos_step else current_qpos + step
-            position = torch.full((cmd_dim,), target_qpos, device=self._robot_manager.device)
-            velocity_value = float(np.clip(step / self.cfg.sim.dt, -velocity_limit, velocity_limit))
-            velocity = torch.full_like(position, velocity_value)
-            steps_run = i + 1
-            yield position, velocity, True
+                tail_steps_run = tail_idx + 1
+                steps_run += 1
+                yield tail_position, tail_velocity, True
 
         final_qpos = float(self._robot_manager.get_gripper_qpos())
         if stop_reason == 'depth_threshold':
-            final_target_qpos = final_qpos
+            if direct == 'close':
+                final_target_qpos = min(qpos, final_qpos + hold_margin)
+            else:
+                final_target_qpos = max(qpos, final_qpos - hold_margin)
         else:
             final_target_qpos = qpos
         final_position = torch.full((cmd_dim,), final_target_qpos, device=self._robot_manager.device)
+        if stop_reason == 'depth_threshold':
+            if direct == 'close' and hold_velocity > 0.0:
+                final_velocity = torch.full_like(final_position, min(hold_velocity, self._robot_manager.gripper_velocity_limit))
+            elif direct == 'open' and hold_velocity > 0.0:
+                final_velocity = torch.full_like(final_position, -min(hold_velocity, self._robot_manager.gripper_velocity_limit))
+            else:
+                final_velocity = torch.zeros_like(final_position)
+        elif steps_run <= 0 or velocities is None:
+            final_velocity = torch.zeros_like(final_position)
+        else:
+            # Preserve the original plan_gripper terminal velocity when no
+            # tactile early-stop happened.  Robotiq joints physically lag the
+            # target, so replacing this with zero velocity makes adaptive mode
+            # weaker than the fixed gripper plan even when it should be a no-op.
+            final_velocity = plan_terminal_velocity()
+
+        def _debug_threshold(value):
+            if value is None:
+                return None
+            if torch.is_tensor(value):
+                v = value.detach().cpu()
+                return float(v.item()) if v.numel() == 1 else v.tolist()
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return value
 
         debug = {
             'direct': direct,
@@ -1395,22 +1589,35 @@ class BaseTask(UipcRLEnv):
             'final_target_qpos': final_target_qpos,
             'stop_reason': stop_reason,
             'steps': int(steps_run),
+            'plan_steps_run': int(plan_steps_run),
+            'tail_steps_run': int(tail_steps_run),
+            'plan_steps': int(plan_steps),
             'max_steps': int(max_steps),
+            'tail_steps': int(tail_steps),
             'check_interval': int(check_interval),
-            'qpos_step': float(qpos_step),
-            'depth_threshold': None if depth_threshold is None else float(depth_threshold),
+            'qpos_step': float(plan_step),
+            'depth_threshold': _debug_threshold(depth_threshold),
             'last_depth': last_depth,
+            'last_contact_mask': last_contact_mask,
             'target_tolerance': float(target_tolerance),
-            'min_target_margin': float(min_target_margin),
+            'legacy_min_target_margin': float(legacy_min_target_margin),
+            'hold_margin': float(hold_margin),
+            'hold_velocity': float(hold_velocity),
+            'min_steps_before_contact': int(min_steps_before_contact),
+            'min_travel': float(min_travel),
+            'require_both_contacts': bool(require_both_contacts),
+            'follow_plan_gripper': True,
         }
         self.metadata.setdefault('xense_adaptive_grasp', []).append(debug)
         if os.environ.get("XENSE_ADAPTIVE_GRASP_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
             print(
                 f"[xense-debug] adaptive_gripper done reason={stop_reason} "
-                f"steps={steps_run}/{max_steps} qpos={final_qpos:.6f} target={qpos:.6f} "
-                f"last_depth={last_depth}"
+                f"steps={steps_run}/{plan_steps}+{tail_steps_run}/{tail_steps} "
+                f"qpos={final_qpos:.6f} target={qpos:.6f} "
+                f"threshold={_debug_threshold(depth_threshold)} contact={last_contact_mask} "
+                f"last_depth={last_depth} follow_plan=True"
             )
-        yield final_position, torch.zeros_like(final_position), False
+        yield final_position, final_velocity, False
 
     def gravity_rotate(self, actor:Actor, target_vec, target_axis=[0, 0, 1], is_save=True):
         if self.plan_success is False:

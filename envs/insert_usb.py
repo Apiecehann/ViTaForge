@@ -257,8 +257,8 @@ class Task(BaseTask):
         # Keep the object target identical, but approach it with more vertical
         # clearance and avoid recomputing a GelSight-style grasp orientation.
         self.delay(10)
-        if hasattr(self._tactile_manager, "reset_reference"):
-            self.metadata['xense_reference_reset_result'] = self._tactile_manager.reset_reference()
+        if hasattr(self._tactile_manager, "reset_marker_reference"):
+            self.metadata['xense_reference_reset_result'] = self._tactile_manager.reset_marker_reference()
             self.metadata['xense_reference_reset_step'] = int(self.step_count)
             self.delay(20, is_save=False)
             self._record_xense_debug_pose('after_initial_tactile_reset')
@@ -294,15 +294,24 @@ class Task(BaseTask):
         usb_close_percent = float(np.clip(usb_close_percent, 0.0, 1.0))
         post_close_settle_steps = int(getattr(
             self.cfg,
-            "xense_post_close_settle_steps",
-            XENSE_POST_CLOSE_SETTLE_STEPS,
+            "xense_usb_post_close_settle_steps",
+            getattr(self.cfg, "xense_post_close_settle_steps", XENSE_POST_CLOSE_SETTLE_STEPS),
         ))
         self.metadata['usb_close_percent'] = float(usb_close_percent)
         self.metadata['usb_close_target_qpos'] = float(
             self._robot_manager.gripper_percent2qpos(usb_close_percent)
         )
         self.metadata['post_close_settle_steps'] = int(post_close_settle_steps)
-        self.move(self.atom.close_gripper(pos=usb_close_percent), tag="close_usb")
+        self.move(
+            self.atom.close_gripper(pos=usb_close_percent),
+            tag="close_usb",
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_usb_adaptive_grasp_depth_threshold"
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_usb_adaptive_grasp_require_both_contacts"
+            ),
+        )
         self.delay(post_close_settle_steps, is_save=True)
         self._record_xense_debug_pose('after_close')
 

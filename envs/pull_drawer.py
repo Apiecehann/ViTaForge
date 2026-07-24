@@ -164,7 +164,17 @@ class Task(BaseTask):
 
     def pre_move(self):
         # pre_move 在正式记录动作前执行：先稳定仿真，再张开夹爪准备靠近把手。
-        self.delay(10)
+        initial_settle_steps = 10
+        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            initial_settle_steps = int(
+                getattr(
+                    self.cfg,
+                    "xense_drawer_initial_settle_steps",
+                    getattr(self.cfg, "xense_initial_settle_steps", 1),
+                )
+            )
+        if initial_settle_steps > 0:
+            self.delay(initial_settle_steps)
         self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_drawer_handle")
 
         # 把局部把手坐标转换到当前 upper_drawer 的世界坐标中。
@@ -201,6 +211,12 @@ class Task(BaseTask):
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_upper_drawer_handle",
+            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
+                "xense_drawer_adaptive_grasp_depth_threshold"
+            ),
+            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
+                "xense_drawer_adaptive_grasp_require_both_contacts"
+            ),
         )
         self.settle_xense_after_close(is_save=False)
         self.record_xense_grasp_debug(
