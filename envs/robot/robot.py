@@ -157,6 +157,10 @@ class RobotManager:
     
     def get_gripper_qpos(self):
         return self.get_qpos()[0, self._gripper_ids[0]].clone().cpu().item()
+
+    def get_gripper_target_qpos(self):
+        target = self.robot.data.joint_pos_target[0, self._gripper_ids[0]]
+        return target.detach().cpu().item()
     
     def get_gripper_percentage(self):
         qpos = self.get_gripper_qpos()

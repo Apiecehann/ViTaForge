@@ -18,6 +18,7 @@ parser.add_argument("--total-timesteps", type=int, default=10000)
 parser.add_argument("--image-size", type=int, default=128)
 parser.add_argument("--residual-scale", type=float, default=0.5)
 parser.add_argument("--action-repeat", type=int, default=2)
+parser.add_argument("--control-gripper", action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument("--step-limit", type=int, default=100)
 parser.add_argument("--seed", type=int, default=10000)
 parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
@@ -55,6 +56,7 @@ def main():
             image_size=args.image_size,
             residual_scale=args.residual_scale,
             action_repeat=args.action_repeat,
+            control_gripper=args.control_gripper,
             seed=args.seed,
             device="cuda:0",
         ),
@@ -121,6 +123,7 @@ def main():
         "total_timesteps": args.total_timesteps,
         "residual_scale": args.residual_scale,
         "action_repeat": args.action_repeat,
+        "control_gripper": args.control_gripper,
         "seed": args.seed,
     }
     with open(output_dir / "training_summary.json", "w", encoding="utf-8") as summary_file:

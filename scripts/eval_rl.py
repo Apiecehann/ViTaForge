@@ -22,6 +22,7 @@ parser.add_argument("--start-seed", type=int, default=20000)
 parser.add_argument("--image-size", type=int, default=128)
 parser.add_argument("--residual-scale", type=float, default=0.5)
 parser.add_argument("--action-repeat", type=int, default=2)
+parser.add_argument("--control-gripper", action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument("--step-limit", type=int, default=100)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -53,6 +54,7 @@ def main():
         image_size=args.image_size,
         residual_scale=args.residual_scale,
         action_repeat=args.action_repeat,
+        control_gripper=args.control_gripper,
         seed=args.start_seed,
         device="cuda:0",
     )

@@ -19,6 +19,7 @@ class ResidualTactileEnv(gym.Env):
         image_size=224,
         residual_scale=0.5,
         action_repeat=2,
+        control_gripper=False,
         seed=0,
         device="cuda:0",
     ):
@@ -27,6 +28,8 @@ class ResidualTactileEnv(gym.Env):
         self.image_size = int(image_size)
         self.residual_scale = float(residual_scale)
         self.action_repeat = int(action_repeat)
+        self.control_gripper = bool(control_gripper)
+        self.controlled_action_dim = 8 if self.control_gripper else 7
         self.next_seed = int(seed)
         self.device = torch.device(device)
         self.bc_model, self.bc_checkpoint = load_bc_checkpoint(
@@ -47,8 +50,14 @@ class ResidualTactileEnv(gym.Env):
                 dtype=np.uint8,
             )
         self.observation_space = spaces.Dict(observation_spaces)
-        self.action_space = spaces.Box(-1.0, 1.0, shape=(8,), dtype=np.float32)
+        self.action_space = spaces.Box(
+            -1.0,
+            1.0,
+            shape=(self.controlled_action_dim,),
+            dtype=np.float32,
+        )
         self.last_observation = None
+        self.gripper_hold_target = None
 
     def _image(self, image):
         if isinstance(image, torch.Tensor):
@@ -105,6 +114,7 @@ class ResidualTactileEnv(gym.Env):
         episode_seed = self.next_seed if seed is None else int(seed)
         self.next_seed = episode_seed + 1
         self.task.reset(seed=episode_seed)
+        self.gripper_hold_target = self.task._robot_manager.get_gripper_target_qpos()
         raw_observation = self.task._get_observations()
         self.last_observation = self.encode_observation(raw_observation)
         return self.last_observation, {
@@ -116,7 +126,12 @@ class ResidualTactileEnv(gym.Env):
         residual_action = np.asarray(residual_action, dtype=np.float32)
         bc_action = self._bc_action(self.last_observation)
         delta_std = self.bc_model.delta_std.detach().cpu().numpy()
-        final_action = bc_action + self.residual_scale * delta_std * residual_action
+        final_action = bc_action.copy()
+        final_action[:self.controlled_action_dim] += (
+            self.residual_scale
+            * delta_std[:self.controlled_action_dim]
+            * residual_action
+        )
         joint_min = self.bc_model.joint_min.detach().cpu().numpy()
         joint_max = self.bc_model.joint_max.detach().cpu().numpy()
         safety_margin = np.maximum(delta_std, 1e-4)
@@ -125,6 +140,8 @@ class ResidualTactileEnv(gym.Env):
             joint_min - safety_margin,
             joint_max + safety_margin,
         )
+        if not self.control_gripper:
+            final_action[-1] = self.gripper_hold_target
         raw_observation, reward, terminated, truncated, info = self.task.env_step(
             final_action,
             action_type="qpos",
@@ -137,6 +154,7 @@ class ResidualTactileEnv(gym.Env):
                 "bc_action": bc_action,
                 "residual_action": residual_action,
                 "final_action": final_action,
+                "gripper_hold_target": self.gripper_hold_target,
             }
         )
         return self.last_observation, reward, terminated, truncated, info

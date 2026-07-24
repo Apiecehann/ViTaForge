@@ -15,6 +15,10 @@ action = clip(a_BC + residual_scale * delta_std * delta_rl)
 Each policy action is held for two simulator steps, matching the demonstration
 `save_frequency: 2` sampling interval.
 
+For tasks where `Pre_Move` establishes the grasp, the learned action controls the
+seven arm joints and keeps the planner's gripper target unchanged. Use
+`--control-gripper` only for tasks whose action phase intentionally opens or closes it.
+
 The BC and RL feature extractors start from the same multimodal encoder weights. The
 encoder can stay frozen for the first comparison or be fine-tuned with
 `--no-freeze-encoder`.
