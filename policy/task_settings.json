@@ -66,5 +66,13 @@
     "place_wooden_cube_on_yellow_area": {
         "camera_type": "all",
         "downsample": 1
+    },
+     "place_wooden_cube_on_yellow_area_large_noise": {
+        "camera_type": "all",
+        "downsample": 1
+    },
+    "place_cube_on_colored_area": {
+        "camera_type": "all",
+        "downsample": 1
     }
 }

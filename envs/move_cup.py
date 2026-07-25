@@ -17,8 +17,8 @@ CUP_ASSET_PATHS = {
 }
 
 # 任务选择：left 对应世界 +Y，right 对应世界 -Y。
-TARGET_CUP = "blue"
-REFERENCE_CUP = "yellow"
+TARGET_CUP = "yellow"
+REFERENCE_CUP = "blue"
 PLACEMENT_SIDE = "left"
 TASK_INSTRUCTION = f"Move the {TARGET_CUP} cup to the {PLACEMENT_SIDE} of the {REFERENCE_CUP} cup."
 

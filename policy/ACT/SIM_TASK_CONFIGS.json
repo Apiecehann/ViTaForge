@@ -141,5 +141,16 @@
             "tac_left",
             "tac_right"
         ]
+    },
+    "sim-place_cube_on_colored_area-demo-100": {
+        "dataset_dir": "./data/sim-place_cube_on_colored_area/demo-100",
+        "num_episodes": 100,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist",
+            "tac_left",
+            "tac_right"
+        ]
     }
 }
