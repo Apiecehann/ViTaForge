@@ -45,7 +45,7 @@ class TaskCfg(BaseTaskCfg):
     # "random" 表示每个 episode 随机选择目标框，也可设为 "yellow" 或 "blue"。
     target_area: Literal["random", "yellow", "blue"] = "yellow"
     # 左右按照 head 相机视野定义：世界 -Y 为左，+Y 为右。
-    frame_order: Literal["yellow_left", "blue_left"] = "blue_left"
+    frame_order: Literal["yellow_left", "blue_left"] = "yellow_left"
 
     cameras = [
         CameraCfg(

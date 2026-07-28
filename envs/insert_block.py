@@ -119,7 +119,6 @@ class Task(BaseTask):
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
         self.target_block_key = cfg.target_block
-        self.release_success_diagnostics = None
         super().__init__(cfg, mode, render_mode, **kwargs)
 
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
@@ -174,7 +173,6 @@ class Task(BaseTask):
 
         self.selected_block = self.blocks[self.target_block_key]
         self.selected_hole_center = BLOCK_SPECS[self.target_block_key]["hole_center"]
-        self.release_success_diagnostics = None
 
         self.metadata["target_block"] = self.target_block_key
         self.metadata["target_hole_center_xy"] = self.selected_hole_center.tolist()
@@ -262,10 +260,6 @@ class Task(BaseTask):
             "origin_inside_box": origin_inside_box,
         }
 
-    def _record_release_success(self):
-        self.release_success_diagnostics = self._get_success_diagnostics()
-        self.metadata["release_success_diagnostics"] = self.release_success_diagnostics
-
     def _play_once(self):
         self.move(
             self.atom.place_actor(
@@ -296,19 +290,13 @@ class Task(BaseTask):
             tag=f"insert_{self.target_block_key}_into_box",
             time_dilation_factor=0.5,
         )
-        released = self.move(
-            self.atom.open_gripper(1.0),
+        self.move(
+            self.atom.open_gripper(0.6),
             tag=f"release_{self.target_block_key}",
             delay=False,
         )
-        if released:
-            self._record_release_success()
-        self.delay(20)
 
     def check_success(self):
-        if self.release_success_diagnostics is None:
-            self.metadata["success_diagnostics"] = None
-            return False
-
-        self.metadata["success_diagnostics"] = self.release_success_diagnostics
-        return self.release_success_diagnostics["origin_inside_box"]
+        diagnostics = self._get_success_diagnostics()
+        self.metadata["success_diagnostics"] = diagnostics
+        return diagnostics["origin_inside_box"]

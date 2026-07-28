@@ -21,8 +21,9 @@ USB_GRASP_HEIGHT = USB_PLUG_HEIGHT + USB_BODY_HEIGHT * 0.5 + 0.007
 USB_GRASP_HEIGHT_NOISE = 0.003
 SLOT_HEIGHT = 0.0200
 SLOT_HOLE_BOTTOM = 0.0050
-# USB 插入后的目标 z：至少高于插槽孔底，同时考虑插头自身高度。
-USB_INSERT_Z = max(SLOT_HOLE_BOTTOM, SLOT_HEIGHT - USB_PLUG_HEIGHT)
+USB_EXTRA_INSERT_DEPTH = 0.0010
+# USB 插入后的目标 z：完整插入插头后再多下插一小段，但不低于插槽孔底。
+USB_INSERT_Z = max(SLOT_HOLE_BOTTOM, SLOT_HEIGHT - USB_PLUG_HEIGHT - USB_EXTRA_INSERT_DEPTH)
 
 # episode 级随机化和脚本动作幅度。xy 噪声只扰动插槽平面位置，不扰动高度。
 SLOT_XY_NOISE = (0.03, 0.03, 0.0)
@@ -221,6 +222,7 @@ class Task(BaseTask):
             z=-insert_distance,
             xyz_coord='world'
         ), tag="insert_usb_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
+        self.move(self.atom.open_gripper(0.5), tag="release_usb_after_insert")
         # 下插后保存一段稳定观测，便于 success 检查和离线数据回放看到最终状态。
         self.delay(40, is_save=True)
 
