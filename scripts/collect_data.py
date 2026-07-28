@@ -246,6 +246,8 @@ def main():
         "xense_pour_release_snap_steps": int,
         "xense_pour_release_snap_cycles": int,
         "xense_pour_fix_cup_during_release": bool,
+        "xense_pour_release_retract_x": float,
+        "xense_pour_release_carry_y": float,
         "xense_drawer_close_percent": float,
         "xense_gear_close_percent": float,
         "xense_half_cylinder_grasp_height_bias": float,

@@ -25,15 +25,25 @@ def move_batch(observation, action, device):
     return observation, action.to(device, non_blocking=True)
 
 
+def action_target(model, observation, action):
+    target_delta = action - observation["qpos"]
+    if hasattr(model, "action_scale"):
+        return torch.clamp(
+            (target_delta - model.delta_mean) / model.action_scale,
+            min=-1.0,
+            max=1.0,
+        )
+    return (target_delta - model.delta_mean) / model.delta_std
+
+
 def evaluate(model, loader, device):
     model.eval()
     losses = []
     with torch.no_grad():
         for observation, action in loader:
             observation, action = move_batch(observation, action, device)
-            target_delta = action - observation["qpos"]
-            target = (target_delta - model.delta_mean) / model.delta_std
-            prediction = model.forward_normalized(observation)
+            target = action_target(model, observation, action)
+            prediction = model.forward_policy_action(observation)
             losses.append(nn.functional.smooth_l1_loss(prediction, target).item())
     return float(sum(losses) / max(len(losses), 1))
 
@@ -50,6 +60,8 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--validation-fraction", type=float, default=0.1)
+    parser.add_argument("--policy-step-stride", type=int, default=2)
     parser.add_argument(
         "--camera-keys",
         nargs="*",
@@ -73,15 +85,19 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     train_paths, validation_paths = split_episode_paths(
         args.dataset_root,
-        validation_fraction=0.1,
+        validation_fraction=args.validation_fraction,
         seed=args.seed,
     )
-    statistics = compute_joint_statistics(train_paths)
+    statistics = compute_joint_statistics(
+        train_paths,
+        policy_step_stride=args.policy_step_stride,
+    )
     dataset_kwargs = {
         "image_size": args.image_size,
         "camera_keys": args.camera_keys,
         "tactile_keys": args.tactile_keys,
         "require_phase": True,
+        "policy_step_stride": args.policy_step_stride,
     }
     train_dataset = ActionPhaseDataset(train_paths, **dataset_kwargs)
     validation_dataset = ActionPhaseDataset(validation_paths, **dataset_kwargs)
@@ -130,11 +146,10 @@ def main():
         training_losses = []
         for observation, action in train_loader:
             observation, action = move_batch(observation, action, device)
-            target_delta = action - observation["qpos"]
-            target = (target_delta - model.delta_mean) / model.delta_std
+            target = action_target(model, observation, action)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
-                prediction = model.forward_normalized(observation)
+                prediction = model.forward_policy_action(observation)
                 loss = nn.functional.smooth_l1_loss(prediction, target)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -157,6 +172,9 @@ def main():
             "validation_episodes": len(validation_paths),
             "train_pairs": len(train_dataset),
             "validation_pairs": len(validation_dataset),
+            "train_episode_ids": [path.stem for path in train_paths],
+            "validation_episode_ids": [path.stem for path in validation_paths],
+            "policy_step_stride": args.policy_step_stride,
         }
         torch.save(model.checkpoint(metadata), output_dir / "bc_last.pt")
         if validation_loss < best_validation_loss:

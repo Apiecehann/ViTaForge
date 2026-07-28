@@ -10,22 +10,31 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from isaaclab.app import AppLauncher
 
 
-parser = argparse.ArgumentParser(description="Evaluate BC, residual SAC, or residual PPO.")
+parser = argparse.ArgumentParser(description="Evaluate SFT, SAC, PPO, or legacy BC.")
 parser.add_argument("task_name")
 parser.add_argument("task_config")
 parser.add_argument("bc_checkpoint")
 parser.add_argument("output_dir")
-parser.add_argument("--algorithm", choices=("bc", "sac", "ppo"), required=True)
+parser.add_argument("--algorithm", choices=("sft", "bc", "sac", "ppo"), required=True)
 parser.add_argument("--model-path", default=None)
 parser.add_argument("--episodes", type=int, default=20)
 parser.add_argument("--start-seed", type=int, default=20000)
 parser.add_argument("--image-size", type=int, default=128)
 parser.add_argument("--residual-scale", type=float, default=0.5)
+parser.add_argument(
+    "--control-mode",
+    choices=("direct", "residual"),
+    default="direct",
+)
 parser.add_argument("--action-repeat", type=int, default=2)
 parser.add_argument("--control-gripper", action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument("--force-control", action=argparse.BooleanOptionalAction, default=False)
 parser.add_argument("--step-limit", type=int, default=100)
 parser.add_argument("--save-traces", action="store_true")
+help_requested = any(argument in ("-h", "--help") for argument in sys.argv[1:])
+if help_requested:
+    parser.print_help()
+    raise SystemExit(0)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
@@ -35,7 +44,7 @@ simulation_app = app_launcher.app
 
 from stable_baselines3 import PPO, SAC
 
-from policy.RL.gym_env import ResidualTactileEnv
+from policy.RL.gym_env import TactileControlEnv
 from policy.RL.task_factory import create_task
 
 
@@ -49,7 +58,7 @@ def main():
         video_frequency=2,
         step_limit=args.step_limit,
     )
-    environment = ResidualTactileEnv(
+    environment = TactileControlEnv(
         task,
         args.bc_checkpoint,
         image_size=args.image_size,
@@ -57,11 +66,12 @@ def main():
         action_repeat=args.action_repeat,
         control_gripper=args.control_gripper,
         force_control=args.force_control,
+        control_mode=args.control_mode,
         seed=args.start_seed,
         device="cuda:0",
     )
     model = None
-    if args.algorithm != "bc":
+    if args.algorithm not in ("bc", "sft"):
         if not args.model_path:
             raise ValueError("--model-path is required for SAC and PPO evaluation")
         model_class = SAC if args.algorithm == "sac" else PPO
@@ -76,11 +86,17 @@ def main():
         trace = []
         while not terminated and not truncated:
             if model is None:
-                residual_action = np.zeros(environment.action_space.shape, dtype=np.float32)
+                if args.control_mode == "direct":
+                    policy_action = environment.sft_action(observation)
+                else:
+                    policy_action = np.zeros(
+                        environment.action_space.shape,
+                        dtype=np.float32,
+                    )
             else:
-                residual_action, _ = model.predict(observation, deterministic=True)
+                policy_action, _ = model.predict(observation, deterministic=True)
             observation, reward, terminated, truncated, last_info = environment.step(
-                residual_action
+                policy_action
             )
             episode_reward += reward
             if args.save_traces:
@@ -89,7 +105,14 @@ def main():
                         "action_index": len(trace),
                         "qpos": observation["qpos"].tolist(),
                         "policy_step": observation["policy_step"].tolist(),
-                        "bc_delta": np.asarray(last_info["bc_delta"]).tolist(),
+                        "bc_delta": (
+                            np.asarray(last_info["bc_delta"]).tolist()
+                            if last_info["bc_delta"] is not None
+                            else None
+                        ),
+                        "policy_action": np.asarray(
+                            last_info["policy_action"]
+                        ).tolist(),
                         "final_action": np.asarray(last_info["final_action"]).tolist(),
                         "reward": float(reward),
                         "metrics": last_info.get("metrics", {}),

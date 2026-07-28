@@ -6,6 +6,7 @@ import numpy as np
 # - "vertical_single": 使用原来的竖直抓取姿态，并一次性沿世界 -X 拉动。
 # - "tilted_segmented": 使用 30 度倾斜抓取姿态，并分段沿世界 -X 拉动。
 PULL_DRAWER_MODE = "tilted_segmented"
+TASK_INSTRUCTION = "Grasp the upper drawer handle and pull the upper drawer open."
 
 
 # 本任务实现“抓住上层抽屉把手并向外拉开”的脚本式采集/评测逻辑。
@@ -16,10 +17,10 @@ PULL_DRAWER_MODE = "tilted_segmented"
 ROT90_Z_Q = [np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)]
 
 # 柜体在世界坐标系中的基准位姿。z=0.002 用于让模型略高于桌面，减少穿模。
-CABINET_BASE_POSE = Pose([0.8, 0.0, 0.002], ROT90_Z_Q)
+CABINET_BASE_POSE = Pose([0.75, 0.0, 0.002], ROT90_Z_Q)
 
 # 每次 reset 时对柜体 xy 位置加入的随机扰动幅度，z 不随机。
-CABINET_XY_NOISE = (0.005, 0.005, 0.0)
+CABINET_XY_NOISE = (0.02, 0.02, 0.0)
 
 # cabinet_body 和 drawer 网格的前表面 y 坐标不同，这里计算抽屉相对柜体
 # 需要补偿的局部 y 偏移，使抽屉面板和柜体正面在初始状态下对齐。
@@ -30,6 +31,7 @@ DRAWER_Y_OFFSET = CABINET_FRONT_Y - DRAWER_FRONT_Y
 # 抽屉的局部 z 偏移。额外的 clearance 用于给抽屉和柜体之间留出微小间隙，
 # 避免 reset 后 UIPC/物理仿真初始状态过度接触。
 DRAWER_Z_CLEARANCE = 0.0010
+XENSE_DRAWER_Z_CLEARANCE = 0.0020
 LOWER_DRAWER_Z_OFFSET = 0.0085 + DRAWER_Z_CLEARANCE
 UPPER_DRAWER_Z_OFFSET = 0.0700 + DRAWER_Z_CLEARANCE
 
@@ -57,6 +59,15 @@ PULL_DISTANCE = 0.10
 PULL_STEPS = 5
 SUCCESS_PULL_DISTANCE = 0.08
 SUCCESS_Z_THRESHOLD = 0.01
+TASK_INITIAL_JOINT_POS = {
+    "panda_joint1": -0.010809095,
+    "panda_joint2": 0.096037410,
+    "panda_joint3": 0.000734462,
+    "panda_joint4": -2.433035851,
+    "panda_joint5": 0.035354517,
+    "panda_joint6": 2.500859022,
+    "panda_joint7": 0.741,
+}
 
 if PULL_DRAWER_MODE not in ["vertical_single", "tilted_segmented"]:
     raise ValueError(f"Unsupported PULL_DRAWER_MODE: {PULL_DRAWER_MODE}")
@@ -102,8 +113,18 @@ class Task(BaseTask):
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
         super().__init__(cfg, mode, render_mode, **kwargs)
 
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        return cfg
+
+    def _is_xense(self):
+        return self.cfg.tactile_sensor_type in ("xensews", "xensews_robotiq")
+
     def _drawer_pose(self, cabinet_pose: Pose, z_offset: float) -> Pose:
         """根据柜体位姿和抽屉层高，计算抽屉在世界坐标系中的初始位姿。"""
+        if self._is_xense():
+            z_offset += XENSE_DRAWER_Z_CLEARANCE - DRAWER_Z_CLEARANCE
         return cabinet_pose.add_bias([0.0, DRAWER_Y_OFFSET, z_offset], coord='local')
 
     def _set_reference_poses(self, cabinet_pose: Pose, lower_drawer_pose: Pose, upper_drawer_pose: Pose):
@@ -118,25 +139,28 @@ class Task(BaseTask):
         cabinet_pose = CABINET_BASE_POSE.clone()
         lower_drawer_pose = self._drawer_pose(cabinet_pose, LOWER_DRAWER_Z_OFFSET)
         upper_drawer_pose = self._drawer_pose(cabinet_pose, UPPER_DRAWER_Z_OFFSET)
+        constrain_static_fixtures = self._is_xense()
 
         # 柜体密度设得很大，近似作为固定基座；上下抽屉保留较低密度，允许被拉动。
         self.cabinet = self._actor_manager.add_from_usd_file(
             name='cabinet',
-            asset_path="cabinet_body.usd",
+            asset_path="task_0724/pull_drawer/cabinet_body.usd",
             # visual_asset_path="cabinet_body_picture.usd",
             pose=cabinet_pose,
-            density=1e5
+            density=1e5,
+            keep_constrained=constrain_static_fixtures,
             # show_physics_mesh=False,
         )
         self.lower_drawer = self._actor_manager.add_from_usd_file(
             name='lower_drawer',
-            asset_path="lower_drawer.usd",
+            asset_path="task_0724/pull_drawer/lower_drawer.usd",
             pose=lower_drawer_pose,
-            density=1e3
+            density=1e3,
+            keep_constrained=constrain_static_fixtures,
         )
         self.upper_drawer = self._actor_manager.add_from_usd_file(
             name='upper_drawer',
-            asset_path="upper_drawer.usd",
+            asset_path="task_0724/pull_drawer/upper_drawer.usd",
             pose=upper_drawer_pose,
             density=1e3
         )
@@ -161,6 +185,10 @@ class Task(BaseTask):
         self.metadata['cabinet_init_pose'] = cabinet_pose.tolist()
         self.metadata['lower_drawer_init_pose'] = lower_drawer_pose.tolist()
         self.metadata['upper_drawer_init_pose'] = upper_drawer_pose.tolist()
+        self.metadata['drawer_z_clearance'] = float(
+            XENSE_DRAWER_Z_CLEARANCE if self._is_xense() else DRAWER_Z_CLEARANCE
+        )
+        self.metadata['static_fixture_constraints'] = bool(self._is_xense())
 
     def pre_move(self):
         # pre_move 在正式记录动作前执行：先稳定仿真，再张开夹爪准备靠近把手。
@@ -175,8 +203,9 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_drawer_handle")
+        self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_policy")
 
+    def _grasp_drawer_handle(self):
         # 把局部把手坐标转换到当前 upper_drawer 的世界坐标中。
         target_pose = self.upper_drawer.get_pose().add_bias(
             [HANDLE_X, HANDLE_Y, HANDLE_Z],
@@ -208,6 +237,9 @@ class Task(BaseTask):
 
         # 靠近把手后再闭合夹爪。这里把 close 单独放一步，方便采集到“接近”和“夹紧”阶段。
         close_percent = self.get_xense_close_percent("xense_drawer_close_percent")
+        if self._is_xense():
+            self.upper_drawer.remove_animate(force=True)
+            self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_upper_drawer_handle",
@@ -234,18 +266,29 @@ class Task(BaseTask):
         self.metadata['gripper_close_percent'] = float(close_percent)
 
     def _play_once(self):
+        self._grasp_drawer_handle()
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        pull_distance = (
+            float(getattr(self.cfg, "xense_drawer_pull_distance", 0.11))
+            if is_xense
+            else PULL_DISTANCE
+        )
+        self.metadata['requested_pull_distance'] = float(pull_distance)
         if PULL_DRAWER_MODE == "vertical_single":
             # 原始演示动作：保持竖直抓取姿态，一次性沿世界坐标 x 负方向拉出上层抽屉。
             self.metadata['pull_steps'] = 1
-            self.metadata['pull_step_distance'] = float(PULL_DISTANCE)
+            self.metadata['pull_step_distance'] = float(pull_distance)
             self.move(self.atom.move_by_displacement(
-                x=-PULL_DISTANCE,
+                x=-pull_distance,
                 xyz_coord='world'
             ), tag="pull_drawer_x_minus", time_dilation_factor=0.5)
         else:
             # 倾斜抓取动作：保持夹爪抓住把手，沿世界坐标 x 负方向分段拉出上层抽屉。
             # 单次 cuRobo 规划只约束终点，不保证中间轨迹严格水平；分段后轨迹更接近直线 -X。
-            pull_step_distance = PULL_DISTANCE / PULL_STEPS
+            pull_step_distance = pull_distance / PULL_STEPS
             self.metadata['pull_step_distance'] = float(pull_step_distance)
             self.metadata['pull_steps'] = int(PULL_STEPS)
             for step_idx in range(PULL_STEPS):

@@ -25,9 +25,9 @@ SLOT_HOLE_BOTTOM = 0.0050
 USB_INSERT_Z = max(SLOT_HOLE_BOTTOM, SLOT_HEIGHT - USB_PLUG_HEIGHT)
 
 # episode 级随机化和脚本动作幅度。xy 噪声只扰动插槽平面位置，不扰动高度。
-SLOT_XY_NOISE = (0.005, 0.005, 0.0)
-LIFT_HEIGHT = 0.0200
-LIFT_HEIGHT_NOISE = 0.0050
+SLOT_XY_NOISE = (0.030, 0.030, 0.0)
+LIFT_HEIGHT = 0.0300
+LIFT_HEIGHT_NOISE = 0.0100
 # pre_move 先移到槽口上方 10 mm，并在插槽平面内叠加小幅位置噪声。
 SLOT_APPROACH_CLEARANCE = 0.010
 SLOT_APPROACH_XY_NOISE = (0.002, 0.002, 0.0)
@@ -37,7 +37,9 @@ PLAY_PRE_INSERT_CLEARANCE = 0.0
 # Xense/Robotiq is bulkier than the GelSight/Panda gripper, so it needs a
 # larger collision clearance while keeping the same task actors and target slot.
 XENSE_USB_BODY_HEIGHT = 0.0500
-XENSE_USB_GRASP_HEIGHT = USB_PLUG_HEIGHT + XENSE_USB_BODY_HEIGHT * 0.5 + 0.007
+# Grip the upper body so the longer Robotiq/XSense fingertips clear the slot
+# rim during insertion.  The standard GelSight/NeoTac grasp stays unchanged.
+XENSE_USB_GRASP_HEIGHT = USB_PLUG_HEIGHT + XENSE_USB_BODY_HEIGHT * 0.75 + 0.005
 XENSE_USB_GRASP_HEIGHT_NOISE = 0.0
 XENSE_LIFT_HEIGHT = 0.0500
 XENSE_SLOT_APPROACH_CLEARANCE = 0.040
@@ -49,6 +51,20 @@ XENSE_INSERT_XY_CORRECTION_LIMIT = 0.0015
 XENSE_INSERT_XY_CORRECTION_DEADBAND = 0.0004
 XENSE_POST_CLOSE_SETTLE_STEPS = 80
 XENSE_USB_CLOSE_PERCENT = 0.185
+# UIPC keeps a 0.5 mm contact barrier. Starting the USB shoulder exactly on
+# the slot top makes the initial state numerically singular for the XSense FEM
+# scene, so keep a sub-millimeter physical clearance for that sensor only.
+XENSE_USB_SLOT_CONTACT_CLEARANCE = 0.00075
+TASK_INSTRUCTION = "Pick up the USB plug from the blue slot and insert it into the red USB slot."
+TASK_INITIAL_JOINT_POS = {
+    "panda_joint1": -0.010809095,
+    "panda_joint2": 0.096037410,
+    "panda_joint3": 0.000734462,
+    "panda_joint4": -2.433035851,
+    "panda_joint5": 0.035354517,
+    "panda_joint6": 2.500859022,
+    "panda_joint7": 0.741,
+}
 
 
 @configclass
@@ -90,12 +106,18 @@ class Task(BaseTask):
             cfg.step_lim = max(int(getattr(cfg, "step_lim", 300)), 1200)
         super().__init__(cfg, mode, render_mode, **kwargs)
 
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        return cfg
+
     def _is_xense(self):
         return self.cfg.tactile_sensor_type == "xensews"
 
     def _usb_pose_in_slot(self, slot_pose: Pose):
         # 给定插槽位姿，计算 USB 完成插入时应处于的目标位姿。
-        return slot_pose.add_bias([0.0, 0.0, USB_INSERT_Z])
+        contact_clearance = XENSE_USB_SLOT_CONTACT_CLEARANCE if self._is_xense() else 0.0
+        return slot_pose.add_bias([0.0, 0.0, USB_INSERT_Z + contact_clearance])
 
     def _update_insert_reference_poses(self):
         # 每次都读取当前插槽位姿；该位姿已经包含 reset 时采样到的 xy 噪声。
@@ -111,27 +133,34 @@ class Task(BaseTask):
     def create_actors(self):
         # start_slot 是 USB 初始放置槽，slot 是目标插入槽；USB 初始就放在起始槽内。
         start_slot_pose = Pose([0.4, 0.0, 0.002], [1, 0, 0, 0])
-        target_slot_pose = Pose([0.5, 0.0, 0.002], [1, 0, 0, 0])
+        target_slot_pose = Pose([0.52, 0.0, 0.002], [1, 0, 0, 0])
         usb_pose = self._usb_pose_in_slot(start_slot_pose)
 
+        # The slots are fixtures, not task targets.  Constrain them for the
+        # XSense/UIPC scene so contact cannot translate or rotate the opening
+        # while the USB is inserted.  Preserve the original behavior for the
+        # other two sensors.
+        constrain_slots = self._is_xense()
         self.start_slot = self._actor_manager.add_from_usd_file(
             name='start_slot',
-            asset_path="USB_slot_start.usd",
+            asset_path="task_0724/insert_USB/USB_slot_start.usd",
             pose=start_slot_pose,
-            density=1e6
+            density=1e6,
+            keep_constrained=constrain_slots,
         )
 
         self.slot = self._actor_manager.add_from_usd_file(
             name='slot',
-            asset_path="USB_slot_target.usd",
+            asset_path="task_0724/insert_USB/USB_slot_target.usd",
             pose=target_slot_pose,
-            density=1e6
+            density=1e6,
+            keep_constrained=constrain_slots,
         )
 
         self.prism = self._actor_manager.add_from_usd_file(
             name='prism',
-            asset_path="USB.usd",
-            visual_asset_path="USB03_visual.usd", 
+            asset_path="task_0724/insert_USB/USB.usd",
+            visual_asset_path="task_0724/insert_USB/USB03_visual.usd",
             pose=usb_pose,
             show_physics_mesh=False
         )
@@ -142,7 +171,7 @@ class Task(BaseTask):
         start_offset = self.create_noise(list(SLOT_XY_NOISE))
         target_offset = self.create_noise(list(SLOT_XY_NOISE))
         start_slot_pose = Pose([0.4, 0.0, self.start_slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(start_offset)
-        target_slot_pose = Pose([0.5, 0.0, self.slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(target_offset)
+        target_slot_pose = Pose([0.52, 0.0, self.slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(target_offset)
 
         self.start_slot.set_pose(start_slot_pose)
         self.slot.set_pose(target_slot_pose)
@@ -151,6 +180,9 @@ class Task(BaseTask):
         # 保存 reset 后的实际槽位，方便离线复现或诊断插入失败样本。
         self.metadata['start_slot_pose'] = start_slot_pose.tolist()
         self.metadata['target_slot_pose'] = target_slot_pose.tolist()
+        self.metadata['usb_slot_contact_clearance'] = float(
+            XENSE_USB_SLOT_CONTACT_CLEARANCE if self._is_xense() else 0.0
+        )
 
     def _move_held_usb_by_translation(
         self,
@@ -194,13 +226,14 @@ class Task(BaseTask):
         debug[label] = entry
 
     def pre_move(self):
-        if self._is_xense():
-            return self._pre_move_xense()
-
-        # 正式动作前等待 10 个仿真步，让 reset 后的物体接触状态先稳定下来。
         self.delay(10)
+        open_percent = 1.0 if self._is_xense() else 0.5
+        self.move(self.atom.open_gripper(open_percent), tag="open_gripper_for_policy")
+        if self._is_xense():
+            self.delay(20, is_save=False)
+            self._record_xense_debug_pose('after_policy_handoff_open')
 
-        self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_usb")
+    def _prepare_usb_standard(self):
         # 抓取姿态保留少量俯仰角和高度噪声，让演示覆盖轻微抓取误差。
         grasp_rotate = self.rng.uniform(-np.pi/18, np.pi/18)
         grasp_height = USB_GRASP_HEIGHT + self.rng.uniform(
@@ -222,6 +255,8 @@ class Task(BaseTask):
             contact_point_id=cid,
             is_close=False
         ), tag="approach_usb")
+        self.prism.remove_animate(force=True)
+        self._actor_manager.update(dt=0.0)
         self.move(self.atom.close_gripper(), tag="close_usb")
 
         # 抓住后先上提约 3cm，并加入少量 z 噪声，给 USB 离开起始槽和桌面留出安全余量。
@@ -252,21 +287,10 @@ class Task(BaseTask):
         self.metadata['approach_clearance'] = float(approach_clearance)
         self.metadata['approach_xy_noise'] = approach_offset.p.tolist()
 
-    def _pre_move_xense(self):
+    def _prepare_usb_xense(self):
         # The Xense/Robotiq tactile shell is larger than the GelSight Mini case.
         # Keep the object target identical, but approach it with more vertical
         # clearance and avoid recomputing a GelSight-style grasp orientation.
-        self.delay(10)
-        if hasattr(self._tactile_manager, "reset_marker_reference"):
-            self.metadata['xense_reference_reset_result'] = self._tactile_manager.reset_marker_reference()
-            self.metadata['xense_reference_reset_step'] = int(self.step_count)
-            self.delay(20, is_save=False)
-            self._record_xense_debug_pose('after_initial_tactile_reset')
-
-        self.move(self.atom.open_gripper(1.0), tag="open_gripper_for_usb")
-        self.delay(20, is_save=False)
-        self._record_xense_debug_pose('after_open_for_usb')
-
         grasp_height = XENSE_USB_GRASP_HEIGHT + self.rng.uniform(
             -XENSE_USB_GRASP_HEIGHT_NOISE,
             XENSE_USB_GRASP_HEIGHT_NOISE,
@@ -302,6 +326,8 @@ class Task(BaseTask):
             self._robot_manager.gripper_percent2qpos(usb_close_percent)
         )
         self.metadata['post_close_settle_steps'] = int(post_close_settle_steps)
+        self.prism.remove_animate(force=True)
+        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=usb_close_percent),
             tag="close_usb",
@@ -335,7 +361,10 @@ class Task(BaseTask):
 
     def _play_once(self):
         if self._is_xense():
+            self._prepare_usb_xense()
             return self._play_once_xense()
+
+        self._prepare_usb_standard()
 
         self._update_insert_reference_poses()
         # 正式下插前去掉 XY 噪声，将 USB 参考原点精确移到槽口高度。

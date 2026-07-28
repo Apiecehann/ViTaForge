@@ -275,6 +275,7 @@ class RobotManager:
         self.planner.reset()
         self.robot.set_joint_position_target(joint_pos)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel)
+        self.robot._physics_sim_view.update_articulations_kinematic()
     
     def get_observations(self, data_type:list[str]=['joint', 'ee']) -> dict:
         obs = {}

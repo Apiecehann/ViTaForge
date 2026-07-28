@@ -1,9 +1,9 @@
-save_dir: ./data_gelsight_rl_100_20260725
+save_dir: ./data_gelsight_rl_100_20260727
 
 decimation: 1
 
 save_frequency: 2
-video_frequency: 2
+video_frequency: 0
 render_frequency: 0
 
 random_texture: false
@@ -12,6 +12,9 @@ use_seed: true
 episode_num: 100
 
 sensor_type: gsmini
+
+# Seeds 3-99 in the collected SFT dataset use this actor-to-base assignment.
+block_base_pose_indices: [3, 5, 1, 6, 2, 4, 0]
 
 observations:
   camera: ['rgb']

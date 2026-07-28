@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Summarize BC, SAC, and PPO evaluation results.")
+    parser = argparse.ArgumentParser(description="Summarize available policy evaluation results.")
     parser.add_argument("run_root")
     parser.add_argument("--evaluation-dir", default="evaluation")
     args = parser.parse_args()
@@ -12,6 +12,8 @@ def main():
     comparison = {}
     for algorithm in ("bc", "sac", "ppo"):
         result_path = run_root / args.evaluation_dir / algorithm / "evaluation.json"
+        if not result_path.is_file():
+            continue
         with open(result_path, "r", encoding="utf-8") as result_file:
             result = json.load(result_file)
         comparison[algorithm] = {
@@ -20,7 +22,17 @@ def main():
             "success_rate": result["success_rate"],
             "mean_reward": result["mean_reward"],
         }
-    best = max(comparison, key=lambda name: comparison[name]["success_rate"])
+    if not comparison:
+        raise FileNotFoundError(
+            f"No evaluation results found under {run_root / args.evaluation_dir}"
+        )
+    best = max(
+        comparison,
+        key=lambda name: (
+            comparison[name]["success_rate"],
+            comparison[name]["mean_reward"],
+        ),
+    )
     summary = {"best_success_rate": best, "comparison": comparison}
     output_path = run_root / "comparison.json"
     with open(output_path, "w", encoding="utf-8") as output_file:

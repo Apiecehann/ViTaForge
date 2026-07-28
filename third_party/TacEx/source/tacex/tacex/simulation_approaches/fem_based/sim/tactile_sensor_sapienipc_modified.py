@@ -62,6 +62,7 @@ class VisionTactileSensorUIPC:
         camera_to_surface: float = 0.0283,
         real_size: tuple[float, float] = (0.0266, 0.0209),
         marker_radius: float = 12,
+        marker_binding_center_x_m: float | None = None,
         **kwargs,
     ):
         """
@@ -109,6 +110,7 @@ class VisionTactileSensorUIPC:
 
         self.sub_marker_num = sub_marker_num
         self.marker_radius = marker_radius
+        self.marker_binding_center_x_m = marker_binding_center_x_m
 
         real_size = np.array(real_size)
         img_size = np.array([tactile_img_width, tactile_img_height])
@@ -129,11 +131,133 @@ class VisionTactileSensorUIPC:
         # self.phong_shading_renderer = PhongShadingRenderer()
     
     def init_vertices(self):
-        self.init_surface_vertices_camera = self.get_surface_vertices_camera().clone()
-        self.reference_surface_vertices_camera = self.get_surface_vertices_camera().clone()
-        if not hasattr(self, "marker_surf_idx"):
+        surface_vertices_camera = self.get_surface_vertices_camera().clone()
+        vertices_camera = self.get_vertices_camera()
+        constrain_pts = vertices_camera[self.constrain_ids].cpu().numpy()
+
+        if str(self.sensor_type).startswith("xense"):
+            valid, diagnostics = self._validate_xsense_reference_geometry(
+                surface_vertices_camera,
+                constrain_pts,
+            )
+            self.last_reference_diagnostics = diagnostics
+            if not valid:
+                reject_count = int(getattr(self, "_reference_reject_count", 0)) + 1
+                self._reference_reject_count = reject_count
+                if reject_count == 1 or reject_count % 20 == 0:
+                    print(
+                        "[xense-reference] rejected transient FEM reference",
+                        diagnostics,
+                    )
+                if hasattr(self, "reference_surface_vertices_camera"):
+                    return False
+                raise RuntimeError(
+                    "Initial XSense FEM reference is outside the physical camera range: "
+                    f"{diagnostics}"
+                )
+
+        self.init_surface_vertices_camera = surface_vertices_camera
+        self.reference_surface_vertices_camera = surface_vertices_camera.clone()
+        if not str(self.sensor_type).startswith("xense") or not hasattr(self, "marker_surf_idx"):
             self.marker_surf_idx, self.marker_weight = self._gen_marker_weight(self.marker_grid)
-        self.constrain_pts = self.get_vertices_camera()[self.constrain_ids].cpu().numpy()
+        self.constrain_pts = constrain_pts
+        previous_reject_count = int(getattr(self, "_reference_reject_count", 0))
+        self._reference_reject_count = 0
+        if str(self.sensor_type).startswith("xense"):
+            self.last_reference_diagnostics = {
+                **self.last_reference_diagnostics,
+                "accepted": True,
+                "settled_after_rejections": previous_reject_count,
+            }
+            if previous_reject_count:
+                print(
+                    "[xense-reference] accepted settled FEM reference",
+                    self.last_reference_diagnostics,
+                )
+        return True
+
+    def _validate_xsense_reference_geometry(self, surface_vertices, constrain_pts):
+        surface = surface_vertices.detach().cpu().numpy().astype(np.float64)
+        constrain = np.asarray(constrain_pts, dtype=np.float64)
+        surface_finite = bool(np.isfinite(surface).all())
+        constrain_finite = bool(np.isfinite(constrain).all())
+
+        surface_depth_percentiles = (
+            np.percentile(surface[:, 2], [1.0, 5.0, 50.0, 95.0, 99.0])
+            if surface.size and surface_finite
+            else np.full(5, np.nan, dtype=np.float64)
+        )
+        surface_depth = float(surface_depth_percentiles[2])
+        constrain_depth = (
+            float(np.median(constrain[:, 2])) if constrain.size else float("nan")
+        )
+        surface_lateral_max = (
+            float(np.abs(surface[:, :2]).max()) if surface.size else float("inf")
+        )
+        constrain_lateral_max = (
+            float(np.abs(constrain[:, :2]).max()) if constrain.size else float("inf")
+        )
+
+        surface_plane_p95 = float("inf")
+        if surface.size and surface_finite:
+            surface_centered = surface - np.median(surface, axis=0, keepdims=True)
+            _, _, right_vectors = np.linalg.svd(surface_centered, full_matrices=False)
+            surface_plane_distance = np.abs(surface_centered @ right_vectors[-1])
+            surface_plane_p95 = float(np.percentile(surface_plane_distance, 95.0))
+
+        marker_grid_affine_p95_px = float("nan")
+        if hasattr(self, "marker_surf_idx"):
+            marker_xyz = (
+                surface_vertices.detach().cpu().numpy()[self.marker_surf_idx]
+                * self.marker_weight[..., None]
+            ).sum(axis=1)
+            marker_uv = self.gen_marker_uv(marker_xyz)
+            grid_columns, grid_rows = (int(value) for value in self.marker_shape)
+            grid_y, grid_x = np.meshgrid(
+                np.arange(grid_rows, dtype=np.float64),
+                np.arange(grid_columns, dtype=np.float64),
+                indexing="ij",
+            )
+            grid_design = np.stack(
+                [grid_x.ravel(), grid_y.ravel(), np.ones(grid_rows * grid_columns)],
+                axis=1,
+            )
+            if marker_uv.shape[0] == grid_design.shape[0]:
+                affine = np.linalg.lstsq(grid_design, marker_uv, rcond=None)[0]
+                affine_residual = np.linalg.norm(
+                    marker_uv - grid_design @ affine,
+                    axis=1,
+                )
+                marker_grid_affine_p95_px = float(
+                    np.percentile(affine_residual, 95.0)
+                )
+
+        valid = (
+            surface_finite
+            and constrain_finite
+            and 0.024 <= surface_depth_percentiles[0]
+            and surface_depth_percentiles[4] <= 0.030
+            and 0.015 <= constrain_depth <= 0.030
+            and surface_lateral_max <= 0.050
+            and constrain_lateral_max <= 0.050
+            and surface_plane_p95 <= 0.0002
+            and (
+                not np.isfinite(marker_grid_affine_p95_px)
+                or marker_grid_affine_p95_px <= 2.0
+            )
+        )
+        diagnostics = {
+            "accepted": bool(valid),
+            "surface_depth_mm": surface_depth * 1000.0,
+            "surface_depth_p01_mm": float(surface_depth_percentiles[0] * 1000.0),
+            "surface_depth_p99_mm": float(surface_depth_percentiles[4] * 1000.0),
+            "constrain_depth_mm": constrain_depth * 1000.0,
+            "surface_lateral_max_mm": surface_lateral_max * 1000.0,
+            "constrain_lateral_max_mm": constrain_lateral_max * 1000.0,
+            "surface_plane_p95_mm": surface_plane_p95 * 1000.0,
+            "marker_grid_affine_p95_px": marker_grid_affine_p95_px,
+        }
+        return bool(valid), diagnostics
 
     def get_vertices_world(self):
         v = self.gelpad_obj._data.nodal_pos_w
@@ -236,7 +360,18 @@ class VisionTactileSensorUIPC:
         print("[xense-camera-faces]", diagnostics)
 
     def set_reference_surface_vertices_camera(self):
-        self.reference_surface_vertices_camera = self.get_surface_vertices_camera().clone()
+        surface_vertices_camera = self.get_surface_vertices_camera().clone()
+        constrain_pts = self.get_vertices_camera()[self.constrain_ids].cpu().numpy()
+        if str(self.sensor_type).startswith("xense"):
+            valid, diagnostics = self._validate_xsense_reference_geometry(
+                surface_vertices_camera,
+                constrain_pts,
+            )
+            self.last_reference_diagnostics = diagnostics
+            if not valid:
+                return False
+        self.reference_surface_vertices_camera = surface_vertices_camera
+        return True
 
     def _gen_marker_grid(self):
         '''生成标记格点'''
@@ -289,11 +424,16 @@ class VisionTactileSensorUIPC:
         return marker_grid
     
     def _gen_marker_weight(self, marker_pts):
+        if not str(self.sensor_type).startswith("xense"):
+            return self._gen_native_marker_weight(marker_pts)
+
         surface_pts_camera = self.init_surface_vertices_camera.cpu().numpy()
         surface_pts = self.camera_points_to_opencv(surface_pts_camera)[:, :2]
         marker_pts = np.asarray(marker_pts).copy()
         if str(self.sensor_type).startswith("xense"):
             surface_center = 0.5 * (surface_pts.min(axis=0) + surface_pts.max(axis=0))
+            if self.marker_binding_center_x_m is not None:
+                surface_center[0] = float(self.marker_binding_center_x_m)
             marker_pts += surface_center
         # marker_on_surface = in_hull(marker_pts, surface_pts)
         # marker_pts = marker_pts[marker_on_surface]
@@ -416,6 +556,74 @@ class VisionTactileSensorUIPC:
 
         return marker_pts_surface_idx, marker_pts_surface_weight
 
+    def _gen_native_marker_weight(self, marker_pts):
+        surface_pts = self.init_surface_vertices_camera.cpu().numpy()[:, :2]
+
+        face_idx_to_surface_idx = np.zeros(
+            np.max(self.faces_on_surfaces) + 1, dtype=np.int32
+        )
+        face_idx_to_surface_idx[self.vertices_on_surface] = np.arange(
+            surface_pts.shape[0]
+        )
+        faces_v_on_surface = surface_pts[
+            face_idx_to_surface_idx[self.faces_on_surfaces.flatten()]
+        ].reshape(-1, 3, 2)
+        face_centers = np.mean(faces_v_on_surface, axis=1)
+
+        neighbors = NearestNeighbors(n_neighbors=4, algorithm="ball_tree").fit(
+            face_centers
+        )
+        _, face_idx = neighbors.kneighbors(marker_pts)
+
+        marker_pts_surface_idx = []
+        marker_pts_surface_weight = []
+        valid_marker_idx = []
+
+        for marker_idx in range(marker_pts.shape[0]):
+            possible_face_ids = face_idx[marker_idx]
+            marker_point = marker_pts[marker_idx]
+            for possible_face_id in possible_face_ids.tolist():
+                face_vertices_idx = face_idx_to_surface_idx[
+                    self.faces_on_surfaces[possible_face_id]
+                ]
+                vertices_of_face = surface_pts[face_vertices_idx]
+                point_0, point_1, point_2 = vertices_of_face
+                matrix = np.stack([point_1 - point_0, point_2 - point_0], axis=1)
+                weight_12 = np.linalg.inv(matrix) @ (marker_point - point_0)
+                weight = np.array(
+                    [1 - weight_12.sum(), weight_12[0], weight_12[1]]
+                )
+                is_inside = (
+                    weight_12[0] >= 0
+                    and weight_12[1] >= 0
+                    and weight_12[0] + weight_12[1] <= 1
+                )
+                if possible_face_id == possible_face_ids[0]:
+                    marker_pts_surface_idx.append(face_vertices_idx)
+                    marker_pts_surface_weight.append(weight)
+                    valid_marker_idx.append(marker_idx)
+                    if is_inside:
+                        break
+                elif is_inside:
+                    marker_pts_surface_idx[-1] = face_vertices_idx
+                    marker_pts_surface_weight[-1] = weight
+                    valid_marker_idx[-1] = marker_idx
+                    break
+
+        valid_marker_idx = np.asarray(valid_marker_idx, dtype=np.int32)
+        valid_marker_pts = marker_pts[valid_marker_idx]
+        marker_pts_surface_idx = np.stack(marker_pts_surface_idx)
+        marker_pts_surface_weight = np.stack(marker_pts_surface_weight)
+        reconstructed = (
+            surface_pts[marker_pts_surface_idx]
+            * marker_pts_surface_weight[..., None]
+        ).sum(1)[:, :2]
+        assert np.allclose(reconstructed, valid_marker_pts), (
+            "max err: "
+            f"{np.abs(reconstructed - valid_marker_pts).max()}"
+        )
+        return marker_pts_surface_idx, marker_pts_surface_weight
+
     def gen_marker_uv(self, marker_pts):
         marker_pts = self.camera_points_to_opencv(marker_pts)
         marker_uv = cv2.projectPoints(
@@ -428,6 +636,103 @@ class VisionTactileSensorUIPC:
 
         return marker_uv
 
+    def _register_marker_points_to_constrained_frame(self, marker_pts):
+        reference_constrain = np.asarray(self.constrain_pts, dtype=np.float64)
+        current_constrain = self.get_vertices_camera()[self.constrain_ids].cpu().numpy().astype(np.float64)
+        if reference_constrain.shape != current_constrain.shape or reference_constrain.shape[0] < 3:
+            return marker_pts
+
+        reference_center = reference_constrain.mean(axis=0, keepdims=True)
+        current_center = current_constrain.mean(axis=0, keepdims=True)
+        covariance = (current_constrain - current_center).T @ (reference_constrain - reference_center)
+        left, _, right = np.linalg.svd(covariance)
+        rotation = left @ right
+        if np.linalg.det(rotation) < 0.0:
+            left[:, -1] *= -1.0
+            rotation = left @ right
+        return (marker_pts - current_center) @ rotation + reference_center
+
+    def _save_xsense_marker_layer_debug(
+        self,
+        init_marker_pts,
+        raw_marker_pts,
+        registered_marker_pts,
+        init_marker_uv,
+        raw_marker_uv,
+        registered_marker_uv,
+    ):
+        debug_root = os.environ.get("XENSE_MARKER_LAYER_DEBUG_DIR")
+        if not debug_root:
+            return
+
+        frame_index = int(getattr(self, "_xense_marker_layer_debug_frame", 0))
+        self._xense_marker_layer_debug_frame = frame_index + 1
+        stride = max(int(os.environ.get("XENSE_MARKER_LAYER_DEBUG_STRIDE", "1")), 1)
+        if frame_index % stride:
+            return
+
+        prim_path = str(self.gelpad_obj.cfg.prim_path)
+        sensor_name = "".join(
+            character if character.isalnum() else "_" for character in prim_path
+        ).strip("_")
+        sensor_dir = os.path.join(debug_root, sensor_name or "xense_sensor")
+        os.makedirs(sensor_dir, exist_ok=True)
+        current_constrain = (
+            self.get_vertices_camera()[self.constrain_ids]
+            .detach()
+            .cpu()
+            .numpy()
+        )
+        self.camera._update_poses(self.camera._ALL_INDICES)
+        surface_world = self.get_surface_vertices_world().detach().cpu().numpy()
+        current_marker_world = (
+            surface_world[self.marker_surf_idx]
+            * self.marker_weight[..., None]
+        ).sum(1)
+
+        camera_pose_data = {}
+        for field_name in ("pos_w", "quat_w_world", "quat_w_ros", "quat_w_opengl"):
+            field_value = getattr(self.camera._data, field_name, None)
+            if field_value is not None:
+                camera_pose_data[f"camera_{field_name}"] = (
+                    field_value.detach().cpu().numpy()
+                )
+        np.savez_compressed(
+            os.path.join(sensor_dir, f"frame_{frame_index:06d}.npz"),
+            frame_index=np.asarray(frame_index, dtype=np.int64),
+            prim_path=np.asarray(prim_path),
+            camera_prim_path=np.asarray(str(self.camera.cfg.prim_path)),
+            current_marker_world_xyz=np.asarray(
+                current_marker_world,
+                dtype=np.float32,
+            ),
+            surface_world_center_xyz=np.asarray(
+                surface_world.mean(axis=0),
+                dtype=np.float32,
+            ),
+            **camera_pose_data,
+            init_marker_xyz=np.asarray(init_marker_pts, dtype=np.float32),
+            raw_marker_xyz=np.asarray(raw_marker_pts, dtype=np.float32),
+            registered_marker_xyz=np.asarray(
+                registered_marker_pts,
+                dtype=np.float32,
+            ),
+            init_marker_uv=np.asarray(init_marker_uv, dtype=np.float32),
+            raw_marker_uv=np.asarray(raw_marker_uv, dtype=np.float32),
+            registered_marker_uv=np.asarray(
+                registered_marker_uv,
+                dtype=np.float32,
+            ),
+            reference_constrain_xyz=np.asarray(
+                self.constrain_pts,
+                dtype=np.float32,
+            ),
+            current_constrain_xyz=np.asarray(
+                current_constrain,
+                dtype=np.float32,
+            ),
+        )
+
     def gen_marker_flow(self):
         is_xsense = str(self.sensor_type).startswith("xense")
         init_marker_pts = (
@@ -439,12 +744,27 @@ class VisionTactileSensorUIPC:
             * self.marker_weight[..., None]
         ).sum(1)
 
-        mean_motion = np.mean(
-            self.get_vertices_camera()[self.constrain_ids].cpu().numpy() - self.constrain_pts, axis=0)
-        curr_marker_pts -= mean_motion
+        raw_marker_pts = curr_marker_pts.copy()
+
+        if is_xsense:
+            curr_marker_pts = self._register_marker_points_to_constrained_frame(curr_marker_pts)
+        else:
+            mean_motion = np.mean(
+                self.get_vertices_camera()[self.constrain_ids].cpu().numpy() - self.constrain_pts, axis=0)
+            curr_marker_pts[:, :2] -= mean_motion[:2]
 
         init_marker_uv = self.gen_marker_uv(init_marker_pts)
         curr_marker_uv = self.gen_marker_uv(curr_marker_pts)
+        if is_xsense:
+            raw_marker_uv = self.gen_marker_uv(raw_marker_pts)
+            self._save_xsense_marker_layer_debug(
+                init_marker_pts,
+                raw_marker_pts,
+                curr_marker_pts,
+                init_marker_uv,
+                raw_marker_uv,
+                curr_marker_uv,
+            )
         marker_flow = np.stack([init_marker_uv, curr_marker_uv], axis=0)
 
         if not is_xsense:
@@ -474,11 +794,8 @@ class VisionTactileSensorUIPC:
                 )
             ret = marker_flow.copy()
         elif original_point_num >= self.num_markers:
-            if original_point_num == self.num_markers:
-                ret = marker_flow[:, : self.num_markers, ...].copy()
-            else:
-                chosen = np.random.choice(original_point_num, self.num_markers, replace=False)
-                ret = marker_flow[:, chosen, ...]
+            chosen = np.random.choice(original_point_num, self.num_markers, replace=False)
+            ret = marker_flow[:, chosen, ...]
         else:
             ret = np.zeros((marker_flow.shape[0], self.num_markers, marker_flow.shape[-1]))
             if original_point_num > 0:

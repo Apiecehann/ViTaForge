@@ -2,67 +2,72 @@ from ._base_task import *
 import numpy as np
 
 
-TARGET_BLOCK_NAME = "wooden_half_cylinder"
-BLOCK_HEIGHT = 0.0300
-
-# reset 时只在桌面 xy 平面扰动各个木块，z 维保持 0，避免初始物体离开桌面。
-XY_NOISE = (0.005, 0.005, 0.0)
+BLOCK_HEIGHT = 0.0400
+BLOCK_XY_NOISE = (0.020, 0.020, 0.0)
 GRASP_ROTATE_NOISE = np.deg2rad(10.0)
-# 半圆柱抓取高度设在物体半高附近，并叠加少量噪声，增加演示数据的抓取多样性。
 GRASP_HEIGHT = BLOCK_HEIGHT * 0.5
 GRASP_HEIGHT_NOISE = 0.003
 LIFT_HEIGHT = 0.1000
 SUCCESS_MIN_LIFT = 0.0500
 SUCCESS_MAX_LIFT = 0.1500
+XENSE_BLOCK_Z_CLEARANCE = 0.0020
 
-WOODEN_BLOCK_SPECS = [
+BLOCK_BASE_POSES = (
+    Pose([0.40, 0.00, 0.002], [1, 0, 0, 0]),
+    Pose([0.30, -0.06, 0.002], [1, 0, 0, 0]),
+    Pose([0.31, 0.06, 0.002], [1, 0, 0, 0]),
+    Pose([0.42, -0.09, 0.002], [1, 0, 0, 0]),
+    Pose([0.43, 0.10, 0.002], [1, 0, 0, 0]),
+    Pose([0.52, -0.06, 0.002], [1, 0, 0, 0]),
+    Pose([0.51, 0.06, 0.002], [1, 0, 0, 0]),
+)
+
+BLOCK_SPECS = (
     {
-        "name": "wooden_cube",
-        "shape": "cube",
-        "asset_path": "wooden_cube.usd",
-        "base_pose": Pose([0.4, 0.0, 0.002], [1, 0, 0, 0]),
+        "name": "block_blue_half_cylinder",
+        "description": "blue half cylinder",
+        "asset_path": "task_0724/grasp_in_clutter/block_blue_half_cylinder.usd",
     },
     {
-        "name": "wooden_cylinder",
-        "shape": "cylinder",
-        "asset_path": "wooden_cylinder.usd",
-        "base_pose": Pose([0.32, 0.02, 0.002], [1, 0, 0, 0]),
+        "name": "block_blue_quarter_cylinder",
+        "description": "blue quarter cylinder",
+        "asset_path": "task_0724/grasp_in_clutter/block_blue_quarter_cylinder.usd",
     },
     {
-        "name": "wooden_ellipse_cylinder",
-        "shape": "ellipse_cylinder",
-        "asset_path": "wooden_ellipse_cylinder.usd",
-        "base_pose": Pose([0.46, -0.03, 0.002], [1, 0, 0, 0]),
+        "name": "block_blue_star_prism",
+        "description": "blue star prism",
+        "asset_path": "task_0724/grasp_in_clutter/block_blue_star_prism.usd",
     },
     {
-        "name": "wooden_half_cylinder",
-        "shape": "half_cylinder",
-        "asset_path": "wooden_half_cylinder.usd",
-        "base_pose": Pose([0.42, -0.07, 0.002], [1, 0, 0, 0]),
+        "name": "block_red_ellipse_cylinder",
+        "description": "red ellipse cylinder",
+        "asset_path": "task_0724/grasp_in_clutter/block_red_ellipse_cylinder.usd",
     },
     {
-        "name": "wooden_triangular_prism",
-        "shape": "triangular_prism",
-        "asset_path": "wooden_triangular_prism.usd",
-        "base_pose": Pose([0.35, -0.08, 0.002], [1, 0, 0, 0]),
+        "name": "block_red_hexagonal_prism",
+        "description": "red hexagonal prism",
+        "asset_path": "task_0724/grasp_in_clutter/block_red_hexagonal_prism.usd",
     },
     {
-        "name": "wooden_hexagonal_prism",
-        "shape": "hexagonal_prism",
-        "asset_path": "wooden_hexagonal_prism.usd",
-        "base_pose": Pose([0.43, 0.07, 0.002], [1, 0, 0, 0]),
+        "name": "block_yellow_cylinder",
+        "description": "yellow cylinder",
+        "asset_path": "task_0724/grasp_in_clutter/block_yellow_cylinder.usd",
     },
     {
-        "name": "wooden_quarter_cylinder",
-        "shape": "quarter_cylinder",
-        "asset_path": "wooden_quarter_cylinder.usd",
-        "base_pose": Pose([0.36, 0.06, 0.002], [1, 0, 0, 0]),
+        "name": "block_yellow_triangular_prism",
+        "description": "yellow triangular prism",
+        "asset_path": "task_0724/grasp_in_clutter/block_yellow_triangular_prism.usd",
     },
-]
+)
+TARGET_BLOCKS = tuple(spec["name"] for spec in BLOCK_SPECS)
+DEFAULT_TARGET_BLOCK = "block_blue_half_cylinder"
+TASK_INSTRUCTION = "Grasp the blue half cylinder from the clutter and lift it up."
 
 
 @configclass
 class TaskCfg(BaseTaskCfg):
+    target_block: str = DEFAULT_TARGET_BLOCK
+    block_base_pose_indices: tuple[int, ...] = tuple(range(len(BLOCK_SPECS)))
     cameras = [
         CameraCfg(
             name="head",
@@ -90,7 +95,10 @@ class TaskCfg(BaseTaskCfg):
 
 
 class Task(BaseTask):
-    def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: TaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
+        if cfg.target_block not in TARGET_BLOCKS and cfg.target_block != "random":
+            raise ValueError(f"target_block must be one of {TARGET_BLOCKS} or 'random'")
+        self.configured_target_block = cfg.target_block
         # clutter 抓取依赖稳定摩擦；提高刚体材质和 UIPC 接触摩擦，减少夹取目标时打滑。
         cfg.sim.physics_material.dynamic_friction = 2.5
         cfg.sim.physics_material.static_friction = 2.5
@@ -98,44 +106,67 @@ class Task(BaseTask):
         super().__init__(cfg, mode, render_mode, **kwargs)
 
     def create_actors(self):
-        # 一次性创建所有木块 actor；每个 episode 只在 _reset_actors 中移动已有 actor。
+        pose_indices = tuple(int(index) for index in self.cfg.block_base_pose_indices)
+        if sorted(pose_indices) != list(range(len(BLOCK_BASE_POSES))):
+            raise ValueError(
+                "block_base_pose_indices must be a permutation of "
+                f"0..{len(BLOCK_BASE_POSES) - 1}, got {pose_indices}"
+            )
+        self.initial_pose_assignments = {
+            spec["name"]: (int(index), BLOCK_BASE_POSES[int(index)])
+            for spec, index in zip(BLOCK_SPECS, pose_indices)
+        }
         self.wooden_blocks = {}
-        self.wooden_block_specs = {}
-
-        for spec in WOODEN_BLOCK_SPECS:
+        self.wooden_block_specs = {spec["name"]: spec for spec in BLOCK_SPECS}
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        # Hold all XSense blocks at their sampled reset poses during approach.
+        # The selected target is released immediately before physical closure.
+        for spec in BLOCK_SPECS:
+            _, initial_pose = self.initial_pose_assignments[spec["name"]]
             actor = self._actor_manager.add_from_usd_file(
                 name=spec["name"],
                 asset_path=spec["asset_path"],
-                pose=spec["base_pose"],
+                pose=initial_pose,
                 density=1e3,
+                keep_constrained=is_xense,
             )
             self.wooden_blocks[spec["name"]] = actor
-            self.wooden_block_specs[spec["name"]] = spec
-
-        # 本任务的目标物体固定为 wooden_half_cylinder，其它木块作为 clutter 干扰项。
-        self.target_block = self.wooden_blocks[TARGET_BLOCK_NAME]
-        self.target_initial_pose = self.wooden_block_specs[TARGET_BLOCK_NAME]["base_pose"]
 
     def _reset_actors(self):
-        # 记录目标类别信息，方便离线过滤同一 clutter 场景中的不同目标任务。
-        self.metadata["target_shape"] = self.wooden_block_specs[TARGET_BLOCK_NAME]["shape"]
-        self.metadata["target_block_name"] = TARGET_BLOCK_NAME
+        target_name = self.configured_target_block
+        if target_name == "random":
+            target_name = str(self.rng.choice(TARGET_BLOCKS))
+        self.target_block_name = target_name
+        self.target_block = self.wooden_blocks[target_name]
+        self.metadata["target_description"] = self.wooden_block_specs[target_name]["description"]
+        self.metadata["target_block_name"] = target_name
         self.metadata["block_poses"] = {}
         self.metadata["block_xy_noise"] = {}
+        self.metadata["block_base_pose_indices"] = {}
 
         for name, actor in self.wooden_blocks.items():
-            # 每个木块独立采样 xy 偏移，既保持整体布局相近，又给抓取点和遮挡关系加入扰动。
-            base_pose = self.wooden_block_specs[name]["base_pose"]
-            offset = self.create_noise(list(XY_NOISE))
+            pose_index, base_pose = self.initial_pose_assignments[name]
+            offset = self.create_noise(list(BLOCK_XY_NOISE))
             pose = base_pose.add_offset(offset)
+            if getattr(self.cfg, "tactile_sensor_type", "") in (
+                "xensews",
+                "xensews_robotiq",
+            ):
+                pose = pose.add_bias([0.0, 0.0, XENSE_BLOCK_Z_CLEARANCE])
             actor.set_pose(pose)
 
             self.metadata["block_xy_noise"][name] = offset.p.tolist()
             self.metadata["block_poses"][name] = pose.tolist()
-
-            if name == TARGET_BLOCK_NAME:
-                # success 需要和目标物体 reset 后的真实初始高度比较，而不是和无噪声基准位姿比较。
+            self.metadata["block_base_pose_indices"][name] = int(pose_index)
+            if name == target_name:
                 self.target_initial_pose = pose
+
+    def build_instruction(self) -> str:
+        description = self.wooden_block_specs[self.target_block_name]["description"]
+        return f"Grasp the {description} from the clutter and lift it up."
 
     def pre_move(self):
         # 正式动作前等待物理状态稳定，再打开夹爪准备从目标物体上方接近。
@@ -150,8 +181,13 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_half_cylinder")
+        self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_policy")
 
+    def _grasp_target(self):
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
         target_pose = self.target_block.get_pose()
         # 以目标半圆柱当前位姿为基准，在半高附近构造抓取点，并绕局部 y 轴加入少量随机旋转。
         grasp_rotate = self.rng.uniform(-GRASP_ROTATE_NOISE, GRASP_ROTATE_NOISE)
@@ -166,19 +202,49 @@ class Task(BaseTask):
             + self.rng.uniform(-GRASP_HEIGHT_NOISE, GRASP_HEIGHT_NOISE)
             + grasp_height_bias
         )
-        grasp_target_pose = (
-            target_pose
-            .add_bias([0.0, 0.0, grasp_height])
-            .add_bias([0.0, grasp_world_y_bias, 0.0], coord="world")
-            .add_rotation([0.0, grasp_rotate, 0.0])
-        )
-        target_mat = grasp_target_pose.to_transformation_matrix()
-        # construct_grasp_pose 使用目标点、接近方向和夹爪横向方向，生成机器人末端抓取姿态。
-        grasp_pose = construct_grasp_pose(
-            grasp_target_pose.p,
-            target_mat[:3, 2],
-            target_mat[:3, 0],
-        )
+        if is_xense:
+            # A half cylinder can settle on its curved side, making its local Z
+            # axis horizontal. The thicker Robotiq fingertips must approach it
+            # vertically from a world-frame waypoint instead of following that
+            # local axis into the table and neighboring clutter.
+            target_mat = target_pose.to_transformation_matrix()
+            gripper_up = target_mat[:3, 0].copy()
+            gripper_up[2] = 0.0
+            if np.linalg.norm(gripper_up) < 1e-6:
+                gripper_up = np.array([1.0, 0.0, 0.0])
+            yaw_cos = np.cos(grasp_rotate)
+            yaw_sin = np.sin(grasp_rotate)
+            gripper_up = np.array([
+                yaw_cos * gripper_up[0] - yaw_sin * gripper_up[1],
+                yaw_sin * gripper_up[0] + yaw_cos * gripper_up[1],
+                0.0,
+            ])
+            grasp_position = target_pose.p.copy()
+            grasp_position += np.array([
+                0.0,
+                grasp_world_y_bias,
+                grasp_height,
+            ])
+            grasp_pose = construct_grasp_pose(
+                grasp_position,
+                np.array([0.0, 0.0, 1.0]),
+                gripper_up,
+            )
+        else:
+            grasp_target_pose = (
+                target_pose
+                .add_bias([0.0, 0.0, grasp_height])
+                .add_bias([0.0, grasp_world_y_bias, 0.0], coord="world")
+                .add_rotation([0.0, grasp_rotate, 0.0])
+            )
+            target_mat = grasp_target_pose.to_transformation_matrix()
+            # construct_grasp_pose uses the contact point, approach axis, and
+            # gripper lateral axis to build the final grasp pose.
+            grasp_pose = construct_grasp_pose(
+                grasp_target_pose.p,
+                target_mat[:3, 2],
+                target_mat[:3, 0],
+            )
         # 将抓取点注册到目标 actor 局部坐标系，后续 grasp_actor 会按该 contact point 规划接近动作。
         contact_point_id = self.target_block.register_point(grasp_pose, type="contact")
 
@@ -191,9 +257,28 @@ class Task(BaseTask):
         approach_target_pose = self._robot_manager.ee_to_gripper_center(
             approach_actions[0].target_pose
         )
-        self.move(approach_actions, tag="approach_half_cylinder")
+        if is_xense:
+            pregrasp_clearance = float(
+                getattr(self.cfg, "xense_half_cylinder_pregrasp_clearance", 0.08)
+            )
+            pregrasp_pose = Pose(
+                approach_target_pose.p + np.array([0.0, 0.0, pregrasp_clearance]),
+                approach_target_pose.q,
+            )
+            self.metadata["xense_half_cylinder_pregrasp_clearance"] = pregrasp_clearance
+            self.metadata["xense_half_cylinder_pregrasp_pose"] = pregrasp_pose.tolist()
+            self.move(
+                [Action(
+                    "move",
+                    target_pose=self._robot_manager.gripper_center_to_ee(pregrasp_pose),
+                )],
+                tag=f"pregrasp_{self.target_block_name}",
+                delay=False,
+            )
+        if self.plan_success:
+            self.move(approach_actions, tag=f"approach_{self.target_block_name}")
 
-        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+        if is_xense:
             actual_gripper_pose = self._robot_manager.get_gripper_center_pose()
             target_quat = approach_target_pose.q / np.linalg.norm(approach_target_pose.q)
             actual_quat = actual_gripper_pose.q / np.linalg.norm(actual_gripper_pose.q)
@@ -219,9 +304,12 @@ class Task(BaseTask):
         close_percent = self.get_xense_close_percent(
             "xense_half_cylinder_close_percent"
         )
+        if is_xense:
+            self.target_block.remove_animate(force=True)
+            self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
-            tag="close_half_cylinder",
+            tag=f"close_{self.target_block_name}",
             gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
                 "xense_half_cylinder_adaptive_grasp_depth_threshold"
             ),
@@ -245,8 +333,9 @@ class Task(BaseTask):
         self.metadata["grasp_pose"] = grasp_pose.tolist()
 
     def _play_once(self):
+        self._grasp_target()
         # 抓住目标后竖直上提 10cm；该任务只验证目标是否被稳定提起到期望高度范围。
-        self.move(self.atom.move_by_displacement(z=LIFT_HEIGHT), tag="lift_half_cylinder")
+        self.move(self.atom.move_by_displacement(z=LIFT_HEIGHT), tag=f"lift_{self.target_block_name}")
         # 上提后等待但不保存等待帧，避免纯稳定过程混入动作监督数据。
         self.delay(20, is_save=False)
 
@@ -257,7 +346,7 @@ class Task(BaseTask):
         height_ok = bool(SUCCESS_MIN_LIFT <= lifted_height <= SUCCESS_MAX_LIFT)
 
         return {
-            "target_block_name": TARGET_BLOCK_NAME,
+            "target_block_name": self.target_block_name,
             "target_initial_pose": self.target_initial_pose.tolist(),
             "target_final_pose": target_pose.tolist(),
             "lifted_height": float(lifted_height),
@@ -277,20 +366,68 @@ class Task(BaseTask):
         gripper_pose = self._robot_manager.get_gripper_center_pose()
         lifted_height = float(target_pose.p[2] - self.target_initial_pose.p[2])
         gripper_distance = float(np.linalg.norm(target_pose.p - gripper_pose.p))
+        gripper_qpos = float(self._robot_manager.get_gripper_qpos())
+        policy_open_qpos = 0.5 * float(self.cfg.robot.gripper_max_qpos)
+        closure = float(np.clip(
+            (policy_open_qpos - gripper_qpos) / max(policy_open_qpos - 0.008, 1e-4),
+            0.0,
+            1.0,
+        ))
+        proximity = float(np.exp(-np.square(gripper_distance / 0.08)))
+        grasp_proxy = proximity * closure
+        if getattr(self, "policy_step_count", 0) == 0:
+            self._rl_max_lifted_height = lifted_height
+        else:
+            self._rl_max_lifted_height = max(
+                float(getattr(self, "_rl_max_lifted_height", lifted_height)),
+                lifted_height,
+            )
+        has_been_lifted = self._rl_max_lifted_height >= 0.02
+        dropped_after_lift = has_been_lifted and (
+            lifted_height < self._rl_max_lifted_height - 0.02
+            or gripper_distance > 0.18
+        )
         return {
             "lifted_height": lifted_height,
             "normalized_lift": float(lifted_height / SUCCESS_MIN_LIFT),
             "gripper_distance": gripper_distance,
-            "dropped": bool(lifted_height < -0.02 or gripper_distance > 0.18),
+            "gripper_qpos": gripper_qpos,
+            "proximity": proximity,
+            "grasp_proxy": grasp_proxy,
+            "max_lifted_height": float(self._rl_max_lifted_height),
+            "dropped": bool(lifted_height < -0.02 or dropped_after_lift),
         }
 
     def compute_rl_reward(self, previous_metrics, current_metrics, action, success):
         previous_lift = float(previous_metrics.get("normalized_lift", 0.0))
         current_lift = float(current_metrics["normalized_lift"])
+        previous_distance = float(
+            previous_metrics.get("gripper_distance", current_metrics["gripper_distance"])
+        )
+        current_distance = float(current_metrics["gripper_distance"])
+        previous_grasp = float(
+            previous_metrics.get("grasp_proxy", current_metrics["grasp_proxy"])
+        )
+        current_grasp = float(current_metrics["grasp_proxy"])
         progress_reward = 5.0 * (current_lift - previous_lift)
+        approach_progress = float(
+            np.clip(previous_distance - current_distance, -0.02, 0.02)
+        )
+        approach_reward = 25.0 * approach_progress
+        proximity_reward = 0.02 * float(current_metrics["proximity"])
+        grasp_progress_reward = 2.0 * (current_grasp - previous_grasp)
+        grasp_hold_reward = 0.02 * current_grasp
         height_reward = 0.05 * float(np.clip(current_lift, -1.0, 1.25))
         control_penalty = 1e-3 * float(np.mean(np.square(action)))
-        reward = progress_reward + height_reward - control_penalty
+        reward = (
+            progress_reward
+            + approach_reward
+            + proximity_reward
+            + grasp_progress_reward
+            + grasp_hold_reward
+            + height_reward
+            - control_penalty
+        )
         if success:
             reward += 10.0
         if current_metrics["dropped"]:

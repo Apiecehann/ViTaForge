@@ -6,6 +6,9 @@ import h5py
 import numpy as np
 
 
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+
+
 REQUIRED_DATASETS = (
     "step",
     "embodiment/joint",
@@ -53,8 +56,12 @@ def validate_episode(path):
         if boundaries.tolist() != [0, int(np.flatnonzero(phase_ids == 1)[0])]:
             raise ValueError(f"{path}: invalid boundaries {boundaries.tolist()}")
         attrs = hdf5_file["phase"].attrs
-        if int(attrs.get("schema_version", -1)) != 1:
-            raise ValueError(f"{path}: unexpected phase schema")
+        schema_version = int(attrs.get("schema_version", -1))
+        if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(
+                f"{path}: unsupported phase schema {schema_version}; "
+                f"expected one of {SUPPORTED_SCHEMA_VERSIONS}"
+            )
         if int(attrs["policy_start_saved_index"]) != int(boundaries[1]):
             raise ValueError(f"{path}: policy boundary attribute mismatch")
         action_pairs = int(np.sum((phase_ids[:-1] == 1) & (phase_ids[1:] == 1)))
@@ -63,6 +70,7 @@ def validate_episode(path):
             "pre_move_frames": int(np.sum(phase_ids == 0)),
             "action_frames": int(np.sum(phase_ids == 1)),
             "action_pairs": action_pairs,
+            "schema_version": schema_version,
             "bytes": path.stat().st_size,
         }
 

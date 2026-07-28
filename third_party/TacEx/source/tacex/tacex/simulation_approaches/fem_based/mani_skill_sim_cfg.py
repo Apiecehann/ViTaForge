@@ -69,6 +69,9 @@ class ManiSkillSimulatorCfg(GelSightSimulatorCfg):
 
     marker_visual_bounds: tuple[float, float, float, float] | None = None
 
+    marker_binding_center_x_m: float | None = None
+    """Camera-frame x coordinate used to bind the FEM marker lattice."""
+
     normalize: bool = False
 
     camera_to_surface: float = 0.0283

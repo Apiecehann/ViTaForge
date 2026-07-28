@@ -52,6 +52,14 @@ def _decode_image(encoded, image_size):
     return torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1)))
 
 
+def _policy_steps(hdf5_file, pair_indices, stride):
+    if "phase/policy_step" in hdf5_file:
+        recorded = hdf5_file["phase/policy_step"][pair_indices].astype(np.float32)
+        if len(recorded) > 1 and np.ptp(recorded) > 0:
+            return recorded
+    return np.arange(len(pair_indices), dtype=np.float32) * float(stride)
+
+
 class ActionPhaseDataset(Dataset):
     def __init__(
         self,
@@ -60,6 +68,7 @@ class ActionPhaseDataset(Dataset):
         camera_keys=("cam_high", "cam_wrist"),
         tactile_keys=("tac_left", "tac_right"),
         require_phase=True,
+        policy_step_stride=2,
     ):
         self.paths = [Path(path) for path in hdf5_paths]
         if not self.paths:
@@ -67,6 +76,7 @@ class ActionPhaseDataset(Dataset):
         self.image_size = int(image_size)
         self.camera_keys = list(camera_keys)
         self.tactile_keys = list(tactile_keys)
+        self.policy_step_stride = int(policy_step_stride)
         self.layout = _find_layout(self.paths[0], self.camera_keys, self.tactile_keys)
         self.records = []
         for episode_index, path in enumerate(self.paths):
@@ -80,16 +90,21 @@ class ActionPhaseDataset(Dataset):
                     ]
                 elif require_phase:
                     raise KeyError(f"Missing phase/id in {path}")
+                policy_steps = _policy_steps(
+                    hdf5_file,
+                    pair_indices,
+                    self.policy_step_stride,
+                )
                 self.records.extend(
-                    (episode_index, int(frame_index))
-                    for frame_index in pair_indices
+                    (episode_index, int(frame_index), float(policy_step))
+                    for frame_index, policy_step in zip(pair_indices, policy_steps)
                 )
 
     def __len__(self):
         return len(self.records)
 
     def __getitem__(self, index):
-        episode_index, frame_index = self.records[index]
+        episode_index, frame_index, policy_step = self.records[index]
         path = self.paths[episode_index]
         with h5py.File(path, "r") as hdf5_file:
             observation = {
@@ -97,7 +112,7 @@ class ActionPhaseDataset(Dataset):
                     hdf5_file["embodiment/joint"][frame_index, :8].astype(np.float32)
                 ),
                 "policy_step": torch.tensor(
-                    [hdf5_file["phase/policy_step"][frame_index]],
+                    [policy_step],
                     dtype=torch.float32,
                 ),
             }
@@ -139,7 +154,7 @@ def split_episode_paths(dataset_root, validation_fraction=0.1, seed=0):
     return shuffled[validation_count:], shuffled[:validation_count]
 
 
-def compute_joint_statistics(paths):
+def compute_joint_statistics(paths, policy_step_stride=2):
     qpos_values = []
     action_values = []
     policy_steps = []
@@ -154,16 +169,25 @@ def compute_joint_statistics(paths):
                 ]
             qpos_values.append(joints[pair_indices])
             action_values.append(joints[pair_indices + 1])
-            policy_steps.append(hdf5_file["phase/policy_step"][pair_indices])
+            policy_steps.append(
+                _policy_steps(hdf5_file, pair_indices, policy_step_stride)
+            )
     qpos = np.concatenate(qpos_values)
     action = np.concatenate(action_values)
     delta = action - qpos
+    delta_mean = delta.mean(axis=0)
+    delta_std = np.maximum(delta.std(axis=0), 1e-5)
+    action_scale = np.maximum(
+        np.abs(delta - delta_mean).max(axis=0) * 1.05,
+        delta_std,
+    )
     policy_step = np.concatenate(policy_steps).astype(np.float32)
     return {
         "qpos_mean": qpos.mean(axis=0),
         "qpos_std": np.maximum(qpos.std(axis=0), 1e-4),
-        "delta_mean": delta.mean(axis=0),
-        "delta_std": np.maximum(delta.std(axis=0), 1e-5),
+        "delta_mean": delta_mean,
+        "delta_std": delta_std,
+        "action_scale": np.maximum(action_scale, 1e-5),
         "joint_min": action.min(axis=0),
         "joint_max": action.max(axis=0),
         "policy_step_scale": np.array(

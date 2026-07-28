@@ -99,12 +99,15 @@ class BaseTaskCfg(DirectRLEnvCfg):
 
     # Video Save Config.
     save_pre_move = False
+    skip_pre_move = False
     tactile_video_key = "rgb_marker"
 
     # Reset warmup steps. Keep defaults identical to the original hard-coded loops.
     reset_first_frame_steps = 5
     reset_after_actor_steps = 20
     reset_final_steps = 5
+    xense_marker_reference_max_settle_steps = 180
+    xense_marker_reference_stable_steps = 8
     eval_start_delay_steps = 20
 
     decimation = 1
@@ -221,6 +224,8 @@ class BaseTaskCfg(DirectRLEnvCfg):
     xense_pour_release_snap_steps: int = 12
     xense_pour_release_snap_cycles: int = 4
     xense_pour_fix_cup_during_release: bool = False
+    xense_pour_release_retract_x: float = 0.0
+    xense_pour_release_carry_y: float = 0.0
     xense_drawer_close_percent: float = 0.0
     xense_gear_close_percent: float = 0.0
     xense_half_cylinder_grasp_height_bias: float = 0.0
@@ -308,6 +313,15 @@ class BaseTaskCfg(DirectRLEnvCfg):
 class BaseTask(UipcRLEnv):
     cfg: BaseTaskCfg
 
+    PHASE_PRE_MOVE = 0
+    PHASE_POLICY = 1
+    PHASE_TERMINAL = 2
+    PHASE_NAMES = {
+        PHASE_PRE_MOVE: 'pre_move',
+        PHASE_POLICY: 'policy',
+        PHASE_TERMINAL: 'terminal',
+    }
+
     def __init__(self, cfg: BaseTaskCfg, mode:Literal['collect', 'eval'] = 'collect', render_mode=None, **kwargs):
         cfg = self.load_robot_and_sensors(cfg)
         
@@ -334,11 +348,18 @@ class BaseTask(UipcRLEnv):
         self.take_action_cnt = 0
         self.plan_success = True
         self.eval_success = False
-        self.in_pre_move = False
+        self.phase_id = self.PHASE_PRE_MOVE
+        self.in_pre_move = True
         self.policy_start_step = None
         self.policy_start_saved_index = None
+        self.policy_step_count = 0
+        self.terminal_reason = None
         self.last_saved_phase_id = None
-        self.phase_saved_counts = {0: 0, 1: 0}
+        self.phase_saved_counts = {
+            self.PHASE_PRE_MOVE: 0,
+            self.PHASE_POLICY: 0,
+            self.PHASE_TERMINAL: 0,
+        }
         self.last_qpos = None
         self.keep_still_times = 0
         self.atom_tag = ''
@@ -441,6 +462,33 @@ class BaseTask(UipcRLEnv):
     def pre_move(self):
         pass
 
+    def build_instruction(self) -> str:
+        """Build an instruction after episode randomization has selected its goal."""
+        return str(getattr(sys.modules[self.__class__.__module__], 'TASK_INSTRUCTION', ''))
+
+    def set_instruction(self, instruction: str | None):
+        self.instruction = '' if instruction is None else str(instruction)
+        if self.instruction:
+            self.metadata['instruction'] = self.instruction
+        else:
+            self.metadata.pop('instruction', None)
+
+    def get_episode_context(self) -> dict[str, Any]:
+        """Return optional task context without forcing text into every observation."""
+        return {
+            'instruction': self.instruction,
+            'task': Path(sys.modules[self.__class__.__module__].__file__).stem,
+            'seed': int(self.cfg.seed),
+        }
+
+    def _set_phase(self, phase_id: int, terminal_reason: str | None = None):
+        if phase_id not in self.PHASE_NAMES:
+            raise ValueError(f'Unknown task phase id: {phase_id}')
+        self.phase_id = int(phase_id)
+        self.in_pre_move = self.phase_id == self.PHASE_PRE_MOVE
+        if self.phase_id == self.PHASE_TERMINAL:
+            self.terminal_reason = terminal_reason or self.terminal_reason or 'terminal'
+
     def create_actors(self):
         pass
 
@@ -486,10 +534,10 @@ class BaseTask(UipcRLEnv):
 
         if self.cfg.video_frequency > 0:
             self.video_handler.reset(self.save_video_path, self.cfg.video_size)
-        if instructions is not None:
-            self.instruction = self.rng.choice(instructions)
-        
-        self.in_pre_move = True
+        self._set_phase(self.PHASE_PRE_MOVE)
+        # Marker motion is relative to the post-reset FEM reference. Do not
+        # persist settling frames captured before that reference exists.
+        save_reset_steps = False
         if self.first_frame is None:
             reset_test_start = time.perf_counter()
             for _ in range(int(getattr(self.cfg, 'reset_first_frame_steps', 5))):
@@ -512,21 +560,25 @@ class BaseTask(UipcRLEnv):
 
             reset_test_start = time.perf_counter()
             for _ in range(int(getattr(self.cfg, 'reset_after_actor_steps', 20))):
-                self._step(is_save=self.save_pre_move)
+                self._step(is_save=save_reset_steps)
                 reset_test_cost = time.perf_counter() - reset_test_start
                 if reset_test_cost > self.cfg.reset_time_limit:
                     raise RuntimeError(
                         f'Timeout: reset exceed time limit of {self.cfg.reset_time_limit} s, cost {reset_test_cost} s.'
                     )
             self._update_render()
-            self._actor_manager.remove_animate()
-            # Likewise, release reset constraints before the final settling
-            # steps instead of leaving every actor constrained for the loop.
-            self._actor_manager.update(dt=0.0)
+            # Keep task-authored constraints through pre_move. Tasks release
+            # each target explicitly when physical interaction should begin.
+
+        if instructions is not None:
+            self.set_instruction(self.rng.choice(instructions))
+        else:
+            self.set_instruction(self.build_instruction())
+        self.metadata['episode_context'] = self.get_episode_context()
         
         reset_test_start = time.perf_counter()
         for _ in range(int(getattr(self.cfg, 'reset_final_steps', 5))):
-            self._step(is_save=self.save_pre_move)
+            self._step(is_save=save_reset_steps)
             reset_test_cost = time.perf_counter() - reset_test_start
             if reset_test_cost > self.cfg.reset_time_limit:
                 raise RuntimeError(
@@ -534,15 +586,77 @@ class BaseTask(UipcRLEnv):
                 )
         self._update_render()
 
-        if str(self.cfg.tactile_sensor_type).startswith('xense'):
+        is_xsense = str(self.cfg.tactile_sensor_type).startswith('xense')
+        marker_reference_settle_steps = 0
+        if is_xsense:
+            max_settle_steps = max(
+                0,
+                int(getattr(self.cfg, 'xense_marker_reference_max_settle_steps', 180)),
+            )
+            required_stable_steps = max(
+                1,
+                int(getattr(self.cfg, 'xense_marker_reference_stable_steps', 8)),
+            )
+            marker_reference_stable_steps = 0
+            marker_reference_reset_result = {
+                name: False for name in self._tactile_manager.tactiles
+            }
+            while marker_reference_settle_steps <= max_settle_steps:
+                marker_reference_reset_result = (
+                    self._tactile_manager.reset_marker_reference()
+                )
+                if all(marker_reference_reset_result.values()):
+                    marker_reference_stable_steps += 1
+                else:
+                    marker_reference_stable_steps = 0
+                if marker_reference_stable_steps >= required_stable_steps:
+                    break
+                if marker_reference_settle_steps >= max_settle_steps:
+                    break
+                self._step(is_save=False)
+                self._update_render()
+                marker_reference_settle_steps += 1
+            if marker_reference_stable_steps < required_stable_steps:
+                raise RuntimeError(
+                    'XSense FEM attachments did not settle into a stable Marker '
+                    f'reference within {max_settle_steps} simulation steps: '
+                    f'{marker_reference_reset_result}, consecutive_valid='
+                    f'{marker_reference_stable_steps}/{required_stable_steps}'
+                )
             self.metadata['xense_marker_reference_reset_result'] = (
-                self._tactile_manager.reset_marker_reference()
+                marker_reference_reset_result
             )
             self.metadata['xense_marker_reference_reset_step'] = int(self.step_count)
+            self.metadata['xense_marker_reference_settle_steps'] = int(
+                marker_reference_settle_steps
+            )
+            self.metadata['xense_marker_reference_stable_steps'] = int(
+                marker_reference_stable_steps
+            )
+            self.metadata['xense_marker_reference_required_stable_steps'] = int(
+                required_stable_steps
+            )
+        else:
+            marker_reference_reset_result = self._tactile_manager.reset_marker_reference()
+            self.metadata['marker_reference_reset_result'] = marker_reference_reset_result
+            self.metadata['marker_reference_reset_step'] = int(self.step_count)
 
-        self.pre_move()
-        self.in_pre_move = False
-        self.policy_start_step = int(self.step_count)
+        run_pre_move = not bool(getattr(self.cfg, 'skip_pre_move', False))
+        if options is not None and 'run_pre_move' in options:
+            run_pre_move = bool(options['run_pre_move'])
+        if run_pre_move:
+            self.pre_move()
+
+        # A short preparation phase can fall entirely between periodic save
+        # steps. Preserve one real handoff observation so every episode keeps
+        # an explicit pre_move -> policy boundary for BC/RL consumers.
+        if (
+            self.mode == 'collect'
+            and self.save_pre_move
+            and self.phase_saved_counts[self.PHASE_PRE_MOVE] == 0
+        ):
+            self._update_render()
+            self.save_observations(self._get_observations())
 
         # update render to avoid artifacts
         for _ in range(5):
@@ -553,12 +667,28 @@ class BaseTask(UipcRLEnv):
             if eval_start_delay_steps > 0:
                 self.delay(eval_start_delay_steps)
 
+        # The policy boundary starts only after all scripted preparation and
+        # evaluation warm-up steps have completed.
+        self._set_phase(self.PHASE_POLICY)
+        self.policy_start_step = int(self.step_count)
+        self.policy_step_count = 0
+
         # ToBeCheck.
         if not self.save_pre_move:
             self.atom_id = 0
             self.atom_tag = ''
 
-        return ret
+        handoff_obs = self._get_observations()
+        handoff_info = {
+            'phase': self.PHASE_NAMES[self.phase_id],
+            'policy_start_sim_step': int(self.policy_start_step),
+            'episode_context': self.get_episode_context(),
+        }
+        if isinstance(ret, tuple) and len(ret) == 2:
+            if isinstance(ret[1], dict):
+                handoff_info = {**ret[1], **handoff_info}
+            return handoff_obs, handoff_info
+        return handoff_obs
 
     # def _reset_actors(self):
     #     pass
@@ -587,8 +717,15 @@ class BaseTask(UipcRLEnv):
         self.keep_still_times = 0
         self.policy_start_step = None
         self.policy_start_saved_index = None
+        self.policy_step_count = 0
+        self.terminal_reason = None
+        self._set_phase(self.PHASE_PRE_MOVE)
         self.last_saved_phase_id = None
-        self.phase_saved_counts = {0: 0, 1: 0}
+        self.phase_saved_counts = {
+            self.PHASE_PRE_MOVE: 0,
+            self.PHASE_POLICY: 0,
+            self.PHASE_TERMINAL: 0,
+        }
         self.metadata = {}
         self.log = ''
 
@@ -834,14 +971,12 @@ class BaseTask(UipcRLEnv):
     def play_once(self):
         ret = self._play_once()
         if ret is not None:
-            self.metadata.update()
+            self.metadata.update(ret)
         self._save_metadata()
 
     def _get_observations(self):
-        phase_id = 0 if self.in_pre_move else 1
-        policy_step = -1
-        if phase_id == 1 and self.policy_start_step is not None:
-            policy_step = int(self.step_count - self.policy_start_step)
+        phase_id = int(self.phase_id)
+        policy_step = int(self.policy_step_count) if phase_id != self.PHASE_PRE_MOVE else -1
         obs = {
             'observation': {},
             'embodiment': {},
@@ -854,7 +989,8 @@ class BaseTask(UipcRLEnv):
             },
             'phase': {
                 'id': phase_id,
-                'name': 'pre_move' if phase_id == 0 else 'action',
+                'name': self.PHASE_NAMES[phase_id],
+                'sim_step': int(self.step_count),
                 'policy_step': policy_step,
                 'is_boundary': int(self.last_saved_phase_id != phase_id),
             }
@@ -889,18 +1025,35 @@ class BaseTask(UipcRLEnv):
         HDF5Handler().pkls_to_hdf5(self.tmp_save_dir, self.save_path)
         with h5py.File(self.save_path, 'a') as hdf5_file:
             phase_group = hdf5_file.require_group('phase')
-            phase_group.attrs['schema_version'] = 1
-            phase_group.attrs['pre_move_id'] = 0
-            phase_group.attrs['action_id'] = 1
+            phase_group.attrs['schema_version'] = 2
+            phase_group.attrs['pre_move_id'] = self.PHASE_PRE_MOVE
+            phase_group.attrs['policy_id'] = self.PHASE_POLICY
+            phase_group.attrs['action_id'] = self.PHASE_POLICY
+            phase_group.attrs['terminal_id'] = self.PHASE_TERMINAL
             phase_group.attrs['policy_start_sim_step'] = int(self.policy_start_step or 0)
             phase_group.attrs['policy_start_saved_index'] = int(
                 self.policy_start_saved_index
                 if self.policy_start_saved_index is not None
                 else -1
             )
-            phase_group.attrs['pre_move_saved_frames'] = int(self.phase_saved_counts[0])
-            phase_group.attrs['action_saved_frames'] = int(self.phase_saved_counts[1])
+            phase_group.attrs['pre_move_saved_frames'] = int(
+                self.phase_saved_counts[self.PHASE_PRE_MOVE]
+            )
+            phase_group.attrs['policy_saved_frames'] = int(
+                self.phase_saved_counts[self.PHASE_POLICY]
+            )
+            phase_group.attrs['action_saved_frames'] = int(
+                self.phase_saved_counts[self.PHASE_POLICY]
+            )
+            phase_group.attrs['terminal_saved_frames'] = int(
+                self.phase_saved_counts[self.PHASE_TERMINAL]
+            )
             phase_group.attrs['save_frequency'] = int(self.cfg.save_frequency)
+            phase_group.attrs['terminal_reason'] = self.terminal_reason or ''
+            hdf5_file.attrs['instruction'] = self.instruction
+            hdf5_file.attrs['episode_context_json'] = json.dumps(
+                self.get_episode_context(), ensure_ascii=False
+            )
         if 'vertex_force' in self.cfg.obs_data_type.get('tactile', []):
             try:
                 self._tactile_manager.dump_force_field_meta(self.save_root)
@@ -1032,7 +1185,7 @@ class BaseTask(UipcRLEnv):
                     self.logger.error(f'Gripper motion planning failed on action {idx}: {action.__str__()}')
                     self.plan_success = False
                     return False
-            
+
             self.take_dense_action(control_seq, is_save)
             if delay:
                 self.delay(10, is_save)
@@ -1355,6 +1508,10 @@ class BaseTask(UipcRLEnv):
         force: bool = True,
         action_repeat: int = 1,
     ):
+        if self.phase_id == self.PHASE_TERMINAL:
+            raise RuntimeError('env_step() called after the episode reached TERMINAL')
+        if self.phase_id != self.PHASE_POLICY:
+            raise RuntimeError('env_step() is only valid after the POLICY handoff')
         if action_repeat < 1:
             raise ValueError('action_repeat must be at least 1')
         previous_metrics = self.get_rl_metrics()
@@ -1397,6 +1554,19 @@ class BaseTask(UipcRLEnv):
             or rl_early_stop
             or task_early_stop
         )
+        self.policy_step_count += 1
+        if terminated:
+            self._set_phase(self.PHASE_TERMINAL, terminal_reason='success')
+        elif truncated:
+            if not exec_success:
+                terminal_reason = 'execution_failure'
+            elif self.take_action_cnt >= self.cfg.step_lim:
+                terminal_reason = 'step_limit'
+            elif rl_early_stop:
+                terminal_reason = 'rl_early_stop'
+            else:
+                terminal_reason = 'task_early_stop'
+            self._set_phase(self.PHASE_TERMINAL, terminal_reason=terminal_reason)
         observation = self._get_observations()
         info = {
             'exec_success': bool(exec_success),

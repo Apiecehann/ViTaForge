@@ -46,5 +46,9 @@ def create_task(
         env_config.adaptive_grasp_depth_threshold = float(
             source["adaptive_grasp_depth_threshold"]
         )
+    if "block_base_pose_indices" in source:
+        env_config.block_base_pose_indices = tuple(
+            int(index) for index in source["block_base_pose_indices"]
+        )
     env_config.scene.num_envs = 1
     return task_module.Task(env_config, mode=mode)

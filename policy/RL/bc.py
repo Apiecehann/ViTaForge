@@ -40,27 +40,43 @@ class MultiModalBC(nn.Module):
         features = self.encoder(self.normalized_observation(observation))
         return self.action_head(features)
 
+    def forward_policy_action(self, observation):
+        raw_action = self.forward_normalized(observation)
+        if hasattr(self, "action_scale"):
+            return torch.tanh(raw_action)
+        return raw_action
+
     def forward(self, observation):
-        normalized_delta = self.forward_normalized(observation)
-        delta = normalized_delta * self.delta_std + self.delta_mean
+        policy_action = self.forward_policy_action(observation)
+        if hasattr(self, "action_scale"):
+            delta = policy_action * self.action_scale + self.delta_mean
+        else:
+            delta = policy_action * self.delta_std + self.delta_mean
         return observation["qpos"].float() + delta
 
     def checkpoint(self, metadata=None):
+        statistic_names = [
+            "qpos_mean",
+            "qpos_std",
+            "delta_mean",
+            "delta_std",
+            "joint_min",
+            "joint_max",
+            "policy_step_scale",
+        ]
+        if hasattr(self, "action_scale"):
+            statistic_names.append("action_scale")
         statistics = {
             name: getattr(self, name).detach().cpu().numpy()
-            for name in (
-                "qpos_mean",
-                "qpos_std",
-                "delta_mean",
-                "delta_std",
-                "joint_min",
-                "joint_max",
-                "policy_step_scale",
-            )
+            for name in statistic_names
         }
         return {
             "model_config": self.model_config,
-            "action_representation": "delta_qpos_v1",
+            "action_representation": (
+                "bounded_delta_qpos_v2"
+                if hasattr(self, "action_scale")
+                else "delta_qpos_v1"
+            ),
             "statistics": statistics,
             "model_state": self.state_dict(),
             "metadata": metadata or {},
@@ -69,10 +85,18 @@ class MultiModalBC(nn.Module):
 
 def load_bc_checkpoint(checkpoint_path, device="cpu"):
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    load_config = dict(checkpoint["model_config"])
+    load_config.update(
+        visual_pretrained=False,
+        tactile_pretrained=False,
+        visual_checkpoint=None,
+        tactile_checkpoint=None,
+    )
     model = MultiModalBC(
-        checkpoint["model_config"],
+        load_config,
         checkpoint["statistics"],
     )
+    model.model_config = dict(checkpoint["model_config"])
     model.load_state_dict(checkpoint["model_state"])
     model.to(device)
     model.eval()

@@ -69,3 +69,14 @@ textures.zip
 **/*.hdf5
 **/*.mp4
 **/*.png
+
+# Local development, generated datasets, and experiment artifacts
+/.codex_*/
+/_diagnostics/
+/data_*/
+/exports/
+/visualizations/
+/policy/RL/runs/
+*.bak_*
+*.before.*
+*.pre_*

@@ -9,7 +9,7 @@ from gymnasium import spaces
 from .bc import load_bc_checkpoint
 
 
-class ResidualTactileEnv(gym.Env):
+class TactileControlEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(
@@ -21,6 +21,7 @@ class ResidualTactileEnv(gym.Env):
         action_repeat=2,
         control_gripper=False,
         force_control=False,
+        control_mode="residual",
         seed=0,
         device="cuda:0",
     ):
@@ -31,6 +32,9 @@ class ResidualTactileEnv(gym.Env):
         self.action_repeat = int(action_repeat)
         self.control_gripper = bool(control_gripper)
         self.force_control = bool(force_control)
+        if control_mode not in ("direct", "residual"):
+            raise ValueError(f"Unsupported control mode: {control_mode}")
+        self.control_mode = control_mode
         self.controlled_action_dim = 8 if self.control_gripper else 7
         self.next_seed = int(seed)
         self.device = torch.device(device)
@@ -38,6 +42,13 @@ class ResidualTactileEnv(gym.Env):
             bc_checkpoint,
             device=self.device,
         )
+        if self.control_mode == "direct" and not hasattr(
+            self.bc_model,
+            "action_scale",
+        ):
+            raise ValueError(
+                "Direct SFT control requires a bounded_delta_qpos_v2 checkpoint"
+            )
         config = self.bc_checkpoint["model_config"]
         self.camera_keys = list(config["camera_keys"])
         self.tactile_keys = list(config["tactile_keys"])
@@ -117,12 +128,21 @@ class ResidualTactileEnv(gym.Env):
             action = self.bc_model(batch)[0]
         return action.detach().cpu().numpy()
 
+    def sft_action(self, observation):
+        batch = {
+            key: torch.as_tensor(value, device=self.device).unsqueeze(0)
+            for key, value in observation.items()
+        }
+        with torch.no_grad():
+            action = self.bc_model.forward_policy_action(batch)[0]
+        return action[:self.controlled_action_dim].detach().cpu().numpy()
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         episode_seed = self.next_seed if seed is None else int(seed)
         self.next_seed = episode_seed + 1
         self.task.reset(seed=episode_seed)
-        self.policy_step = self.action_repeat
+        self.policy_step = 0
         self.gripper_hold_target = self.task._robot_manager.get_gripper_target_qpos()
         raw_observation = self.task._get_observations()
         self.last_observation = self.encode_observation(raw_observation)
@@ -133,21 +153,38 @@ class ResidualTactileEnv(gym.Env):
             "metrics": self.task.get_rl_metrics(),
         }
 
-    def step(self, residual_action):
-        residual_action = np.asarray(residual_action, dtype=np.float32)
-        bc_action = self._bc_action(self.last_observation)
-        bc_delta = bc_action - self.last_observation["qpos"]
-        delta_std = self.bc_model.delta_std.detach().cpu().numpy()
-        final_action = self.command_qpos.copy()
-        final_action[:self.controlled_action_dim] += bc_delta[:self.controlled_action_dim]
-        final_action[:self.controlled_action_dim] += (
-            self.residual_scale
-            * delta_std[:self.controlled_action_dim]
-            * residual_action
-        )
+    def step(self, policy_action):
+        policy_action = np.asarray(policy_action, dtype=np.float32)
+        bc_action = None
+        bc_delta = None
+        if self.control_mode == "direct":
+            delta_mean = self.bc_model.delta_mean.detach().cpu().numpy()
+            action_scale = self.bc_model.action_scale.detach().cpu().numpy()
+            direct_delta = delta_mean.copy()
+            direct_delta[:self.controlled_action_dim] += (
+                action_scale[:self.controlled_action_dim] * policy_action
+            )
+            final_action = self.last_observation["qpos"].copy()
+            final_action[:self.controlled_action_dim] += direct_delta[
+                :self.controlled_action_dim
+            ]
+            safety_margin = np.maximum(action_scale, 1e-4)
+        else:
+            bc_action = self._bc_action(self.last_observation)
+            bc_delta = bc_action - self.last_observation["qpos"]
+            delta_std = self.bc_model.delta_std.detach().cpu().numpy()
+            final_action = self.command_qpos.copy()
+            final_action[:self.controlled_action_dim] += bc_delta[
+                :self.controlled_action_dim
+            ]
+            final_action[:self.controlled_action_dim] += (
+                self.residual_scale
+                * delta_std[:self.controlled_action_dim]
+                * policy_action
+            )
+            safety_margin = np.maximum(delta_std, 1e-4)
         joint_min = self.bc_model.joint_min.detach().cpu().numpy()
         joint_max = self.bc_model.joint_max.detach().cpu().numpy()
-        safety_margin = np.maximum(delta_std, 1e-4)
         final_action = np.clip(
             final_action,
             joint_min - safety_margin,
@@ -168,7 +205,8 @@ class ResidualTactileEnv(gym.Env):
             {
                 "bc_action": bc_action,
                 "bc_delta": bc_delta,
-                "residual_action": residual_action,
+                "policy_action": policy_action,
+                "control_mode": self.control_mode,
                 "final_action": final_action,
                 "gripper_hold_target": self.gripper_hold_target,
             }
@@ -177,3 +215,6 @@ class ResidualTactileEnv(gym.Env):
 
     def close(self):
         self.task.close()
+
+
+ResidualTactileEnv = TactileControlEnv

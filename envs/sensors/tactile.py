@@ -291,6 +291,11 @@ def create_xensews_cfg(
             marker_motion_depth_ref_mm=XSENSE_MARKER_MOTION_DEPTH_REF_MM,
             marker_motion_depth_deadband_mm=XSENSE_MARKER_MOTION_DEPTH_DEADBAND_MM,
             marker_visual_bounds=XSENSE_MARKER_VISUAL_BOUNDS,
+            # Bind both XSense lattices to the camera optical x-axis. The
+            # runtime left gel surface is offset by about 1.1 mm, while the
+            # right surface is centered; surface-centering made the two FEM
+            # sampling frames asymmetric.
+            marker_binding_center_x_m=0.0,
             # XSense images are 400x700 portrait: width is the 16.42mm short axis,
             # height is the 27.84mm long axis.
             camera_to_surface=0.0280,
@@ -402,6 +407,22 @@ class VisualTactileSensor:
 
     def setup(self):
         self.device = self.uipc_sim.cfg.device
+        if not self._is_xsense_sensor():
+            init_pts = self.gelpad._data.nodal_pos_w[
+                self.attachment.attachment_points_idx
+            ].cpu().numpy()
+            init_world_trans = self.gelpad.init_world_transform.cpu().numpy()
+            self.origin_pts = (
+                init_pts - init_world_trans[:3, 3]
+            ) @ (init_world_trans[:3, :3].T).T
+            attach_pts = self.attachment.attachment_offsets
+            init_trans = estimate_rigid_transform(self.origin_pts, attach_pts)
+            self.attach_to_init = torch.tensor(
+                np.linalg.inv(init_trans), dtype=torch.float64, device=self.device
+            )
+            self.sensor.marker_motion_simulator.marker_motion_sim.init_vertices()
+            return
+
         attach_count = len(self.attachment.attachment_points_idx)
         self._debug_log(f"attachment_points={attach_count}")
         self._attachment_reference_offsets = np.array(
@@ -1031,6 +1052,10 @@ class VisualTactileSensor:
         return torch.as_tensor(out, dtype=torch.uint8, device=self.device)
     
     def _reset_idx(self):
+        if not self._is_xsense_sensor():
+            self.init_pose_mat = self.get_attach_pose().to_transformation_matrix()
+            return
+
         reference_points = self._get_gelpad_points_for_current_attachment()
         if reference_points is not None:
             restored = self._write_gelpad_vertices(reference_points)
@@ -1042,6 +1067,14 @@ class VisualTactileSensor:
             self._debug_log("reset gelpad vertices and attachment reference")
 
     def reset_reference(self):
+        if not self._is_xsense_sensor():
+            marker_simulator = getattr(self.sensor, "marker_motion_simulator", None)
+            marker_motion_sim = getattr(marker_simulator, "marker_motion_sim", None)
+            if marker_motion_sim is None:
+                return False
+            marker_motion_sim.init_vertices()
+            return True
+
         reference_points = self._get_gelpad_points_for_current_attachment()
         if reference_points is not None:
             self._write_gelpad_vertices(reference_points)
@@ -1059,7 +1092,11 @@ class VisualTactileSensor:
         if marker_motion_sim is None:
             return False
 
-        marker_motion_sim.init_vertices()
+        reference_updated = marker_motion_sim.init_vertices()
+        if reference_updated is False:
+            return False
+        if hasattr(marker_simulator, 'reset_reference'):
+            marker_simulator.reset_reference()
         marker_simulator.marker_data.zero_()
         output = self.sensor.data.output
         if 'marker_motion' in output:

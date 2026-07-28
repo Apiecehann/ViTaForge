@@ -75,6 +75,7 @@ class ManiSkillSimulator(GelSightSimulator):
             num_markers=self.cfg.marker_params.num_markers,
             camera_to_surface=self.cfg.camera_to_surface,
             real_size=self.cfg.real_size,
+            marker_binding_center_x_m=self.cfg.marker_binding_center_x_m,
         )
 
         self.marker_motion_sim._gen_marker_grid()
@@ -331,6 +332,11 @@ class ManiSkillSimulator(GelSightSimulator):
         self._xsense_depth_motion_baseline_mm = None
         self._xsense_marker_force_baseline = None
         # self.init_marker_pos = (self.marker_motion_sim.init_marker_x_pos, self.marker_motion_sim.init_marker_y_pos)
+
+    def reset_reference(self):
+        self._xsense_visual_contact_weight_baseline = None
+        self._xsense_depth_motion_baseline_mm = None
+        self._xsense_marker_force_baseline = None
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         """Creates an USD attribute for the sensor asset, which can visualize the tactile image.

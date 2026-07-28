@@ -1,0 +1,127 @@
+save_dir: ./data_xense_8tasks
+
+decimation: 1
+
+save_frequency: 2
+video_frequency: 2
+video_size: [1760, 700]
+reset_time_limit: 600
+# Heavy UIPC actor meshes only need one constrained step to initialize/reset.
+# The final unconstrained steps still settle the scene before pre-move.
+reset_first_frame_steps: 1
+reset_after_actor_steps: 1
+reset_final_steps: 5
+render_frequency: 0 # set to 1 to one IsaacSim App window
+
+random_texture: false # set to true to enable random texture
+
+use_seed: true
+episode_num: 1
+
+sensor_type: xensews
+
+observations:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true
+
+save_pre_move: true
+tactile_video_key: rgb_marker
+
+# Xense depth/contact diagnostics. Numeric thresholds are intentionally left
+# here for quick tuning without editing Python files.
+xense_use_baseline_filter: false
+xense_marker_reference_max_settle_steps: 180
+xense_marker_reference_stable_steps: 8
+use_adaptive_grasp: true
+adaptive_grasp_depth_threshold: 27.0
+# Xense adaptive close: close_percent is a maximum closure; tactile threshold can stop earlier.
+# Larger threshold -> lighter contact / less deformation.
+xense_adaptive_grasp_require_both_contacts: true
+xense_usb_adaptive_grasp_require_both_contacts: true
+xense_half_cylinder_adaptive_grasp_require_both_contacts: true
+xense_insert_half_cylinder_adaptive_grasp_require_both_contacts: true
+xense_cube_adaptive_grasp_require_both_contacts: true
+xense_cup_adaptive_grasp_require_both_contacts: false
+xense_pour_cup_adaptive_grasp_require_both_contacts: true
+xense_drawer_adaptive_grasp_require_both_contacts: true
+xense_gear_adaptive_grasp_require_both_contacts: true
+xense_adaptive_grasp_max_steps: 180
+xense_adaptive_grasp_tail_steps: 80
+xense_adaptive_grasp_check_interval: 2
+xense_adaptive_grasp_qpos_step: 0.010
+xense_adaptive_grasp_target_tolerance: 0.006
+xense_adaptive_grasp_min_target_margin: 0.0
+xense_adaptive_grasp_hold_margin: 0.012
+xense_adaptive_grasp_hold_velocity: 0.12
+xense_usb_post_close_settle_steps: 80
+xense_adaptive_grasp_min_steps_before_contact: 2
+xense_adaptive_grasp_min_travel: 0.0
+xense_usb_adaptive_grasp_depth_threshold: 27.0
+xense_half_cylinder_adaptive_grasp_depth_threshold: 25.8
+xense_insert_half_cylinder_adaptive_grasp_depth_threshold: 25.8
+xense_cube_adaptive_grasp_depth_threshold: 26.0
+xense_cup_adaptive_grasp_depth_threshold: 26.6
+xense_pour_cup_adaptive_grasp_depth_threshold: 26.6
+xense_drawer_adaptive_grasp_depth_threshold: 26.0
+xense_gear_adaptive_grasp_depth_threshold: 26.0
+xense_usb_close_percent: 0.10
+xense_half_cylinder_close_percent: 0.185
+xense_insert_half_cylinder_close_percent: 0.185
+xense_cube_close_percent: 0.30
+# Robotiq uses 1.0=open and 0.0=closed. Cups need a wider target than rigid objects.
+xense_cup_close_percent: 0.76
+xense_cup_min_principal_ratio: 0.90
+xense_cup_max_nonrigid_error: 0.08
+xense_pour_cup_close_percent: 0.86
+xense_pour_ball_friction_ratio: 0.05
+xense_pour_grip_friction_ratio: 4.0
+xense_pour_wrist_angle_deg: 150.0
+xense_pour_wrist_steps: 160
+xense_pour_wrist_translation_x: 0.0
+xense_pour_wrist_translation_y: -0.030
+xense_pour_wrist_translation_z: 0.0
+xense_pour_actor_tilt_deg: 0.0
+xense_pour_actor_tilt_axis_x: 1.0
+xense_pour_actor_tilt_axis_y: 0.0
+xense_pour_actor_tilt_axis_z: 0.0
+xense_pour_carry_segments: 8
+xense_pour_carry_settle_steps: 0
+xense_pour_hold_actor_during_carry: false
+xense_pour_target_y_offset: 0.035
+xense_pour_target_z_offset: 0.106
+xense_pour_release_lift: 0.0
+xense_pour_release_snap_angle_deg: 25.0
+xense_pour_release_snap_steps: 30
+xense_pour_release_snap_cycles: 1
+xense_pour_fix_cup_during_release: true
+xense_pour_release_retract_x: 0.0
+xense_pour_release_carry_y: 0.100
+xense_drawer_close_percent: 0.15
+xense_gear_close_percent: 0.30
+xense_half_cylinder_grasp_height_bias: 0.010
+xense_insert_half_cylinder_grasp_height_bias: 0.010
+xense_cube_grasp_height_bias: 0.008
+xense_cup_grasp_height_bias: -0.010
+xense_pour_cup_grasp_height_bias: -0.020
+xense_pour_cup_grasp_world_x_bias: 0.0
+xense_drawer_grasp_z_bias: 0.0
+# Keep the 27.84mm-tall Xense pads above the 10mm gear plate so that they
+# clamp the central boss instead of dragging against the teeth/base.
+xense_gear_grasp_height_bias: 0.015
+xense_half_cylinder_grasp_world_y_bias: 0.0
+xense_insert_half_cylinder_grasp_world_y_bias: 0.0
+xense_cube_grasp_world_y_bias: 0.0
+xense_initial_settle_steps: 1
+xense_half_cylinder_initial_settle_steps: 1
+xense_cup_initial_settle_steps: 1
+xense_pour_initial_settle_steps: 1
+xense_drawer_initial_settle_steps: 1
+xense_insert_half_cylinder_initial_settle_steps: 1
+xense_cube_initial_settle_steps: 1
+xense_gear_grasp_world_y_bias: 0.0
+xense_carry_time_dilation: 0.8
+xense_carry_segments: 6
+xense_carry_max_step: 0.04
+xense_post_close_settle_steps: 20
