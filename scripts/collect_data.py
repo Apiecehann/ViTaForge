@@ -24,7 +24,6 @@ parser.add_argument(
     "config",
     type=str,
     help="Config file name",
-    default="demo.yml"
 )
 parser.add_argument(
     "--episode_num",
@@ -202,8 +201,6 @@ def main():
             setattr(env_cfg, key, int(task_config[key]))
     if "video_size" in task_config:
         env_cfg.video_size = tuple(task_config["video_size"])
-    elif env_cfg.tactile_sensor_type in ("xensews", "xensews_robotiq"):
-        env_cfg.video_size = (1760, 700)
     env_cfg.obs_data_type = task_config.get("observations", {})
     if task_config.get("gel_particle", False):
         tactile_obs = env_cfg.obs_data_type.setdefault("tactile", [])
@@ -276,9 +273,7 @@ def main():
         "xense_adaptive_grasp_max_steps": int,
         "xense_adaptive_grasp_tail_steps": int,
         "xense_adaptive_grasp_check_interval": int,
-        "xense_adaptive_grasp_qpos_step": float,
         "xense_adaptive_grasp_target_tolerance": float,
-        "xense_adaptive_grasp_min_target_margin": float,
         "xense_adaptive_grasp_hold_margin": float,
         "xense_adaptive_grasp_hold_velocity": float,
         "xense_usb_post_close_settle_steps": int,

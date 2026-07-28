@@ -76,10 +76,6 @@ class TaskCfg(BaseTaskCfg):
         )
     ]
     step_lim = 2200
-    # Xense/UIPC reset is expensive; reduce reset-only warmup for tuning this task.
-    reset_first_frame_steps = 1
-    reset_after_actor_steps = 2
-    reset_final_steps = 1
 
 
 class Task(BaseTask):
@@ -91,12 +87,15 @@ class Task(BaseTask):
         # Keep the UIPC Newton solver at the GelSight/default quality. A tiny
         # diagnostic cap here makes gel contact under-converged and looks like an
         # unrealistically soft pad.
-        # Xense/UIPC can spend more than 120s in the first reset while building tactile state.
-        cfg.reset_time_limit = max(float(cfg.reset_time_limit), 300.0)
         # Keep adaptive grasp enabled for Xense depth/contact diagnostics. The
-        # threshold remains cfg-driven so it can be tuned from task_config.
+        # threshold is resolved from the shared Python sensor/task defaults.
         cfg.use_adaptive_grasp = getattr(cfg, "use_adaptive_grasp", True)
         super().__init__(cfg, mode, render_mode, **kwargs)
+
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        cfg.reset_time_limit = max(float(cfg.reset_time_limit), 300.0)
+        return cfg
 
     def _usb_pose_in_slot(self, slot_pose: Pose):
         # 给定插槽位姿，计算 USB 完成插入时应处于的目标位姿。

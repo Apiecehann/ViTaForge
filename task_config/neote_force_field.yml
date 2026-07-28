@@ -1,18 +1,23 @@
 save_dir: ./data
+
 decimation: 1
-episode_num: 1
-save_frequency: 10
+
+save_frequency: 2
 video_frequency: 2
 render_frequency: 0
-reset_time_limit: 180
+
 random_texture: false
+
 use_seed: true
+episode_num: 5
+
 sensor_type: neote
-force_field_grid: [64, 48]
-tactile_video_key: force_field_img
 
 observations:
   camera: ['rgb']
-  tactile: ['force_field_img']
+  tactile: ['rgb', 'force_field', 'force_field_img', 'depth', 'pose']
   embodiment: ['joint', 'ee']
   actor: true
+
+save_pre_move: true
+tactile_video_key: force_field_img

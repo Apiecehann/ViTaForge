@@ -74,6 +74,31 @@ from .sensors.camera import CameraManager, CameraCfg
 from .sensors.tactile import TactileManager, TactileCfg, create_tactile_cfg
 
 
+SENSOR_RUNTIME_DEFAULTS: dict[str, dict[str, Any]] = {
+    "gsmini": {
+        "video_size": (960, 320),
+        "reset_time_limit": 120.0,
+        "reset_first_frame_steps": 5,
+        "reset_after_actor_steps": 20,
+        "reset_final_steps": 5,
+    },
+    "neote": {
+        "video_size": (960, 320),
+        "reset_time_limit": 120.0,
+        "reset_first_frame_steps": 5,
+        "reset_after_actor_steps": 20,
+        "reset_final_steps": 5,
+    },
+    "xensews": {
+        "video_size": (1760, 700),
+        "reset_time_limit": 600.0,
+        "reset_first_frame_steps": 1,
+        "reset_after_actor_steps": 1,
+        "reset_final_steps": 5,
+    },
+}
+
+
 @configclass
 class BaseTaskCfg(DirectRLEnvCfg):
     logger_level = "error"
@@ -93,7 +118,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     save_frequency = 1
     video_frequency = 1
     render_frequency = 0
-    video_size = (960, 320)
+    video_size: tuple[int, int] | None = None
 
     ui_window_class_type = BaseEnvWindow
 
@@ -102,10 +127,10 @@ class BaseTaskCfg(DirectRLEnvCfg):
     skip_pre_move = False
     tactile_video_key = "rgb_marker"
 
-    # Reset warmup steps. Keep defaults identical to the original hard-coded loops.
-    reset_first_frame_steps = 5
-    reset_after_actor_steps = 20
-    reset_final_steps = 5
+    # Resolved from SENSOR_RUNTIME_DEFAULTS after selecting the tactile sensor.
+    reset_first_frame_steps: int | None = None
+    reset_after_actor_steps: int | None = None
+    reset_final_steps: int | None = None
     xense_marker_reference_max_settle_steps = 180
     xense_marker_reference_stable_steps = 8
     eval_start_delay_steps = 20
@@ -177,13 +202,13 @@ class BaseTaskCfg(DirectRLEnvCfg):
     # Optional per-task Xense adaptive thresholds.  If unset, each close uses
     # adaptive_grasp_depth_threshold.  Larger values stop earlier / press less.
     xense_usb_adaptive_grasp_depth_threshold: float | None = None
-    xense_half_cylinder_adaptive_grasp_depth_threshold: float | None = None
-    xense_insert_half_cylinder_adaptive_grasp_depth_threshold: float | None = None
-    xense_cube_adaptive_grasp_depth_threshold: float | None = None
-    xense_cup_adaptive_grasp_depth_threshold: float | None = None
-    xense_pour_cup_adaptive_grasp_depth_threshold: float | None = None
-    xense_drawer_adaptive_grasp_depth_threshold: float | None = None
-    xense_gear_adaptive_grasp_depth_threshold: float | None = None
+    xense_half_cylinder_adaptive_grasp_depth_threshold: float | None = 25.8
+    xense_insert_half_cylinder_adaptive_grasp_depth_threshold: float | None = 25.8
+    xense_cube_adaptive_grasp_depth_threshold: float | None = 26.0
+    xense_cup_adaptive_grasp_depth_threshold: float | None = 26.6
+    xense_pour_cup_adaptive_grasp_depth_threshold: float | None = 26.6
+    xense_drawer_adaptive_grasp_depth_threshold: float | None = 26.0
+    xense_gear_adaptive_grasp_depth_threshold: float | None = 26.0
     # Optional per-task Xense contact stop policies.  If unset, each close uses
     # xense_adaptive_grasp_require_both_contacts.  Rigid/centered grasps usually
     # benefit from both pads contacting; soft cups often need an earlier any-pad stop.
@@ -191,58 +216,68 @@ class BaseTaskCfg(DirectRLEnvCfg):
     xense_half_cylinder_adaptive_grasp_require_both_contacts: bool | None = None
     xense_insert_half_cylinder_adaptive_grasp_require_both_contacts: bool | None = None
     xense_cube_adaptive_grasp_require_both_contacts: bool | None = None
-    xense_cup_adaptive_grasp_require_both_contacts: bool | None = None
+    xense_cup_adaptive_grasp_require_both_contacts: bool | None = False
     xense_pour_cup_adaptive_grasp_require_both_contacts: bool | None = None
     xense_drawer_adaptive_grasp_require_both_contacts: bool | None = None
     xense_gear_adaptive_grasp_require_both_contacts: bool | None = None
     # Xense-specific grasp tuning. These are ignored by GelSight/Neote branches.
-    xense_usb_close_percent: float = 0.185
-    xense_half_cylinder_close_percent: float = 0.0
-    xense_insert_half_cylinder_close_percent: float = 0.0
-    xense_cube_close_percent: float = 0.0
-    xense_cup_close_percent: float = 0.0
-    xense_pour_cup_close_percent: float = 0.0
+    xense_usb_close_percent: float = 0.10
+    xense_half_cylinder_close_percent: float = 0.185
+    xense_insert_half_cylinder_close_percent: float = 0.185
+    xense_cube_close_percent: float = 0.30
+    xense_cup_close_percent: float = 0.76
+    xense_cup_min_principal_ratio: float = 0.90
+    xense_cup_max_nonrigid_error: float = 0.08
+    xense_pour_cup_close_percent: float = 0.86
     xense_pour_ball_friction_ratio: float = 0.05
-    xense_pour_grip_friction_ratio: float = 3.0
-    xense_pour_wrist_angle_deg: float = 180.0
+    xense_pour_grip_friction_ratio: float = 4.0
+    xense_pour_wrist_angle_deg: float = 150.0
     xense_pour_wrist_steps: int = 160
     xense_pour_wrist_translation_x: float = 0.0
-    xense_pour_wrist_translation_y: float = 0.0
+    xense_pour_wrist_translation_y: float = -0.030
     xense_pour_wrist_translation_z: float = 0.0
     xense_pour_actor_tilt_deg: float = 0.0
     xense_pour_actor_tilt_axis_x: float = 1.0
     xense_pour_actor_tilt_axis_y: float = 0.0
     xense_pour_actor_tilt_axis_z: float = 0.0
-    xense_pour_carry_segments: int = 6
-    xense_pour_carry_settle_steps: int = 5
+    xense_pour_carry_segments: int = 8
+    xense_pour_carry_settle_steps: int = 0
     xense_pour_hold_actor_during_carry: bool = False
-    xense_pour_target_y_offset: float = 0.020
-    xense_pour_target_z_offset: float = 0.120
-    xense_pour_cup_grasp_height_bias: float = 0.0
-    xense_pour_release_lift: float = 0.04
-    xense_pour_release_snap_angle_deg: float = 35.0
-    xense_pour_release_snap_steps: int = 12
-    xense_pour_release_snap_cycles: int = 4
-    xense_pour_fix_cup_during_release: bool = False
+    xense_pour_target_y_offset: float = 0.035
+    xense_pour_target_z_offset: float = 0.106
+    xense_pour_cup_grasp_height_bias: float = -0.020
+    xense_pour_release_lift: float = 0.0
+    xense_pour_release_snap_angle_deg: float = 25.0
+    xense_pour_release_snap_steps: int = 30
+    xense_pour_release_snap_cycles: int = 1
+    xense_pour_fix_cup_during_release: bool = True
     xense_pour_release_retract_x: float = 0.0
-    xense_pour_release_carry_y: float = 0.0
-    xense_drawer_close_percent: float = 0.0
-    xense_gear_close_percent: float = 0.0
-    xense_half_cylinder_grasp_height_bias: float = 0.0
-    xense_insert_half_cylinder_grasp_height_bias: float = 0.0
-    xense_cube_grasp_height_bias: float = 0.0
-    xense_cup_grasp_height_bias: float = 0.0
-    xense_pour_cup_grasp_world_x_bias: float = 0.01
+    xense_pour_release_carry_y: float = 0.100
+    xense_drawer_close_percent: float = 0.15
+    xense_gear_close_percent: float = 0.30
+    xense_half_cylinder_grasp_height_bias: float = 0.010
+    xense_insert_half_cylinder_grasp_height_bias: float = 0.010
+    xense_cube_grasp_height_bias: float = 0.008
+    xense_cup_grasp_height_bias: float = -0.010
+    xense_pour_cup_grasp_world_x_bias: float = 0.0
     xense_drawer_grasp_z_bias: float = 0.0
-    xense_gear_grasp_height_bias: float = 0.0
+    xense_gear_grasp_height_bias: float = 0.015
     xense_half_cylinder_grasp_world_y_bias: float = 0.0
     xense_insert_half_cylinder_grasp_world_y_bias: float = 0.0
     xense_cube_grasp_world_y_bias: float = 0.0
     xense_gear_grasp_world_y_bias: float = 0.0
-    xense_carry_time_dilation: float = 0.5
-    xense_carry_segments: int = 4
+    xense_initial_settle_steps: int = 1
+    xense_half_cylinder_initial_settle_steps: int = 1
+    xense_cup_initial_settle_steps: int = 1
+    xense_pour_initial_settle_steps: int = 1
+    xense_drawer_initial_settle_steps: int = 1
+    xense_insert_half_cylinder_initial_settle_steps: int = 1
+    xense_cube_initial_settle_steps: int = 1
+    xense_carry_time_dilation: float = 0.8
+    xense_carry_segments: int = 6
     xense_carry_max_step: float = 0.04
-    xense_post_close_settle_steps: int = 80
+    xense_post_close_settle_steps: int = 20
+    xense_usb_post_close_settle_steps: int = 80
     xense_adaptive_grasp_max_steps: int = 180
     # Extra Robotiq tracking steps after the nominal plan_gripper path.
     # Xense/Robotiq physical qpos lags the commanded target, so contact often
@@ -251,21 +286,17 @@ class BaseTaskCfg(DirectRLEnvCfg):
     # post-close squeezing.
     xense_adaptive_grasp_tail_steps: int = 80
     xense_adaptive_grasp_check_interval: int = 2
-    xense_adaptive_grasp_qpos_step: float = 0.006
     xense_adaptive_grasp_target_tolerance: float = 0.006
-    # Legacy name kept for old configs; the Xense implementation no longer
-    # waits until the hard close target before allowing tactile stop.
-    xense_adaptive_grasp_min_target_margin: float = 0.0
     # Robotiq needs a tiny sustained closing command after tactile stop;
     # otherwise the physical finger joint can relax and drop the object even
     # though contact was detected.  The hold target is capped by the requested
     # close qpos, so the per-task close_percent remains the hard maximum.
-    xense_adaptive_grasp_hold_margin: float = 0.0
-    xense_adaptive_grasp_hold_velocity: float = 0.0
+    xense_adaptive_grasp_hold_margin: float = 0.012
+    xense_adaptive_grasp_hold_velocity: float = 0.12
     xense_adaptive_grasp_min_steps_before_contact: int = 2
     xense_adaptive_grasp_min_travel: float = 0.0
-    xense_adaptive_grasp_require_both_contacts: bool = False
-    reset_time_limit: float = 120.0  # in seconds
+    xense_adaptive_grasp_require_both_contacts: bool = True
+    reset_time_limit: float | None = None  # in seconds
 
     cameras: list[CameraCfg] = [
         CameraCfg(
@@ -388,6 +419,11 @@ class BaseTask(UipcRLEnv):
             cfg.robot = create_franka_xensews_gripper(data_type=data_type)
         else:
             raise ValueError(f'Unknown tactile sensor type: {cfg.tactile_sensor_type}')
+
+        runtime_defaults = SENSOR_RUNTIME_DEFAULTS[cfg.tactile_sensor_type]
+        for key, value in runtime_defaults.items():
+            if getattr(cfg, key, None) is None:
+                setattr(cfg, key, value)
         
         if cfg.adaptive_grasp_depth_threshold is None:
             cfg.adaptive_grasp_depth_threshold = cfg.robot.adaptive_grasp_depth_threshold
@@ -1712,7 +1748,6 @@ class BaseTask(UipcRLEnv):
         tail_steps = max(0, int(getattr(self.cfg, "xense_adaptive_grasp_tail_steps", 80)))
         check_interval = max(1, int(getattr(self.cfg, "xense_adaptive_grasp_check_interval", 2)))
         target_tolerance = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_target_tolerance", 0.006)))
-        legacy_min_target_margin = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_min_target_margin", 0.0)))
         hold_margin = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_hold_margin", 0.0)))
         hold_velocity = max(0.0, float(getattr(self.cfg, "xense_adaptive_grasp_hold_velocity", 0.0)))
         min_steps_before_contact = max(0, int(getattr(self.cfg, "xense_adaptive_grasp_min_steps_before_contact", 2)))
@@ -1884,7 +1919,6 @@ class BaseTask(UipcRLEnv):
             'last_depth': last_depth,
             'last_contact_mask': last_contact_mask,
             'target_tolerance': float(target_tolerance),
-            'legacy_min_target_margin': float(legacy_min_target_margin),
             'hold_margin': float(hold_margin),
             'hold_velocity': float(hold_velocity),
             'min_steps_before_contact': int(min_steps_before_contact),

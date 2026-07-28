@@ -92,8 +92,6 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
             env_cfg.reset_time_limit = float(task_config["reset_time_limit"])
         if "video_size" in task_config:
             env_cfg.video_size = tuple(task_config["video_size"])
-        elif env_cfg.tactile_sensor_type in ("xensews", "xensews_robotiq"):
-            env_cfg.video_size = (1760, 700)
         env_cfg.random_texture = task_config.get("random_texture", False)
         env_cfg.save_pre_move = task_config.get("save_pre_move", getattr(env_cfg, "save_pre_move", False))
         env_cfg.tactile_video_key = task_config.get("tactile_video_key", env_cfg.tactile_video_key)
@@ -159,9 +157,7 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
         "xense_adaptive_grasp_max_steps": int,
         "xense_adaptive_grasp_tail_steps": int,
         "xense_adaptive_grasp_check_interval": int,
-            "xense_adaptive_grasp_qpos_step": float,
             "xense_adaptive_grasp_target_tolerance": float,
-            "xense_adaptive_grasp_min_target_margin": float,
             "xense_adaptive_grasp_hold_margin": float,
             "xense_adaptive_grasp_hold_velocity": float,
             "xense_usb_post_close_settle_steps": int,

@@ -102,12 +102,13 @@ class Task(BaseTask):
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
         if cfg.tactile_sensor_type == "xensews":
-            cfg.reset_time_limit = max(float(cfg.reset_time_limit), 300.0)
             cfg.step_lim = max(int(getattr(cfg, "step_lim", 300)), 1200)
         super().__init__(cfg, mode, render_mode, **kwargs)
 
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
         cfg = super().load_robot_and_sensors(cfg)
+        if cfg.tactile_sensor_type == "xensews":
+            cfg.reset_time_limit = max(float(cfg.reset_time_limit), 300.0)
         cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
         return cfg
 

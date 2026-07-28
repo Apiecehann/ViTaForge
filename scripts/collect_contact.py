@@ -24,7 +24,6 @@ parser.add_argument(
     "config",
     type=str,
     help="Config file name",
-    default="contact.yml"
 )
 AppLauncher.add_app_launcher_args(parser)
 

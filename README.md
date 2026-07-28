@@ -1,268 +1,395 @@
 <h1 align="center">ViTaForge</h1>
 
 <p align="center">
-  A unified visuo-tactile manipulation workspace for GelSight, Xense, and
-  Neote sensors, diverse demonstration collection, policy training, and
-  simulation inference.
+  A unified simulation, data-generation, learning, and evaluation workspace for
+  visuo-tactile robot manipulation.
 </p>
 
-ViTaForge provides a common workflow for three tactile sensor families:
+ViTaForge provides one task interface across three tactile sensor families:
+GelSight, Xense, and Neote. The same task can be paired with different tactile
+representations while preserving a common HDF5 layout, policy interface, and
+rollout workflow.
 
-| Sensor | `sensor_type` | Ready-to-use config | Tactile observations |
+| Sensor | `sensor_type` | Export configuration | Primary tactile representation |
 |---|---|---|---|
-| GelSight | `gsmini` | `task_config/gelsight.yml` | RGB, marker RGB, marker, depth, pose |
-| Xense | `xensews` | `task_config/xense.yml`, `task_config/xense_8tasks.yml` | RGB, marker RGB, marker, depth, pose |
-| Neote | `neote` | `task_config/neote.yml` | RGB, marker RGB, marker, depth, pose, vertex force, force field, gel particles |
+| GelSight | `gsmini` | `task_config/gelsight.yml` | RGB, marker RGB, marker motion, depth, pose |
+| Xense | `xensews` | `task_config/xense.yml` | RGB, marker RGB, marker motion, depth, pose |
+| Neote | `neote` | `task_config/neote.yml`, `task_config/neote_force_field.yml` | Gel-particle or dense force-field exports |
 
-The same task interface and HDF5 data layout are used across sensor types, so
-sensor selection, observation modalities, collection diversity, training, and
-evaluation can all be controlled through configuration files.
+The two Neote YAML files select different exports from the same Neote sensor;
+they are not separate sensors. Neote's conventional RGB/marker observations
+remain available in the sensor implementation, but the supplied configurations
+focus on its two distinctive representations: gel particles and force fields.
 
 ## Installation
 
-Requirements are Linux, an NVIDIA GPU with a compatible driver, Conda, and
-Git. The all-in-one installer creates the `UniVTAC` Conda environment and
-installs the repository's local tactile simulation dependencies.
+### Requirements
+
+- Ubuntu Linux with an NVIDIA GPU and a compatible driver
+- Python 3.10
+- CUDA 12.4-compatible PyTorch
+- NVIDIA Isaac Sim 4.5.0 and Isaac Lab 2.1.1
+- cuRobo for GPU-accelerated motion planning
+- the modified TacEx/UIPC source included under `third_party/TacEx`
+
+Do not replace the bundled TacEx/UIPC packages with the public TacEx release;
+ViTaForge relies on project-specific sensor, force-field, and UIPC changes.
+
+### Automated setup
 
 ```bash
-git clone --branch minnan https://github.com/Apiecehann/ViTaForge.git
+git clone --branch xense https://github.com/Apiecehann/ViTaForge.git
 cd ViTaForge
+
+# Make sure conda is initialized before running the installer.
+conda activate base
 bash scripts/install.sh
 conda activate UniVTAC
 ```
 
-Use the modified TacEx/UIPC sources bundled under `third_party/TacEx`; do not
-replace them with the public TacEx package. See
-[`docs/Installation.md`](docs/Installation.md) for the manual installation
-workflow.
+The installer creates the `UniVTAC` environment and installs Isaac Sim,
+Isaac Lab, cuRobo, TacEx, and libuipc. Building libuipc can take a substantial
+amount of time. For a component-by-component installation, see
+[`docs/Installation.md`](docs/Installation.md).
+
+After installation, run a one-episode smoke collection from the repository
+root:
+
+```bash
+bash collect_data.sh \
+  grasp_half_cylinder_in_clutter gelsight 0 0 0 1
+```
 
 ## Task Suite
 
-The shared Xense configuration, `task_config/xense_8tasks.yml`, supports the
-following manipulation tasks:
+The current benchmark contains eight contact-rich manipulation tasks. Task
+logic lives in `envs/`, while task assets are stored in
+`assets/objects/task_0724/`.
 
-| Task module | Objective |
-|---|---|
-| `grasp_half_cylinder_in_clutter` | Grasp a target half-cylinder among distractors |
-| `insert_half_cylinder_into_box` | Insert a half-cylinder into the matching opening |
-| `insert_usb` | Grasp and insert a USB connector |
-| `place_wooden_cube_on_yellow_area` | Place a wooden cube in the target area |
-| `pour_ball_to_cup` | Grasp, carry, and pour balls into a target cup |
-| `pull_drawer` | Grasp and pull a drawer |
-| `swap_cup_order` | Rearrange colored cups |
-| `turn_gear_pair` | Grasp and rotate a gear pair |
+| Task module | Category | Objective |
+|---|---|---|
+| `grasp_half_cylinder_in_clutter` | Grasping | Find and grasp a target half-cylinder among distractors |
+| `insert_half_cylinder_into_box` | Insertion | Grasp a half-cylinder and insert it into the matching opening |
+| `insert_usb` | Precision insertion | Grasp and insert a USB connector into a target slot |
+| `place_wooden_cube_on_yellow_area` | Pick and place | Move a wooden cube onto a marked target region |
+| `pour_ball_to_cup` | Non-rigid/contact-rich | Grasp a cup, carry it, and pour balls into another cup |
+| `pull_drawer` | Articulated manipulation | Grasp a handle and pull the drawer open |
+| `swap_cup_order` | Rearrangement | Reorder cups while maintaining stable tactile contact |
+| `turn_gear_pair` | Rotational manipulation | Grasp and rotate a gear pair to the target state |
 
-Task assets are stored in `assets/objects/task_0724/`. Other task modules under
-`envs/` can use any compatible sensor configuration.
+All task modules use the same reset, observation, demonstration, and policy
+interfaces. Sensor-specific contact calibration is resolved in Python, so the
+public YAML files remain compact. A task/sensor pair should still be validated
+before a large collection because contact geometry and deformation differ
+across sensors.
 
-## Diversity Data Collection
+## Data Collection
 
-Activate the environment and run collection commands from the repository root.
-The serial entry point accepts the task module, task config, GPU, start seed,
-maximum seed, and number of successful episodes:
+ViTaForge supports two complementary collection workflows.
+
+### Motion planning and randomized demonstrations
+
+This is the primary implemented data-generation pipeline. A scripted expert
+combines task logic with cuRobo motion planning. Each seed randomizes supported
+object poses, task targets, and textures; only successful demonstrations are
+kept. Failed seeds are recorded in `suc_map.txt`, allowing interrupted runs to
+resume without repeating completed work.
+
+Serial collection:
 
 ```bash
 bash collect_data.sh \
-  <task_name> <task_config> <gpu_id> <start_seed> <max_seed> <episode_num>
+  <task_name> <task_config> <gpu_id> \
+  <start_seed> <max_seed> <successful_episodes>
 ```
 
-For example, collect one Xense episode for the clutter grasp task on GPU 0:
+Example:
 
 ```bash
 bash collect_data.sh \
-  grasp_half_cylinder_in_clutter xense_8tasks 0 0 0 1
+  grasp_half_cylinder_in_clutter xense 0 0 999 100
 ```
 
-Use the multiprocessing collector for larger datasets:
+Parallel collection launches one Isaac Sim application per worker:
 
 ```bash
 python scripts/parallel_collect_data.py \
-  grasp_half_cylinder_in_clutter xense_8tasks \
-  --workers 2 --episodes 8 --gpu 0
+  grasp_half_cylinder_in_clutter xense \
+  --workers 2 --episodes 100 --gpu 0
 ```
 
-Each worker owns a simulator application and tactile solver, so choose the
-worker count according to available GPU memory. Diversity is controlled by
-the seed range, randomized textures, task randomization, sensor choice, and
-selected observation modalities. Successful trajectories, videos, logs, and
-the success map are written to:
+Choose the worker count according to available GPU memory. UIPC tactile scenes
+are substantially heavier than ordinary rigid-body simulation, so more workers
+do not always improve throughput.
+
+The output layout is:
 
 ```text
 <save_dir>/<task_name>/<task_config>/
+├── hdf5/          # one HDF5 trajectory per successful seed
+├── video/         # synchronized camera/tactile preview videos
+├── metadata.json  # task, timing, instruction, and sensor metadata
+├── suc_map.txt    # success/failure state for resumable collection
+└── scene/         # UIPC workspace and scene cache
 ```
 
-See [`docs/Collection.md`](docs/Collection.md) for the HDF5 layout.
+When `save_pre_move: true`, demonstrations include both the expert pre-move and
+the learned-policy phase. The HDF5 field `phase/id` identifies these phases;
+the current ACT preprocessor trains on action-phase transitions only. See
+[`docs/Collection.md`](docs/Collection.md) for the data schema.
+
+### Online RL collection
+
+The RL path is implemented as an experimental BC/SFT-initialized online
+interaction pipeline. It does not use the scripted planner to generate every
+action. Instead, it uses planner demonstrations to train a behavior-cloning
+model, then gathers new transitions while SAC or PPO interacts with the task.
+
+1. Collect randomized expert demonstrations with the motion-planning pipeline.
+2. Train the multimodal BC/SFT initialization:
+
+```bash
+python scripts/train_bc.py \
+  <dataset_root>/hdf5 <run_root>/bc \
+  --visual-pretrained --tactile-pretrained
+```
+
+3. Start online SAC collection and training:
+
+```bash
+python scripts/train_rl.py \
+  <task_name> <task_config> \
+  <run_root>/bc/bc_best.pt <run_root> \
+  --algorithm sac \
+  --bc-dataset-root <dataset_root> \
+  --control-gripper \
+  --save-replay-buffer
+```
+
+PPO is also available experimentally; exact SFT actor initialization is
+currently SAC-only, so PPO must use `--no-initialize-actor`.
+
+```bash
+python scripts/train_rl.py \
+  <task_name> <task_config> \
+  <run_root>/bc/bc_best.pt <run_root> \
+  --algorithm ppo --no-initialize-actor
+```
+
+`--save-replay-buffer` preserves the online transition buffer. Without it, RL
+still collects transitions during training, but they are not exported as a
+standalone HDF5 demonstration dataset. The current RL workflow has been
+developed primarily around the half-cylinder grasp task; broader task coverage,
+multi-sensor RL validation, and a unified RL dataset exporter are TODO.
 
 ## Task Config Hyperparameters
 
-Task configuration files live in `task_config/`. The supplied values are tuned
-defaults; contact thresholds, closure targets, and trajectory offsets should
-be changed conservatively because they directly affect tactile deformation and
-task success.
+Active sensor configurations are stored in `task_config/`:
 
-### Collection and reset
+| Config | Sensor | Intended export |
+|---|---|---|
+| `gelsight.yml` | GelSight | Marker-based optical tactile observations |
+| `xense.yml` | Xense | Marker-based optical tactile observations |
+| `neote.yml` | Neote | Gel-particle tactile images |
+| `neote_force_field.yml` | Neote | Raw force fields plus force-field images |
 
-| Parameter | Purpose |
+All four files expose the same compact set of top-level keys.
+
+| Parameter | Description |
 |---|---|
-| `save_dir` | Root directory for collected task data. |
-| `decimation` | Number of simulation steps represented by one control step. |
-| `save_frequency` | Interval between saved observation/action samples. |
-| `video_frequency` | Interval between frames written to preview videos. |
-| `video_size` | Output video resolution as `[width, height]`. |
-| `render_frequency` | Rendering cadence; use `0` for headless collection and `1` for an interactive window. |
-| `reset_time_limit` | Maximum allowed reset duration in seconds. |
-| `reset_first_frame_steps` | Constrained simulation steps used to initialize the first reset frame. |
-| `reset_after_actor_steps` | Settling steps after task actors are initialized. |
-| `reset_final_steps` | Final unconstrained settling steps before pre-move. |
-| `random_texture` | Randomize supported scene and object textures. |
-| `use_seed` | Enable deterministic seed-based task randomization. |
-| `episode_num` | Default number of successful episodes to collect; CLI arguments can override it. |
-| `save_pre_move` | Include the robot pre-move phase in the saved trajectory. |
-| `tactile_video_key` | Tactile stream used in preview videos, such as `rgb_marker` or `gel_particle`. |
+| `save_dir` | Root directory for a collection. The task name and YAML stem are appended automatically. ACT preprocessing currently expects `./data/<task>/<config>`; use `save_dir: ./data` or create a link when collecting elsewhere. |
+| `decimation` | Number of physics steps represented by one environment/control step. Increasing it changes control timing and contact dynamics, so it should not be treated as a simple performance knob. |
+| `save_frequency` | Saves one observation/action sample every N simulation steps. This determines the temporal spacing of the demonstration dataset. |
+| `video_frequency` | Writes one preview-video frame every N steps. Larger values reduce video I/O; use `0` only in entry points that explicitly support disabling video. |
+| `render_frequency` | Project convention for application rendering: `0` for collection without an interactive Isaac Sim window, `1` for an interactive window. Camera and tactile sensors still perform the rendering required for observations. |
+| `random_texture` | Enables supported texture-domain randomization. Geometry and task-goal randomization remain controlled by each task and its seed. |
+| `use_seed` | Enables deterministic seed-based episode randomization and resumable collection through `suc_map.txt`. |
+| `episode_num` | Default number of successful episodes. Serial and parallel CLI arguments can override it. Failed attempts do not count toward this target. |
+| `sensor_type` | Selects `gsmini`, `xensews`, or `neote`. Both Neote YAML files use the same `neote` sensor type. |
+| `observations` | Selects camera, tactile, embodiment, and actor streams written to HDF5. Removing a stream reduces storage, but the selected policy and preprocessor must not expect it. |
+| `save_pre_move` | Saves the motion-planned pre-move before policy control. Keep it enabled for full demonstrations; use `phase/id` when training only on the action phase. |
+| `tactile_video_key` | Chooses the tactile stream shown in preview videos: `rgb_marker` for GelSight/Xense, `gel_particle` for Neote particles, and `force_field_img` for Neote force fields. |
 
-### Sensor and observations
+Typical tactile exports are:
 
-| Parameter | Purpose |
-|---|---|
-| `sensor_type` | Select `gsmini`, `xensews`, or `neote`. |
-| `observations.camera` | Camera streams saved to each episode, for example `rgb`. |
-| `observations.tactile` | Tactile modalities to save. Availability depends on the selected sensor. |
-| `observations.embodiment` | Robot state streams, such as `joint` and `ee`. |
-| `observations.actor` | Save task-object state when enabled. |
-| `dense_gelpad` | Use the dense Neote gel-pad representation. |
-| `force_field_grid` | Neote force-field resolution as `[width, height]`. |
+- GelSight/Xense: `rgb`, `rgb_marker`, `marker`, `depth`, and `pose`.
+- Neote particle mode: `rgb`, `gel_particle`, `depth`, and `pose`.
+- Neote force-field mode: `rgb`, `force_field`, `force_field_img`, `depth`, and `pose`.
 
-### Xense contact and adaptive grasp
+`force_field` is a numeric `(H, W, 3)` vector field. `force_field_img` is its
+visualization and is the appropriate input for image-based ACT encoders.
 
-In the names below, `<object>` can be `usb`, `half_cylinder`,
-`insert_half_cylinder`, `cube`, `cup`, `pour`, `pour_cup`, `drawer`, or `gear` where
-that task provides an override.
-
-| Parameter | Purpose |
-|---|---|
-| `xense_use_baseline_filter` | Enable Xense depth-baseline filtering before contact checks. |
-| `xense_marker_reference_max_settle_steps` | Maximum steps allowed to establish a stable marker reference after reset. |
-| `xense_marker_reference_stable_steps` | Consecutive stable steps required to accept the marker reference. |
-| `use_adaptive_grasp` | Stop gripper closing from tactile contact instead of always using a fixed closure. |
-| `adaptive_grasp_depth_threshold` | Global depth/contact threshold. A larger value stops earlier, producing lighter contact. |
-| `xense_<object>_adaptive_grasp_depth_threshold` | Per-object override of the global contact threshold. |
-| `xense_adaptive_grasp_require_both_contacts` | Require both tactile pads to reach the threshold. |
-| `xense_<object>_adaptive_grasp_require_both_contacts` | Per-object override for one-pad or two-pad contact. |
-| `xense_<object>_close_percent` | Maximum Robotiq closure target; `1.0` is open and `0.0` is fully closed. Adaptive contact may stop earlier. |
-| `xense_adaptive_grasp_max_steps` | Maximum number of closing steps. |
-| `xense_adaptive_grasp_tail_steps` | Extra hold/settling steps after contact is detected. |
-| `xense_adaptive_grasp_check_interval` | Number of steps between tactile contact checks. |
-| `xense_adaptive_grasp_qpos_step` | Gripper joint-position increment for each close update. |
-| `xense_adaptive_grasp_target_tolerance` | Tolerance for considering the closure target reached. |
-| `xense_adaptive_grasp_min_target_margin` | Legacy minimum margin retained before reaching the closure target. |
-| `xense_adaptive_grasp_hold_margin` | Reopen margin applied when holding after contact. |
-| `xense_adaptive_grasp_hold_velocity` | Gripper velocity used during the post-contact hold. |
-| `xense_adaptive_grasp_min_steps_before_contact` | Ignore contact until this many closing steps have elapsed. |
-| `xense_adaptive_grasp_min_travel` | Ignore contact until the gripper has moved by this minimum amount. |
-
-### Xense task trajectory
-
-| Parameter | Purpose |
-|---|---|
-| `xense_<object>_grasp_height_bias` | Per-object vertical offset applied to the planned grasp pose. |
-| `xense_<object>_grasp_world_y_bias` | Per-object world-Y grasp offset. |
-| `xense_pour_cup_grasp_world_x_bias` | World-X grasp offset for the pouring cup. |
-| `xense_drawer_grasp_z_bias` | Drawer-specific vertical grasp offset. |
-| `xense_initial_settle_steps` | Default Xense settling steps before task motion begins. |
-| `xense_<object>_initial_settle_steps` | Per-task override of the initial settling duration. |
-| `xense_carry_time_dilation` | Timing scale applied to Xense carry trajectories. |
-| `xense_carry_segments` | Number of interpolation segments in a carry motion. |
-| `xense_carry_max_step` | Maximum Cartesian displacement per carry segment. |
-| `xense_post_close_settle_steps` | General settling duration after closing the gripper. |
-| `xense_usb_post_close_settle_steps` | USB-specific post-close settling override. |
-| `xense_cup_min_principal_ratio` | Minimum retained principal-shape ratio accepted for a cup. |
-| `xense_cup_max_nonrigid_error` | Maximum non-rigid cup deformation accepted by task checks. |
-
-### Xense pouring
-
-| Parameter | Purpose |
-|---|---|
-| `xense_pour_ball_friction_ratio` | Friction scaling for the poured balls. |
-| `xense_pour_grip_friction_ratio` | Contact-friction scaling between gripper and cup. |
-| `xense_pour_wrist_angle_deg` | Target wrist rotation used for pouring. |
-| `xense_pour_wrist_steps` | Number of interpolation steps in the wrist rotation. |
-| `xense_pour_wrist_translation_x/y/z` | Cartesian translation applied during wrist rotation. |
-| `xense_pour_actor_tilt_deg` | Optional additional tilt applied to the cup actor. |
-| `xense_pour_actor_tilt_axis_x/y/z` | Axis of the optional actor tilt. |
-| `xense_pour_carry_segments` | Interpolation segments for carrying the pouring cup. |
-| `xense_pour_carry_settle_steps` | Settling steps after the carry phase. |
-| `xense_pour_hold_actor_during_carry` | Temporarily constrain the cup actor during carry. |
-| `xense_pour_target_y_offset`, `xense_pour_target_z_offset` | Offsets of the pour pose relative to the target cup. |
-| `xense_pour_release_lift` | Vertical lift applied during release. |
-| `xense_pour_release_snap_angle_deg` | Angle of each release snap motion. |
-| `xense_pour_release_snap_steps` | Interpolation steps per release snap. |
-| `xense_pour_release_snap_cycles` | Number of release snap cycles. |
-| `xense_pour_fix_cup_during_release` | Constrain the pouring cup during the release motion. |
-| `xense_pour_release_retract_x` | World-X retraction after release. |
-| `xense_pour_release_carry_y` | World-Y carry motion applied during release. |
+Sensor-specific runtime parameters are intentionally hidden from the public
+YAML interface. Video resolution, reset timing, Neote force-field resolution,
+and calibrated Xense contact/task parameters are centralized in
+`envs/_base_task.py`. Change them only when recalibrating a sensor or task.
 
 ## Training
 
-Collected episodes are first converted into the format expected by a policy,
-then training is launched from that policy's directory. The preprocessors
-currently read raw episodes from `../../data/<task_name>/<task_config>`.
-Therefore, set `save_dir: ./data` before collecting training data, or place a
-link to a run collected under another `save_dir` at that path.
+### Dataset preprocessing
 
-### ACT
+The implemented ACT pipeline converts raw trajectories into policy-specific
+HDF5 episodes. Run preprocessing from `policy/ACT`:
 
 ```bash
 cd policy/ACT
 python process_data.py <task_name> <task_config> <episode_num>
-bash train.sh \
-  <task_name> <task_config> <episode_num> <seed> <gpu_id> [train_config]
 ```
 
-`train_config` selects a YAML file in `policy/ACT/` without its extension and
-defaults to `train_config`.
+The default tactile input is `rgb_marker` for GelSight/Xense and
+`gel_particle` for `neote`. Select another exported image explicitly:
 
-### Ablation
+```bash
+TACTILE_KEY=force_field_img \
+python process_data.py <task_name> neote_force_field <episode_num>
+```
+
+The current ACT preprocessor consumes image-like tactile observations. Policies
+that use the raw numeric Neote `force_field` tensor require a dedicated tensor
+adapter; this remains TODO for the common baseline interface.
+
+### Baselines
+
+The benchmark roadmap separates code that is currently runnable from planned
+baseline integrations.
+
+| Baseline | Status | Notes |
+|---|---|---|
+| ACT | Implemented | Main imitation-learning baseline with vision, tactile, or fused inputs |
+| Diffusion Policy | Experimental / TODO | Experimental code exists under `policy/ViTAL/diffusion`; unified preprocessing, checkpointing, and rollout integration are still required |
+| π0.5 | TODO | Planned vision-language-action baseline with tactile token/feature adapters |
+| LingBot-VLA | TODO | Planned VLA baseline; model loading and action-head integration are not yet in the common policy interface |
+| StarVLA | TODO | Planned VLA baseline with the same task/config/rollout protocol |
+| VTLA baseline(s) | TODO | One or two vision-tactile-language-action baselines will be selected and integrated |
+
+Train the implemented ACT baseline:
+
+```bash
+cd policy/ACT
+bash train.sh \
+  <task_name> <task_config> <episode_num> \
+  <seed> <gpu_id> [train_config]
+```
+
+The default `train_config.yml` uses ResNet-18 visual and tactile backbones with
+ACT temporal action chunks. Alternative supplied configurations include
+vision-only, tactile-focused, frozen-backbone, scratch, and multi-camera
+variants. Checkpoints are written below:
+
+```text
+policy/ACT/act_ckpt/act-<task_name>/<task_config>-<episode_num>/<train_config>/
+```
+
+### Ablations
+
+The ablation framework is implemented under `policy/Ablation` and follows the
+same preprocessing and training pattern as ACT:
 
 ```bash
 cd policy/Ablation
 python process_data.py <task_name> <task_config> <episode_num>
 bash train.sh \
-  <task_name> <task_config> <episode_num> <seed> <gpu_id> [train_config]
+  <task_name> <task_config> <episode_num> \
+  <seed> <gpu_id> <ablation_config>
 ```
 
-### ViTAL
+Supported or partially supported study axes include:
+
+- **Input modality:** vision-only, tactile-only, or vision-tactile fusion;
+  head-camera versus head-and-wrist-camera inputs.
+- **Visual encoder:** ResNet-18 is the current default. ResNet variants are
+  available in the ACT backbone code, and the experimental RL encoder accepts
+  `timm:` backbones. A unified interface for ViT/CLIP/DINO and VLA visual
+  encoders is TODO.
+- **Tactile encoder:** the current UniVTAC tactile ResNet encoder is integrated
+  and can be frozen, fine-tuned, or trained from scratch. ViTAL-style
+  contrastive visual-tactile encoder code is also included as an integrated
+  encoder option. Additional sensor-specific encoders for GelSight, Xense, and
+  both Neote exports will be pretrained and standardized in future work.
+- **Tactile supervision:** existing configurations cover marker-RGB-only,
+  marker RGB plus depth, shape pathway, contact pathway, and joint
+  contact-shape supervision.
+- **Initialization:** pretrained versus scratch, frozen versus trainable
+  tactile backbones, and different learning rates for visual/tactile branches.
+- **Data scale:** supplied configurations cover several demonstration counts,
+  enabling sample-efficiency studies.
+
+Important existing ablation files include `marked_rgb_only.yml`,
+`marked_rgb_depth.yml`, `shape_pathway.yml`, `contact_pathway.yml`,
+`contact_shape.yml`, and `from_scrach.yml`. Some filenames retain their legacy
+spelling for checkpoint compatibility.
+
+## Inference / Rollout
+
+### Imitation-policy rollout
+
+Deployment uses a policy module under `policy/<PolicyName>/` and a deployment
+YAML containing `policy_name`. The provided ACT entry point automatically
+derives its checkpoint path from the task, sensor config, episode count, and
+training config.
+
+Serial ACT evaluation:
 
 ```bash
-cd policy/ViTAL
-python process_data.py <task_name> <task_config> <episode_num>
-bash train.sh <task_name> <task_config> <episode_num> <gpu_id>
-```
-
-## Inference
-
-Set the checkpoint fields in `policy/ACT/deploy.yml`,
-`policy/Ablation/deploy.yml`, or `policy/ViTAL/deploy.yml`, then evaluate from
-the repository root. The third argument is the deployment YAML path relative
-to `policy/`, without the `.yml` extension.
-
-```bash
+EP_NUM=50 TRAIN_CONFIG=train_config \
 bash eval_policy.sh \
   <task_name> <task_config> ACT/deploy <gpu_id>
-
-bash parallel_eval.sh \
-  <task_name> <task_config> ACT/deploy <gpu_id> [workers] [total_episodes]
 ```
 
-For an ACT checkpoint trained with a non-default training config, export the
-matching config name during evaluation:
+For Neote, keep the rollout tactile input consistent with training:
 
 ```bash
-TRAIN_CONFIG=train_config_vision_only \
-bash eval_policy.sh <task_name> <task_config> ACT/deploy <gpu_id>
+TACTILE_KEY=gel_particle \
+EP_NUM=50 TRAIN_CONFIG=train_config \
+bash eval_policy.sh <task_name> neote ACT/deploy 0
+
+TACTILE_KEY=force_field_img \
+EP_NUM=50 TRAIN_CONFIG=train_config \
+bash eval_policy.sh <task_name> neote_force_field ACT/deploy 0
 ```
 
-See [`docs/Deploy.md`](docs/Deploy.md) for implementing and evaluating a custom
-policy.
+Parallel evaluation:
+
+```bash
+bash parallel_eval.sh \
+  <task_name> <task_config> ACT/deploy \
+  <gpu_id> <workers> <total_episodes>
+```
+
+Rollouts are written under:
+
+```text
+eval_result/<policy_name>/<task_name>/<deploy_config>/<timestamp>/
+```
+
+The evaluator supports deterministic seed ranges, optional expert-seed checks,
+success-rate logging, HDF5/video outputs, and serial or multiprocessing
+evaluation. To add a new baseline, implement `Policy.encode_obs`,
+`Policy.eval`, and `Policy.reset` against `policy._base_policy.BasePolicy`, then
+provide a deployment YAML. See [`docs/Deploy.md`](docs/Deploy.md).
+
+### RL rollout
+
+Evaluate SFT/BC directly:
+
+```bash
+python scripts/eval_rl.py \
+  <task_name> <task_config> <bc_checkpoint> <output_dir> \
+  --algorithm sft --episodes 20 --save-traces
+```
+
+Evaluate a trained SAC or PPO policy:
+
+```bash
+python scripts/eval_rl.py \
+  <task_name> <task_config> <bc_checkpoint> <output_dir> \
+  --algorithm sac --model-path <sac_model.zip> \
+  --episodes 20 --save-traces
+```
+
+The RL evaluator reports success rate, reward, task metrics, and optional
+per-action traces. Multi-task and multi-sensor RL benchmark scripts remain
+TODO.
 
 ## License
 
@@ -270,10 +397,14 @@ This project is released under the MIT License. See [`LICENSE`](LICENSE).
 
 ## Acknowledgement
 
-ViTaForge is developed on top of the
+ViTaForge is developed from the
 [`UniVTAC`](https://github.com/univtac/UniVTAC) framework. We thank the UniVTAC
-authors for the unified simulation, data generation, learning, and benchmarking
-foundation. Related resources: [paper](https://arxiv.org/abs/2602.10093),
+authors for the unified tactile simulation, data-generation, learning, and
+benchmarking foundation. We also acknowledge NVIDIA Isaac Sim and Isaac Lab,
+cuRobo, TacEx, UIPC, ACT, and ViTAL, whose software and research make this
+workspace possible.
+
+Related UniVTAC resources: [paper](https://arxiv.org/abs/2602.10093),
 [project website](https://univtac.github.io/), and
 [dataset](https://huggingface.co/datasets/byml/UniVTAC).
 
