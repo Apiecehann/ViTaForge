@@ -202,6 +202,8 @@ def estimate_rigid_transform(P:np.ndarray, Q:np.ndarray):
     '''
     assert P.shape == Q.shape
     n, dim = P.shape
+    if n == 0 or not np.isfinite(P).all() or not np.isfinite(Q).all():
+        return np.eye(4)
     centeredP = P - P.mean(axis=0)
     centeredQ = Q - Q.mean(axis=0)
     C = np.dot(np.transpose(centeredP), centeredQ) / n

@@ -31,8 +31,14 @@ import numpy as np
 
 import warp as wp
 from uipc import builtin, view
-from uipc.constitution import AffineBodyConstitution, ElasticModuli, StableNeoHookean
-from uipc.geometry import extract_surface, flip_inward_triangles, label_surface, label_triangle_orient, tetmesh
+from uipc.constitution import (
+    AffineBodyConstitution,
+    DiscreteShellBending,
+    ElasticModuli,
+    NeoHookeanShell,
+    StableNeoHookean,
+)
+from uipc.geometry import extract_surface, flip_inward_triangles, label_surface, label_triangle_orient, tetmesh, trimesh
 from uipc.unit import MPa
 
 import isaaclab.utils.string as string_utils
@@ -87,7 +93,35 @@ class UipcObjectCfg(AssetBaseCfg):
         Has to be < 0.5.
         """
 
-    constitution_cfg: AffineBodyConstitutionCfg | StableNeoHookeanCfg = None
+    @configclass
+    class NeoHookeanShellCfg:
+        # class_type = NeoHookeanShell
+        youngs_modulus: float = 0.01
+        """
+        in [MPa]
+        """
+
+        poisson_rate: float = 0.499
+        """ Poission Rate
+
+        Has to be < 0.5.
+        """
+
+        thickness: float = 0.001
+        """
+        Cloth thickness in [m].
+        """
+
+        enable_bending: bool = True
+        """Apply DiscreteShellBending in addition to the membrane shell constitution."""
+
+        bending_stiffness: float = 10.0
+        """Bending stiffness passed to DiscreteShellBending."""
+
+        render_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        """Visual-only offset applied when writing simulated cloth vertices to Isaac/Fabric."""
+
+    constitution_cfg: AffineBodyConstitutionCfg | StableNeoHookeanCfg | NeoHookeanShellCfg = None
 
     attachment_cfg: UipcIsaacAttachmentsCfg = None
 
@@ -157,50 +191,13 @@ class UipcObject(AssetBase):
             usd_mesh_path = str(usd_mesh.GetPath())
             omni.log.info("usd_mesh_path ", usd_mesh_path)
 
-            # Load precomputed mesh data from USD prim.
-            tet_points = np.array(prim_children[0].GetAttribute("tet_points").Get())
-            tet_indices = prim_children[0].GetAttribute("tet_indices").Get()
-            surf_points = np.array(prim_children[0].GetAttribute("tet_surf_points").Get())
-            tet_surf_indices = prim_children[0].GetAttribute("tet_surf_indices").Get()
-            
-            replace_color = False
-            if tet_indices is None:
-                mesh_gen = MeshGenerator(config=TetMeshCfg(
-                    stop_quality=8,
-                    max_its=100,
-                    edge_length_r=1 / 5,
-                    epsilon_r=0.001
-                ))
-                tet_points, tet_indices, surf_points, tet_surf_indices = mesh_gen.generate_tet_mesh_for_prim(
-                    usd_mesh
-                )
-                replace_color = True
+            if isinstance(self.cfg.constitution_cfg, UipcObjectCfg.NeoHookeanShellCfg):
+                mesh, tet_surf_points_world, tet_surf_tri = self._create_cloth_mesh_from_usd(usd_mesh)
+                replace_color = False
+            else:
+                mesh, tet_surf_points_world, tet_surf_tri, replace_color = self._create_tet_mesh_from_usd(usd_mesh)
 
-            # transform local tet points to world coor
-            tf_world = omni.usd.get_world_transform_matrix(usd_mesh)
-
-            tet_points_world = np.array(tf_world).T @ np.vstack((tet_points.T, np.ones(tet_points.shape[0])))
-            tet_points_world = tet_points_world[:-1].T
-
-            self.init_world_transform = torch.tensor(np.array(tf_world).T.copy(), device=self.uipc_sim.cfg.device)
-
-            # uipc wants 2D array
-            tet_indices = np.array(tet_indices).reshape(-1, 4)
-            tet_surf_indices = np.array(tet_surf_indices).reshape(-1, 3)
-
-            # create uipc mesh
-            mesh = tetmesh(tet_points_world.copy(), tet_indices.copy())
-            # enable the contact by labeling the surface
-            label_surface(mesh)
-            label_triangle_orient(mesh)
-            # flip the triangles inward for better rendering
-            mesh = flip_inward_triangles(mesh)  # todo idk if this makes a difference for us
             self.uipc_meshes.append(mesh)
-
-            # libuipc uses different indexing for the surface topology
-            surf = extract_surface(mesh)
-            tet_surf_points_world = surf.positions().view().reshape(-1, 3)
-            tet_surf_tri = surf.triangles().topo().view().reshape(-1).tolist()
 
             # Set Vertex and Triangle data into USD mesh for rendering, skip
             MeshGenerator.update_usd_mesh(
@@ -230,23 +227,29 @@ class UipcObject(AssetBase):
             rtxformable.GetFabricHierarchyWorldMatrixAttr().Set(usdrt.Gf.Matrix4d())
 
             # update fabric mesh with world coor. points
+            render_offset = np.array(getattr(self.cfg.constitution_cfg, "render_offset", (0.0, 0.0, 0.0)))
             fabric_mesh_points_attr = fabric_prim.GetAttribute("points")
-            fabric_mesh_points_attr.Set(usdrt.Vt.Vec3fArray(tet_surf_points_world))
+            fabric_mesh_points_attr.Set(usdrt.Vt.Vec3fArray(tet_surf_points_world + render_offset))
 
             self.fabric_prim = fabric_prim
 
             # add fabric meshes to uipc sim class for updating the render meshes
             self._uipc_sim._fabric_meshes.append(fabric_prim)
+            self._uipc_sim._fabric_mesh_offsets.append(render_offset)
 
             # save surface offsets for finding corresponding surface points of the meshes for rendering
             num_surf_points = tet_surf_points_world.shape[0]  # np.unique(tet_surf_indices)
-            self._uipc_sim._surf_vertex_offsets.append(self._uipc_sim._surf_vertex_offsets[-1] + num_surf_points)
+            self._surf_vertex_offset_start = self._uipc_sim._surf_vertex_offsets[-1]
+            self._surf_vertex_offset_end = self._surf_vertex_offset_start + num_surf_points
+            self._uipc_sim._surf_vertex_offsets.append(self._surf_vertex_offset_end)
 
             # required for writing vertex positions to sim
             num_vertex_points = mesh.positions().view().shape[0]
             self._vertex_count = num_vertex_points
 
             # update local vertex offset of the subsystem
+            if self._system_name not in self._uipc_sim._system_vertex_offsets:
+                self._uipc_sim._system_vertex_offsets[self._system_name] = [0]
             self._uipc_sim._system_vertex_offsets[self._system_name].append(
                 self._uipc_sim._system_vertex_offsets[self._system_name][-1] + self._vertex_count
             )
@@ -388,6 +391,89 @@ class UipcObject(AssetBase):
     Internal helper.
     """
 
+    def _create_tet_mesh_from_usd(self, usd_mesh: UsdGeom.Mesh):
+        # Load precomputed mesh data from USD prim.
+        mesh_prim = usd_mesh.GetPrim()
+        tet_points = np.array(mesh_prim.GetAttribute("tet_points").Get())
+        tet_indices = mesh_prim.GetAttribute("tet_indices").Get()
+        surf_points = np.array(mesh_prim.GetAttribute("tet_surf_points").Get())
+        tet_surf_indices = mesh_prim.GetAttribute("tet_surf_indices").Get()
+
+        replace_color = False
+        if tet_indices is None:
+            mesh_gen = MeshGenerator(
+                config=TetMeshCfg(
+                    stop_quality=8,
+                    max_its=100,
+                    edge_length_r=1 / 5,
+                    epsilon_r=0.001,
+                )
+            )
+            tet_points, tet_indices, surf_points, tet_surf_indices = mesh_gen.generate_tet_mesh_for_prim(usd_mesh)
+            replace_color = True
+
+        # transform local tet points to world coor
+        tf_world = omni.usd.get_world_transform_matrix(usd_mesh)
+
+        tet_points_world = np.array(tf_world).T @ np.vstack((tet_points.T, np.ones(tet_points.shape[0])))
+        tet_points_world = tet_points_world[:-1].T
+
+        self.init_world_transform = torch.tensor(np.array(tf_world).T.copy(), device=self.uipc_sim.cfg.device)
+
+        # uipc wants 2D array
+        tet_indices = np.array(tet_indices).reshape(-1, 4)
+        tet_surf_indices = np.array(tet_surf_indices).reshape(-1, 3)
+
+        # create uipc mesh
+        mesh = tetmesh(tet_points_world.copy(), tet_indices.copy())
+        # enable the contact by labeling the surface
+        label_surface(mesh)
+        label_triangle_orient(mesh)
+        # flip the triangles inward for better rendering
+        mesh = flip_inward_triangles(mesh)  # todo idk if this makes a difference for us
+
+        # libuipc uses different indexing for the surface topology
+        surf = extract_surface(mesh)
+        surf_points_world = surf.positions().view().reshape(-1, 3)
+        surf_tri = surf.triangles().topo().view().reshape(-1).tolist()
+
+        return mesh, surf_points_world, surf_tri, replace_color
+
+    def _create_cloth_mesh_from_usd(self, usd_mesh: UsdGeom.Mesh):
+        local_points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float64)
+        face_vertex_counts = np.array(usd_mesh.GetFaceVertexCountsAttr().Get(), dtype=np.int64)
+        face_vertex_indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64)
+
+        triangles = []
+        index_offset = 0
+        for face_count in face_vertex_counts:
+            face = face_vertex_indices[index_offset : index_offset + face_count]
+            index_offset += face_count
+            if face_count == 3:
+                triangles.append(face)
+            elif face_count == 4:
+                triangles.append(face[[0, 1, 2]])
+                triangles.append(face[[0, 2, 3]])
+            else:
+                raise ValueError(
+                    f"Cloth mesh {usd_mesh.GetPath()} only supports triangle or quad faces, got {face_count}."
+                )
+
+        tf_world = omni.usd.get_world_transform_matrix(usd_mesh)
+        points_world = np.array(tf_world).T @ np.vstack((local_points.T, np.ones(local_points.shape[0])))
+        points_world = points_world[:-1].T
+
+        self.init_world_transform = torch.tensor(np.array(tf_world).T.copy(), device=self.uipc_sim.cfg.device)
+
+        triangles = np.array(triangles, dtype=np.int32).reshape(-1, 3)
+        mesh = trimesh(points_world.copy(), triangles.copy())
+        label_surface(mesh)
+
+        surf_points_world = mesh.positions().view().reshape(-1, 3)
+        surf_tri = mesh.triangles().topo().view().reshape(-1).tolist()
+
+        return mesh, surf_points_world, surf_tri
+
     def _initialize_impl(self):
         # create objects in the uipc scene for the meshes
         mesh = self.uipc_meshes[0]
@@ -418,6 +504,8 @@ class UipcObject(AssetBase):
             self._data = UipcObjectDeformableData(self._uipc_sim, self, self.device)
         elif type(self.constitution) is AffineBodyConstitution:
             self._data = UipcObjectRigidData(self._uipc_sim, self, self.device)
+        elif type(self.constitution) is NeoHookeanShell:
+            self._data = UipcObjectDeformableData(self._uipc_sim, self, self.device)
 
         self._create_buffers()
         # process configuration
@@ -459,6 +547,7 @@ class UipcObject(AssetBase):
         constitution_types = {
             UipcObjectCfg.AffineBodyConstitutionCfg: AffineBodyConstitution,
             UipcObjectCfg.StableNeoHookeanCfg: StableNeoHookean,
+            UipcObjectCfg.NeoHookeanShellCfg: NeoHookeanShell,
         }
         self.constitution = constitution_types[type(self.cfg.constitution_cfg)]()
 
@@ -479,6 +568,20 @@ class UipcObject(AssetBase):
             if self.cfg.constitution_cfg.kinematic:
                 is_fixed_attr = mesh.instances().find(builtin.is_fixed)
                 view(is_fixed_attr)[0] = 1
+        elif type(self.constitution) is NeoHookeanShell:
+            youngs = self.cfg.constitution_cfg.youngs_modulus
+            poisson = self.cfg.constitution_cfg.poisson_rate
+            moduli = ElasticModuli.youngs_poisson(youngs * MPa, poisson)
+            self.constitution.apply_to(
+                mesh,
+                moduli=moduli,
+                mass_density=self.cfg.mass_density,
+                thickness=self.cfg.constitution_cfg.thickness,
+            )
+            if self.cfg.constitution_cfg.enable_bending:
+                self.bending_constitution = DiscreteShellBending()
+                self.bending_constitution.apply_to(mesh, E=self.cfg.constitution_cfg.bending_stiffness)
+            self._system_name = "uipc::backend::cuda::FiniteElementMethod"
 
         # apply the default contact model to the base mesh
         default_element = self._uipc_sim.scene.contact_tabular().default_element()

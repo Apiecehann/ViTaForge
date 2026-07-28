@@ -211,6 +211,7 @@ class UipcSim:
         self._surf_vertex_offsets = [0]
 
         self._fabric_meshes = []
+        self._fabric_mesh_offsets = []
         self.uipc_objects: list[UipcObject] = []
 
         self.stage = usdrt.Usd.Stage.Attach(omni.usd.get_context().get_stage_id())
@@ -294,6 +295,8 @@ class UipcSim:
         # triangles = self.sio.simplicial_surface(2).triangles().topo().view()
         for i, fabric_prim in enumerate(self._fabric_meshes):
             trimesh_points = all_trimesh_points[self._surf_vertex_offsets[i] : self._surf_vertex_offsets[i + 1]]
+            if i < len(self._fabric_mesh_offsets):
+                trimesh_points = trimesh_points + self._fabric_mesh_offsets[i]
 
             fabric_mesh_points = fabric_prim.GetAttribute("points")
             fabric_mesh_points.Set(usdrt.Vt.Vec3fArray(trimesh_points))
@@ -392,6 +395,7 @@ class UipcSim:
 
                     # add fabric meshes to uipc sim class for updating the render meshes
                     self._fabric_meshes.append(fabric_prim)
+                    self._fabric_mesh_offsets.append(0.0)
 
                     # save indices to later find corresponding points of the meshes for rendering
                     num_surf_points = surf_points_world.shape[0]
