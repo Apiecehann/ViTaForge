@@ -636,103 +636,6 @@ class VisionTactileSensorUIPC:
 
         return marker_uv
 
-    def _register_marker_points_to_constrained_frame(self, marker_pts):
-        reference_constrain = np.asarray(self.constrain_pts, dtype=np.float64)
-        current_constrain = self.get_vertices_camera()[self.constrain_ids].cpu().numpy().astype(np.float64)
-        if reference_constrain.shape != current_constrain.shape or reference_constrain.shape[0] < 3:
-            return marker_pts
-
-        reference_center = reference_constrain.mean(axis=0, keepdims=True)
-        current_center = current_constrain.mean(axis=0, keepdims=True)
-        covariance = (current_constrain - current_center).T @ (reference_constrain - reference_center)
-        left, _, right = np.linalg.svd(covariance)
-        rotation = left @ right
-        if np.linalg.det(rotation) < 0.0:
-            left[:, -1] *= -1.0
-            rotation = left @ right
-        return (marker_pts - current_center) @ rotation + reference_center
-
-    def _save_xsense_marker_layer_debug(
-        self,
-        init_marker_pts,
-        raw_marker_pts,
-        registered_marker_pts,
-        init_marker_uv,
-        raw_marker_uv,
-        registered_marker_uv,
-    ):
-        debug_root = os.environ.get("XENSE_MARKER_LAYER_DEBUG_DIR")
-        if not debug_root:
-            return
-
-        frame_index = int(getattr(self, "_xense_marker_layer_debug_frame", 0))
-        self._xense_marker_layer_debug_frame = frame_index + 1
-        stride = max(int(os.environ.get("XENSE_MARKER_LAYER_DEBUG_STRIDE", "1")), 1)
-        if frame_index % stride:
-            return
-
-        prim_path = str(self.gelpad_obj.cfg.prim_path)
-        sensor_name = "".join(
-            character if character.isalnum() else "_" for character in prim_path
-        ).strip("_")
-        sensor_dir = os.path.join(debug_root, sensor_name or "xense_sensor")
-        os.makedirs(sensor_dir, exist_ok=True)
-        current_constrain = (
-            self.get_vertices_camera()[self.constrain_ids]
-            .detach()
-            .cpu()
-            .numpy()
-        )
-        self.camera._update_poses(self.camera._ALL_INDICES)
-        surface_world = self.get_surface_vertices_world().detach().cpu().numpy()
-        current_marker_world = (
-            surface_world[self.marker_surf_idx]
-            * self.marker_weight[..., None]
-        ).sum(1)
-
-        camera_pose_data = {}
-        for field_name in ("pos_w", "quat_w_world", "quat_w_ros", "quat_w_opengl"):
-            field_value = getattr(self.camera._data, field_name, None)
-            if field_value is not None:
-                camera_pose_data[f"camera_{field_name}"] = (
-                    field_value.detach().cpu().numpy()
-                )
-        np.savez_compressed(
-            os.path.join(sensor_dir, f"frame_{frame_index:06d}.npz"),
-            frame_index=np.asarray(frame_index, dtype=np.int64),
-            prim_path=np.asarray(prim_path),
-            camera_prim_path=np.asarray(str(self.camera.cfg.prim_path)),
-            current_marker_world_xyz=np.asarray(
-                current_marker_world,
-                dtype=np.float32,
-            ),
-            surface_world_center_xyz=np.asarray(
-                surface_world.mean(axis=0),
-                dtype=np.float32,
-            ),
-            **camera_pose_data,
-            init_marker_xyz=np.asarray(init_marker_pts, dtype=np.float32),
-            raw_marker_xyz=np.asarray(raw_marker_pts, dtype=np.float32),
-            registered_marker_xyz=np.asarray(
-                registered_marker_pts,
-                dtype=np.float32,
-            ),
-            init_marker_uv=np.asarray(init_marker_uv, dtype=np.float32),
-            raw_marker_uv=np.asarray(raw_marker_uv, dtype=np.float32),
-            registered_marker_uv=np.asarray(
-                registered_marker_uv,
-                dtype=np.float32,
-            ),
-            reference_constrain_xyz=np.asarray(
-                self.constrain_pts,
-                dtype=np.float32,
-            ),
-            current_constrain_xyz=np.asarray(
-                current_constrain,
-                dtype=np.float32,
-            ),
-        )
-
     def gen_marker_flow(self):
         is_xsense = str(self.sensor_type).startswith("xense")
         init_marker_pts = (
@@ -744,27 +647,14 @@ class VisionTactileSensorUIPC:
             * self.marker_weight[..., None]
         ).sum(1)
 
-        raw_marker_pts = curr_marker_pts.copy()
-
-        if is_xsense:
-            curr_marker_pts = self._register_marker_points_to_constrained_frame(curr_marker_pts)
-        else:
-            mean_motion = np.mean(
-                self.get_vertices_camera()[self.constrain_ids].cpu().numpy() - self.constrain_pts, axis=0)
-            curr_marker_pts[:, :2] -= mean_motion[:2]
+        mean_motion = np.mean(
+            self.get_vertices_camera()[self.constrain_ids].cpu().numpy() - self.constrain_pts,
+            axis=0,
+        )
+        curr_marker_pts[:, :2] -= mean_motion[:2]
 
         init_marker_uv = self.gen_marker_uv(init_marker_pts)
         curr_marker_uv = self.gen_marker_uv(curr_marker_pts)
-        if is_xsense:
-            raw_marker_uv = self.gen_marker_uv(raw_marker_pts)
-            self._save_xsense_marker_layer_debug(
-                init_marker_pts,
-                raw_marker_pts,
-                curr_marker_pts,
-                init_marker_uv,
-                raw_marker_uv,
-                curr_marker_uv,
-            )
         marker_flow = np.stack([init_marker_uv, curr_marker_uv], axis=0)
 
         if not is_xsense:

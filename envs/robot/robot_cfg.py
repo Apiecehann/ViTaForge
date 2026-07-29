@@ -146,6 +146,7 @@ def create_franka_neote_gripper(data_type:list[str], dense_gelpad: bool = False)
 
 
 def create_franka_xensews_gripper(data_type:list[str]):
+    from pathlib import Path
 
     # Match the standalone gripper demo: finger_joint=0 opens the gripper,
     # and +45 degrees is the maximum intended close pose.
@@ -167,10 +168,9 @@ def create_franka_xensews_gripper(data_type:list[str]):
             }
         ),
     )
-    robot.spawn.usd_path = (
-        "/root/gpufree-data/assets/assemblies/franka_robotiq_xensews/asset_package/usd/"
-        "franka_robotiq_xensews_lift11p15_official2f85_xense_realcase_adapter_notips_tipdown_"
-        "lr180_gelscale318_089_x1080_h4_padzdown20mm_gray_overlay_cameraalign1_drivefix_padgap11_camera_centered.usda"
+    robot.spawn.usd_path = str(
+        Path(__file__).resolve().parents[2]
+        / "assets/embodiments/franka_robotiq_xensews_camera_centered.usda"
     )
     # Keep the visual/UIPC gelpad bound to the same named XenseWS link. Cross-binding
     # makes the pads move apart when the gripper closes.

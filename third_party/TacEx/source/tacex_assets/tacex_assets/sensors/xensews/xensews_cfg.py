@@ -2,8 +2,7 @@ from dataclasses import MISSING
 
 from isaaclab.utils import configclass
 
-from tacex import GelSightSensorCfg
-from tacex_assets.sensors.xensews.xense_sensor import XenseWSSensor
+from tacex import GelSightSensor, GelSightSensorCfg
 from tacex.simulation_approaches.fots import FOTSMarkerSimulatorCfg
 from tacex.simulation_approaches.gpu_taxim import TaximSimulatorCfg
 
@@ -14,7 +13,7 @@ from tacex_assets import TACEX_ASSETS_DATA_DIR
 
 @configclass
 class XenseWSCfg(GelSightSensorCfg):
-    class_type: type = XenseWSSensor
+    class_type: type = GelSightSensor
 
     case_dimensions: GelSightSensorCfg.Dimensions = GelSightSensorCfg.Dimensions(
         width=52.8 / 1000, length=27 / 1000, height=22 / 1000
