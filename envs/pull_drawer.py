@@ -112,6 +112,14 @@ class Task(BaseTask):
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
         super().__init__(cfg, mode, render_mode, **kwargs)
+        # BaseTask takes its first UIPC reset steps before calling
+        # _reset_actors(). Stage the assembly constraints now so those first
+        # steps do not solve an unconstrained cabinet/drawer contact stack.
+        self._stage_drawer_assembly(
+            self.cabinet_init_pose,
+            self.lower_drawer_init_pose,
+            self.upper_drawer_init_pose,
+        )
 
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
         cfg = super().load_robot_and_sensors(cfg)
@@ -133,13 +141,19 @@ class Task(BaseTask):
         self.lower_drawer_init_pose = lower_drawer_pose.clone()
         self.upper_drawer_init_pose = upper_drawer_pose.clone()
 
+    def _stage_drawer_assembly(self, cabinet_pose: Pose, lower_drawer_pose: Pose, upper_drawer_pose: Pose):
+        """Stage assembly poses before UIPC advances the contact solver."""
+        self.cabinet.set_pose(cabinet_pose)
+        self.lower_drawer.set_pose(lower_drawer_pose)
+        self.upper_drawer.set_pose(upper_drawer_pose)
+        self._actor_manager.update(dt=0.0)
+
     def create_actors(self):
         # create_actors 只在环境初始化时调用一次，用于把 USD 资产注册成 UIPC actor。
         # 后续每个 episode 的随机化不重新创建资产，而是在 _reset_actors 中移动已有 actor。
         cabinet_pose = CABINET_BASE_POSE.clone()
         lower_drawer_pose = self._drawer_pose(cabinet_pose, LOWER_DRAWER_Z_OFFSET)
         upper_drawer_pose = self._drawer_pose(cabinet_pose, UPPER_DRAWER_Z_OFFSET)
-        constrain_static_fixtures = self._is_xense()
 
         # 柜体密度设得很大，近似作为固定基座；上下抽屉保留较低密度，允许被拉动。
         self.cabinet = self._actor_manager.add_from_usd_file(
@@ -148,7 +162,7 @@ class Task(BaseTask):
             # visual_asset_path="cabinet_body_picture.usd",
             pose=cabinet_pose,
             density=1e5,
-            keep_constrained=constrain_static_fixtures,
+            keep_constrained=True,
             # show_physics_mesh=False,
         )
         self.lower_drawer = self._actor_manager.add_from_usd_file(
@@ -156,7 +170,7 @@ class Task(BaseTask):
             asset_path="task_0724/pull_drawer/lower_drawer.usd",
             pose=lower_drawer_pose,
             density=1e3,
-            keep_constrained=constrain_static_fixtures,
+            keep_constrained=True,
         )
         self.upper_drawer = self._actor_manager.add_from_usd_file(
             name='upper_drawer',
@@ -176,9 +190,7 @@ class Task(BaseTask):
         lower_drawer_pose = self._drawer_pose(cabinet_pose, LOWER_DRAWER_Z_OFFSET)
         upper_drawer_pose = self._drawer_pose(cabinet_pose, UPPER_DRAWER_Z_OFFSET)
 
-        self.cabinet.set_pose(cabinet_pose)
-        self.lower_drawer.set_pose(lower_drawer_pose)
-        self.upper_drawer.set_pose(upper_drawer_pose)
+        self._stage_drawer_assembly(cabinet_pose, lower_drawer_pose, upper_drawer_pose)
         self._set_reference_poses(cabinet_pose, lower_drawer_pose, upper_drawer_pose)
 
         # 保存初始位姿到 metadata，便于离线检查每条数据对应的随机化状态。
@@ -188,7 +200,8 @@ class Task(BaseTask):
         self.metadata['drawer_z_clearance'] = float(
             XENSE_DRAWER_Z_CLEARANCE if self._is_xense() else DRAWER_Z_CLEARANCE
         )
-        self.metadata['static_fixture_constraints'] = bool(self._is_xense())
+        self.metadata['static_fixture_constraints'] = True
+        self.metadata['static_fixture_actor_names'] = ['cabinet', 'lower_drawer']
 
     def pre_move(self):
         # pre_move 在正式记录动作前执行：先稳定仿真，再张开夹爪准备靠近把手。
@@ -237,9 +250,10 @@ class Task(BaseTask):
 
         # 靠近把手后再闭合夹爪。这里把 close 单独放一步，方便采集到“接近”和“夹紧”阶段。
         close_percent = self.get_xense_close_percent("xense_drawer_close_percent")
-        if self._is_xense():
-            self.upper_drawer.remove_animate(force=True)
-            self._actor_manager.update(dt=0.0)
+        # Reset poses are held by an animator constraint for every sensor.
+        # Release the upper drawer only when the gripper is ready to close.
+        self.upper_drawer.remove_animate(force=True)
+        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_upper_drawer_handle",

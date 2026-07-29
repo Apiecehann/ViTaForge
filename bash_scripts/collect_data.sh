@@ -1,81 +1,205 @@
 #!/usr/bin/env bash
-# Run data-collection smoke checks for the non-Xense tactile sensors.
-# Defaults are intentionally light: one seed per task, video_frequency from
-# each task_config, and output under ./data.
+
+# Collect one successful episode for every selected modality/task pair.
+# The default is 4 modalities x 8 tasks = 32 sequential runs on one GPU.
+# Each pair tries seeds 0-4 and stops immediately after the first success.
+# Data is written directly under ./data; only logs are grouped by run name.
 #
 # Examples:
 #   bash bash_scripts/collect_data.sh
-#   SENSORS="gelsight neote" TASKS="insert_usb pull_drawer" bash bash_scripts/collect_data.sh
-#   EPISODE_NUM=1 START_SEED=0 MAX_SEED=10 GPU=0 bash bash_scripts/collect_data.sh
-#   RUN_XENSE=1 SENSORS="xense" bash bash_scripts/collect_data.sh
+#   DRY_RUN=1 bash bash_scripts/collect_data.sh
+#   GPU=1 MODALITIES="xense neote" TASKS="insert_usb pull_drawer" \
+#     bash bash_scripts/collect_data.sh
+#   MAX_SEED=9 bash bash_scripts/collect_data.sh
 
-set -u
+set -uo pipefail
 
-source /opt/conda/etc/profile.d/conda.sh
-conda activate UniVTAC
-
-cd /root/gpufree-data/UniVTAC
-
+PROJECT_ROOT="${PROJECT_ROOT:-/root/gpufree-data/UniVTAC}"
+CONDA_ENV="${CONDA_ENV:-UniVTAC}"
+GPU="${GPU:-0}"
 EPISODE_NUM="${EPISODE_NUM:-1}"
 START_SEED="${START_SEED:-0}"
-MAX_SEED="${MAX_SEED:-0}"
-GPU="${GPU:-0}"
-SENSORS="${SENSORS:-gelsight neote}"
+MAX_SEED="${MAX_SEED:-4}"
+DRY_RUN="${DRY_RUN:-0}"
+STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
+
+MODALITIES="${MODALITIES:-gelsight xense neote neote_force_field}"
 TASKS="${TASKS:-insert_usb insert_half_cylinder_into_box grasp_half_cylinder_in_clutter place_wooden_cube_on_yellow_area pull_drawer pour_ball_to_cup swap_cup_order turn_gear_pair}"
-RUN_XENSE="${RUN_XENSE:-0}"
 
-status=0
+RUN_NAME="${RUN_NAME:-$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/data}"
+LOG_ROOT="${LOG_ROOT:-${PROJECT_ROOT}/logs/collect_data}"
+RUN_OUTPUT_DIR="${OUTPUT_ROOT}"
+RUN_LOG_DIR="${LOG_ROOT}/${RUN_NAME}"
+SUMMARY_FILE="${RUN_LOG_DIR}/summary.tsv"
 
-run_collect() {
-    local task="$1"
-    local config="$2"
+source /opt/conda/etc/profile.d/conda.sh
+conda activate "${CONDA_ENV}"
+cd "${PROJECT_ROOT}"
 
-    echo
-    echo "===== ${config} / ${task} ====="
-    if ! python scripts/collect_data.py "${task}" "${config}" \
-        --episode_num "${EPISODE_NUM}" \
-        --start_seed "${START_SEED}" \
-        --max_seed "${MAX_SEED}" \
-        --gpu "${GPU}"; then
-        echo "!!!!! FAILED: ${config} / ${task}"
-        status=1
+if ! [[ "${EPISODE_NUM}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "EPISODE_NUM must be a positive integer."
+    exit 2
+fi
+
+if ! [[ "${START_SEED}" =~ ^[0-9]+$ && "${MAX_SEED}" =~ ^[0-9]+$ ]]; then
+    echo "START_SEED and MAX_SEED must be non-negative integers."
+    exit 2
+fi
+
+if (( MAX_SEED < START_SEED )); then
+    echo "MAX_SEED must be greater than or equal to START_SEED."
+    exit 2
+fi
+
+mkdir -p "${RUN_OUTPUT_DIR}" "${RUN_LOG_DIR}"
+
+TEMP_CONFIG_DIR="$(mktemp -d /tmp/univtac-collect-data.XXXXXX)"
+cleanup() {
+    if [[ "${TEMP_CONFIG_DIR}" == /tmp/univtac-collect-data.* ]]; then
+        rm -rf -- "${TEMP_CONFIG_DIR}"
     fi
 }
+trap cleanup EXIT
 
-run_sensor() {
-    local sensor="$1"
-    local config=""
+read -r -a modality_list <<< "${MODALITIES}"
+read -r -a task_list <<< "${TASKS}"
 
-    case "${sensor}" in
-        gelsight|gelsight_mini|gsmini|demo)
-            config="gelsight"
-            ;;
-        neote|xinzhi|新智)
-            config="neote"
-            ;;
-        xense|xensews)
-            if [[ "${RUN_XENSE}" != "1" ]]; then
-                echo "Skip Xense by default. Set RUN_XENSE=1 to enable it."
-                return 0
-            fi
-            config="xense"
+for modality in "${modality_list[@]}"; do
+    case "${modality}" in
+        gelsight|xense|neote|neote_force_field)
             ;;
         *)
-            echo "Unknown sensor '${sensor}'. Valid: gelsight, neote, xense."
-            status=1
-            return 0
+            echo "Unknown modality: ${modality}"
+            echo "Valid modalities: gelsight xense neote neote_force_field"
+            exit 2
             ;;
     esac
 
-    echo
-    echo "========== Sensor: ${sensor} -> config: ${config} =========="
-    for task in ${TASKS}; do
-        run_collect "${task}" "${config}"
-    done
-}
+    source_config="${PROJECT_ROOT}/task_config/${modality}.yml"
+    generated_config="${TEMP_CONFIG_DIR}/${modality}.yml"
+    if [[ ! -f "${source_config}" ]]; then
+        echo "Missing config: ${source_config}"
+        exit 2
+    fi
 
-for sensor in ${SENSORS}; do
-    run_sensor "${sensor}"
+    sed "s|^save_dir:.*|save_dir: ${RUN_OUTPUT_DIR}|" \
+        "${source_config}" > "${generated_config}"
 done
 
-exit "${status}"
+for task in "${task_list[@]}"; do
+    if [[ ! -f "${PROJECT_ROOT}/envs/${task}.py" ]]; then
+        echo "Missing task: ${PROJECT_ROOT}/envs/${task}.py"
+        exit 2
+    fi
+done
+
+printf 'modality\ttask\tresult\texit_code\tlog\n' > "${SUMMARY_FILE}"
+
+passed=0
+task_failed=0
+program_error=0
+dry_run_count=0
+stop_requested=0
+
+run_one() {
+    local modality="$1"
+    local task="$2"
+    local config_file="${TEMP_CONFIG_DIR}/${modality}.yml"
+    local log_file="${RUN_LOG_DIR}/${modality}__${task}.log"
+    local suc_map="${RUN_OUTPUT_DIR}/${task}/${modality}/suc_map.txt"
+    local exit_code=0
+    local result=""
+    local command=(
+        python scripts/collect_data.py
+        "${task}"
+        "${config_file}"
+        --episode_num "${EPISODE_NUM}"
+        --start_seed "${START_SEED}"
+        --max_seed "${MAX_SEED}"
+        --gpu "${GPU}"
+    )
+
+    echo
+    echo "================================================================"
+    echo "Modality: ${modality}"
+    echo "Task:     ${task}"
+    echo "GPU:      ${GPU}"
+    echo "Log:      ${log_file}"
+    echo "================================================================"
+
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        printf 'DRY RUN: '
+        printf '%q ' "${command[@]}"
+        printf '\n'
+        printf '%s\t%s\tDRY_RUN\t0\t%s\n' \
+            "${modality}" "${task}" "${log_file}" >> "${SUMMARY_FILE}"
+        ((dry_run_count += 1))
+        return 0
+    fi
+
+    "${command[@]}" 2>&1 | tee "${log_file}"
+    exit_code=${PIPESTATUS[0]}
+
+    if (( exit_code != 0 )); then
+        result="PROGRAM_ERROR"
+        ((program_error += 1))
+    elif [[ -f "${suc_map}" ]] && grep -qw '1' "${suc_map}"; then
+        result="PASS"
+        ((passed += 1))
+    else
+        result="TASK_FAILED"
+        ((task_failed += 1))
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "${modality}" "${task}" "${result}" "${exit_code}" "${log_file}" \
+        >> "${SUMMARY_FILE}"
+    echo "Result: ${result}"
+
+    if [[ "${STOP_ON_ERROR}" == "1" && "${result}" != "PASS" ]]; then
+        stop_requested=1
+    fi
+}
+
+echo "Run name:       ${RUN_NAME}"
+echo "Modalities:     ${MODALITIES}"
+echo "Tasks:          ${TASKS}"
+echo "Seed range:     ${START_SEED}-${MAX_SEED}"
+echo "Output root:    ${RUN_OUTPUT_DIR}"
+echo "Log root:       ${RUN_LOG_DIR}"
+echo "Dry run:        ${DRY_RUN}"
+
+for modality in "${modality_list[@]}"; do
+    for task in "${task_list[@]}"; do
+        run_one "${modality}" "${task}"
+        if (( stop_requested == 1 )); then
+            break 2
+        fi
+    done
+done
+
+echo
+echo "============================== Summary =============================="
+if command -v column >/dev/null 2>&1; then
+    column -t -s $'\t' "${SUMMARY_FILE}"
+else
+    cat "${SUMMARY_FILE}"
+fi
+echo
+echo "PASS:          ${passed}"
+echo "TASK_FAILED:   ${task_failed}"
+echo "PROGRAM_ERROR: ${program_error}"
+echo "DRY_RUN:       ${dry_run_count}"
+echo "Summary file:  ${SUMMARY_FILE}"
+echo "Data output:   ${RUN_OUTPUT_DIR}"
+
+if (( program_error > 0 )); then
+    exit 1
+fi
+
+if (( task_failed > 0 )); then
+    exit 2
+fi
+
+exit 0

@@ -319,9 +319,10 @@ class Task(BaseTask):
         close_percent = self.get_xense_close_percent(
             "xense_insert_half_cylinder_close_percent"
         )
-        if is_xense:
-            self.selected_block.remove_animate(force=True)
-            self._actor_manager.update(dt=0.0)
+        # Reset poses are held by an animator constraint for every sensor.
+        # Release the selected block only when the gripper is ready to close.
+        self.selected_block.remove_animate(force=True)
+        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag=f"close_{self.target_block_key}",

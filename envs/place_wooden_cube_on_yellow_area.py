@@ -231,9 +231,10 @@ class Task(BaseTask):
         self.record_xense_grasp_debug("xense_after_approach_wooden_cube", self.wooden_cube)
 
         close_percent = self.get_xense_close_percent("xense_cube_close_percent")
-        if is_xense:
-            self.wooden_cube.remove_animate(force=True)
-            self._actor_manager.update(dt=0.0)
+        # Reset poses are held by an animator constraint for every sensor.
+        # Release the cube only when the gripper is ready to close.
+        self.wooden_cube.remove_animate(force=True)
+        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_wooden_cube",

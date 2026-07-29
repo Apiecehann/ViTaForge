@@ -115,8 +115,8 @@ class BaseTaskCfg(DirectRLEnvCfg):
     save_dir = "auto"
     obs_data_type = {}
 
-    save_frequency = 1
-    video_frequency = 1
+    save_frequency = 2
+    video_frequency = 2
     render_frequency = 0
     video_size: tuple[int, int] | None = None
 
@@ -1429,7 +1429,11 @@ class BaseTask(UipcRLEnv):
         key: str,
         fallback_key: str = "adaptive_grasp_depth_threshold",
     ) -> float | None:
-        threshold = getattr(self.cfg, key, None)
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        threshold = getattr(self.cfg, key, None) if is_xense else None
         if threshold is None:
             threshold = getattr(self.cfg, fallback_key, None)
         return None if threshold is None else float(threshold)

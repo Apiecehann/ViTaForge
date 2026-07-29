@@ -9,11 +9,10 @@ XENSE_CUP_BASE_Z = 0.002
 XENSE_BALL_BASE_Z = 0.020
 XENSE_YELLOW_CUP_Y = -0.100
 
-# Panda/GelSight keep the original task pose. Xense cups remain constrained
-# through reset, so only their reset pose is lowered to the physically settled
-# ground-contact height; the cup USD geometry and cup/ball relative layout stay unchanged.
-PANDA_CUP_BASE_Z = 0.020
-PANDA_BALL_BASE_Z = 0.038
+# Reset constraints are released before grasping, so every sensor must start at
+# the physical ground-contact height. Keep the cup/ball relative layout unchanged.
+PANDA_CUP_BASE_Z = 0.002
+PANDA_BALL_BASE_Z = 0.020
 PANDA_YELLOW_CUP_Y = -0.100
 CUP_RESET_XY_NOISE = (0.030, 0.030, 0.0)
 TASK_INSTRUCTION = "Pour the red ball from the blue cup into the yellow cup."
@@ -216,6 +215,44 @@ class Task(BaseTask):
         if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
             self._approach_blue_cup_rim()
             self._update_render()
+        else:
+            # Panda/GelSight and Neote used to rely on BaseTask releasing all
+            # reset constraints before pre_move. Release both pour actors here
+            # and settle them before deriving the rim grasp pose.
+            blue_cup_pose_before_release = self.blue_cup.get_pose()
+            red_ball_pose_before_release = self.red_ball.get_pose()
+            self.blue_cup.remove_animate(force=True)
+            self.red_ball.remove_animate(force=True)
+            self._actor_manager.update(dt=0.0)
+            self._wait_actor_until_still(
+                self.blue_cup,
+                max_steps=120,
+                min_steps=20,
+                stable_steps=10,
+                tag="wait_blue_cup_still_before_grasp",
+            )
+            self._wait_ball_until_still(
+                max_steps=120,
+                min_steps=20,
+                stable_steps=10,
+                tag="wait_red_ball_still_before_grasp",
+            )
+            blue_cup_pose_after_settle = self.blue_cup.get_pose()
+            self.metadata["blue_cup_pose_before_pregrasp_release"] = (
+                blue_cup_pose_before_release.tolist()
+            )
+            self.metadata["red_ball_pose_before_pregrasp_release"] = (
+                red_ball_pose_before_release.tolist()
+            )
+            self.metadata["blue_cup_pose_after_pregrasp_settle"] = (
+                blue_cup_pose_after_settle.tolist()
+            )
+            self.metadata["red_ball_pose_after_pregrasp_settle"] = (
+                self.red_ball.get_pose().tolist()
+            )
+            self.metadata["blue_cup_pregrasp_settle_drop_m"] = float(
+                blue_cup_pose_before_release.p[2] - blue_cup_pose_after_settle.p[2]
+            )
 
     def _record_blue_cup_shape(self, label: str):
         vertices = np.asarray(self.blue_cup.vertices, dtype=np.float64).copy()
@@ -653,8 +690,8 @@ class Task(BaseTask):
             fallback_key="xense_cup_close_percent",
         )
         if is_xense:
-            # Release the reset-only world constraint before closing. Keeping
-            # it active while both pads squeeze the wall over-constrains UIPC.
+            # Xense approaches during pre_move while the reset constraint is
+            # still active. Release it only when the pads are ready to close.
             self.blue_cup.remove_animate(force=True)
             self._actor_manager.update(dt=0.0)
         self.move(
@@ -769,11 +806,10 @@ class Task(BaseTask):
         self._blue_cup_shape_before_pour = self._record_blue_cup_shape("before_pour")
         self.record_xense_grasp_debug("xense_before_pour_blue_cup", self.blue_cup)
 
-        if is_xense:
-            # Ensure the ball is governed only by contact and gravity during
-            # the pour, even if a reset constraint survived an earlier step.
-            self.red_ball.remove_animate(force=True)
-            self._actor_manager.update(dt=0.0)
+        # Ensure the ball is governed only by contact and gravity during the
+        # pour, even if a reset constraint survived an earlier step.
+        self.red_ball.remove_animate(force=True)
+        self._actor_manager.update(dt=0.0)
 
         # 第二步不再给蓝杯目标 pose 做反解。当前 translation 为 0, 会跳过 EEF 平移规划,
         # 只旋转最后一个关节 panda_joint7 来倒杯。
