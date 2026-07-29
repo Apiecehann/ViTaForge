@@ -33,6 +33,42 @@ class ManiSkillSimulatorCfg(GelSightSimulatorCfg):
 
     marker_visual_noise: float = 80.0
 
+    marker_visual_motion_scale: float = 1.0
+
+    marker_visual_flow_smoothing: int = 0
+
+    marker_visual_motion_clip_px: float = 0.0
+
+    marker_visual_background_scale: float = 0.06
+
+    marker_visual_contact_gain: float = 8.0
+
+    marker_visual_contact_gamma: float = 0.85
+
+    marker_visual_background_threshold: float = 0.18
+
+    marker_motion_force_enabled: bool = False
+
+    marker_motion_shear_px_per_n: float = 0.0
+
+    marker_motion_normal_px: float = 0.0
+
+    marker_motion_normal_force_ref: float = 0.01
+
+    marker_motion_normal_gamma: float = 0.8
+
+    marker_motion_depth_px_per_mm: float = 0.0
+
+    marker_motion_depth_ref_mm: float = 0.5
+
+    marker_motion_depth_deadband_mm: float = 0.005
+
+    marker_visual_jitter: float = 0.0
+
+    marker_visual_jitter_seed: int = 20260623
+
+    marker_visual_bounds: tuple[float, float, float, float] | None = None
+
     marker_binding_center_x_m: float | None = None
     """Camera-frame x coordinate used to bind the FEM marker lattice."""
 

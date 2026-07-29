@@ -178,41 +178,17 @@ class GelSightSensor(SensorBase):
         if "camera_depth" in self._data.output:
             self._data.output["camera_depth"][env_ids] = 0
 
-        tactile_rgb = None
-        if self.optical_simulator is not None and (
-            "tactile_rgb" in self._data.output or "marker_rgb" in self._data.output
-        ):
-            tactile_rgb = self.optical_simulator.optical_simulation()
-            if "tactile_rgb" in self._data.output:
-                self._data.output["tactile_rgb"][:] = (
-                    tactile_rgb * 255
-                ).to(dtype=torch.uint8)
-
-        marker_motion = None
-        if self.marker_motion_simulator is not None and (
-            "marker_motion" in self._data.output or "marker_rgb" in self._data.output
-        ):
-            marker_motion = self.marker_motion_simulator.marker_motion_simulation()
-            if "marker_motion" in self._data.output:
-                self._data.output["marker_motion"][:] = marker_motion
-                self._data.output["init_marker_pos"] = ([0], [0])
-
-        if (
-            "marker_rgb" in self._data.output
-            and tactile_rgb is not None
-            and marker_motion is not None
-        ):
-            marker_img = self.marker_motion_simulator.draw_markers(
-                marker_uv=marker_motion[0, 1]
-            )
-            marker_rgb = tactile_rgb * torch.dstack([marker_img / 255] * 3)
-            self._data.output["marker_rgb"] = (
-                marker_rgb * 255
-            ).to(dtype=torch.uint8)
-
-        if self.optical_simulator is not None:
+        # simulate optical/marker output, but without indentation
+        if (self.optical_simulator is not None) and ("tactile_rgb" in self._data.output):
+            self._data.output["tactile_rgb"][:] = self.optical_simulator.optical_simulation()
             self.optical_simulator.reset()
-        if self.marker_motion_simulator is not None:
+
+        if (self.marker_motion_simulator is not None) and ("marker_motion" in self._data.output):
+            # height_map_shifted = self.taxim._get_shifted_height_map(self._indentation_depth, self._data.output["height_map"])
+            self._data.output["marker_motion"][:] = self.marker_motion_simulator.marker_motion_simulation()
+            # (yy_init_pos, xx_init_pos), i.e. along height x width of tactile img
+            self._data.output["init_marker_pos"] = ([0], [0])
+
             self.marker_motion_simulator.reset()
 
         # Reset the frame count
@@ -345,9 +321,9 @@ class GelSightSensor(SensorBase):
             self._data.output["marker_rgb"] = torch.zeros(
                 (
                     self._num_envs,
+                    3,
                     self.cfg.optical_sim_cfg.tactile_img_res[1],
                     self.cfg.optical_sim_cfg.tactile_img_res[0],
-                    3,
                 ),
                 device=self.cfg.device,
             )
@@ -408,46 +384,22 @@ class GelSightSensor(SensorBase):
         if "camera_rgb" in self._data.output:
             self._data.output["camera_rgb"][:] = self.camera.data.output["rgb"]
 
-        tactile_rgb = None
-        needs_tactile_rgb = (
-            self.optical_simulator is not None
-            and (
-                "tactile_rgb" in self.cfg.data_types
-                or "marker_rgb" in self.cfg.data_types
-            )
-        )
-        if needs_tactile_rgb:
-            tactile_rgb = self.optical_simulator.optical_simulation()
-            if "tactile_rgb" in self.cfg.data_types:
-                self._data.output["tactile_rgb"][:] = (
-                    tactile_rgb * 255
-                ).to(dtype=torch.uint8)
-
-        marker_motion = None
-        needs_marker_motion = (
-            self.marker_motion_simulator is not None
-            and (
-                "marker_motion" in self.cfg.data_types
-                or "marker_rgb" in self.cfg.data_types
-            )
-        )
-        if needs_marker_motion:
-            marker_motion = self.marker_motion_simulator.marker_motion_simulation()
-            if "marker_motion" in self.cfg.data_types:
-                self._data.output["marker_motion"][:] = marker_motion
-
-        if (
-            "marker_rgb" in self.cfg.data_types
-            and tactile_rgb is not None
-            and marker_motion is not None
-        ):
-            marker_img = self.marker_motion_simulator.draw_markers(
-                marker_uv=marker_motion[0, 1]
-            )
-            marker_rgb = tactile_rgb * torch.dstack([marker_img / 255] * 3)
-            self._data.output["marker_rgb"] = (
-                marker_rgb * 255
+        if (self.optical_simulator is not None) and ("tactile_rgb" in self.cfg.data_types):
+            # self.optical_simulator.height_map = self._data.output["height_map"]
+            self._data.output["tactile_rgb"][:] = (
+                self.optical_simulator.optical_simulation() * 255
             ).to(dtype=torch.uint8)
+
+        if (self.marker_motion_simulator is not None) and ("marker_motion" in self.cfg.data_types):
+            self._data.output["marker_motion"][:] = self.marker_motion_simulator.marker_motion_simulation()
+        
+        if (self.marker_motion_simulator is not None) and (self.optical_simulator is not None) \
+            and ("marker_rgb" in self.cfg.data_types):
+            tactile_rgb = self.optical_simulator.optical_simulation()
+            marker_motion = self.marker_motion_simulator.marker_motion_simulation()[0, 1]
+            marker_img = self.marker_motion_simulator.draw_markers(marker_uv=marker_motion)
+            tactile_rgb *= torch.dstack([marker_img / 255] * 3)
+            self._data.output["marker_rgb"] = (tactile_rgb * 255).to(dtype=torch.uint8)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # we actually set the debug_vis in _initialize_impl, since we need the _prim_view, which
@@ -639,10 +591,9 @@ class GelSightSensor(SensorBase):
         if self.camera is not None:
             depth_output = self.camera.data.output["depth"][
                 :, :, :, 0
-            ].clone()  # tiled camera gives us data with shape (num_cameras, height, width, num_channels),
-            near, far = self.cfg.sensor_camera_cfg.clipping_range
-            depth_output[~torch.isfinite(depth_output)] = far
-            depth_output.clamp_(min=near, max=far)
+            ]  # tiled camera gives us data with shape (num_cameras, height, width, num_channels),
+            # clip camera values that are = inf
+            depth_output[torch.isinf(depth_output)] = self.cfg.sensor_camera_cfg.clipping_range[1]
 
             self._data.output["camera_depth"] = depth_output.reshape(
                 (self._num_envs, 1, self.camera_resolution[1], self.camera_resolution[0])
@@ -651,8 +602,8 @@ class GelSightSensor(SensorBase):
 
             # normalize the depth image
             normalized = self._data.output["camera_depth"].view(self._data.output["camera_depth"].size(0), -1)
-            normalized -= near * 1000
-            normalized /= (far - near) * 1000
+            normalized -= self.cfg.sensor_camera_cfg.clipping_range[0] * 1000
+            normalized /= self.cfg.sensor_camera_cfg.clipping_range[1] * 1000
             normalized = (normalized * 255).type(dtype=torch.uint8)
             self._data.output["camera_depth"] = normalized.reshape(
                 (self._num_envs, self.camera_resolution[1], self.camera_resolution[0], 1)
@@ -665,9 +616,10 @@ class GelSightSensor(SensorBase):
             self._data.output["height_map"][:] = self.camera.data.output["depth"][
                 :, :, :, 0
             ]  # tiled camera gives us data with shape (num_cameras, height, width, num_channels),
-            near, far = self.cfg.sensor_camera_cfg.clipping_range
-            self._data.output["height_map"][~torch.isfinite(self._data.output["height_map"])] = far
-            self._data.output["height_map"].clamp_(min=near, max=far)
+            # clip camera values that are = inf
+            self._data.output["height_map"][torch.isinf(self._data.output["height_map"])] = (
+                self.cfg.sensor_camera_cfg.clipping_range[1]
+            )
             # default unit is meter -> convert to mm for optical sim
             self._data.output["height_map"] *= 1000
 

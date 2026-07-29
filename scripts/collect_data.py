@@ -177,6 +177,9 @@ def main():
         "max_seed": max_seed,
     })
 
+    if "xense_use_baseline_filter" in task_config:
+        os.environ["XENSE_USE_BASELINE_FILTER"] = "1" if task_config["xense_use_baseline_filter"] else "0"
+
     task_module = importlib.import_module(f"envs.{task_file_name}")
     env_cfg:'BaseTaskCfg' = task_module.TaskCfg()
     env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
