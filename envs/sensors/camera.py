@@ -29,6 +29,10 @@ class CameraManager:
         camera._is_initialized = True
         self.scene.sensors[f'camera_{cam_cfg.name}'] = camera
         return camera
+
+    def update(self, dt, force_recompute=False):
+        for cam in self.cameras.values():
+            cam.update(dt=dt, force_recompute=force_recompute)
     
     def get_observations(self, data_types: list[str] = None):
         obs = {}

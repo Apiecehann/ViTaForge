@@ -165,6 +165,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     use_adaptive_grasp: bool = True
     adaptive_grasp_depth_threshold = None # in mm
     reset_time_limit: float = 200.0  # in seconds
+    reset_render_warmup_steps: int = 32
 
     cameras: list[CameraCfg] = [
         CameraCfg(
@@ -423,7 +424,8 @@ class BaseTask(UipcRLEnv):
                 raise RuntimeError(
                     f'Timeout: reset exceed time limit of {self.cfg.reset_time_limit} s, cost {reset_test_cost} s.'
                 )
-        self._update_render()
+        for _ in range(self.cfg.reset_render_warmup_steps):
+            self._update_render()
 
         if not self.cfg.skip_pre_move:
             self.pre_move()
@@ -483,6 +485,7 @@ class BaseTask(UipcRLEnv):
         dt = self.physics_dt * self.cfg.decimation * max(1, self.step_count - self.last_render)
         self.scene.update(dt=dt)
         self._actor_manager.update(dt=dt)
+        self._camera_manager.update(dt=dt, force_recompute=True)
         self._tactile_manager.update(dt=dt, force_recompute=True)
  
         self.last_render = self.step_count
