@@ -96,6 +96,9 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
         env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
         env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)
         env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
+        env_cfg.reset_render_warmup_steps = task_config.get(
+            "reset_render_warmup_steps", env_cfg.reset_render_warmup_steps
+        )
         env_cfg.obs_data_type = task_config.get("observations", {})
         env_cfg.scene.num_envs = 1
         # Device routing by CUDA env
