@@ -42,96 +42,14 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _env_float_triplet(name: str, default: tuple[float, float, float]) -> tuple[float, float, float]:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    parts = raw.replace(",", " ").split()
-    if len(parts) != 3:
-        return default
-    try:
-        return float(parts[0]), float(parts[1]), float(parts[2])
-    except ValueError:
-        return default
-
-
-def _env_float_quad(name: str, default: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    parts = raw.replace(",", " ").split()
-    if len(parts) != 4:
-        return default
-    try:
-        return float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
-    except ValueError:
-        return default
-
-
 XSENSE_USE_REAL_BLUR_BG = _env_bool("XSENSE_USE_REAL_BLUR_BG", True)
 XSENSE_BLUR_BG_PATH = os.environ.get("XSENSE_BLUR_BG_PATH", "").strip()
 XSENSE_BACKGROUND_OVERRIDE_RAW = _env_bool("XSENSE_BACKGROUND_OVERRIDE_RAW", True)
-
-XSENSE_TAXIM_RESPONSE_ENABLED = _env_bool("XSENSE_TAXIM_RESPONSE_ENABLED", True)
-XSENSE_TAXIM_RESPONSE_MODEL = os.environ.get("XSENSE_TAXIM_RESPONSE_MODEL", "analytic_xsense").strip()
-XSENSE_TAXIM_RESPONSE_RESIDUAL_GAIN = _env_float("XSENSE_TAXIM_RESPONSE_RESIDUAL_GAIN", 1.8)
-XSENSE_TAXIM_RESPONSE_HIGHPASS_SIGMA_PX = _env_float("XSENSE_TAXIM_RESPONSE_HIGHPASS_SIGMA_PX", 35.0)
-XSENSE_TAXIM_RESPONSE_CONTACT_GATE_THRESHOLD = _env_float("XSENSE_TAXIM_RESPONSE_CONTACT_GATE_THRESHOLD", 0.05)
-XSENSE_TAXIM_RESPONSE_CONTACT_GATE_GAMMA = _env_float("XSENSE_TAXIM_RESPONSE_CONTACT_GATE_GAMMA", 1.0)
-XSENSE_TAXIM_RESPONSE_CONTACT_GATE_BLUR_PASSES = max(
-    _env_int("XSENSE_TAXIM_RESPONSE_CONTACT_GATE_BLUR_PASSES", 1),
-    0,
-)
-XSENSE_TAXIM_RESPONSE_CONTACT_RGB = _env_float_triplet(
-    "XSENSE_TAXIM_RESPONSE_CONTACT_RGB",
-    (-0.052, -0.002, 0.072),
-)
-XSENSE_TAXIM_RESPONSE_EDGE_RGB = _env_float_triplet(
-    "XSENSE_TAXIM_RESPONSE_EDGE_RGB",
-    (-0.010, 0.0, 0.016),
-)
-XSENSE_TAXIM_RESPONSE_EDGE_GAIN = _env_float("XSENSE_TAXIM_RESPONSE_EDGE_GAIN", 1.0)
-XSENSE_TAXIM_RESPONSE_INDENT_GAMMA = _env_float("XSENSE_TAXIM_RESPONSE_INDENT_GAMMA", 0.85)
-XSENSE_TAXIM_RESPONSE_INDENT_SUPPORT = _env_float("XSENSE_TAXIM_RESPONSE_INDENT_SUPPORT", 0.35)
-XSENSE_TAXIM_RESPONSE_TAXIM_RESIDUAL_MIX = _env_float("XSENSE_TAXIM_RESPONSE_TAXIM_RESIDUAL_MIX", 0.0)
-
-XSENSE_MARKER_VISUAL_MOTION_SCALE = _env_float("XSENSE_MARKER_VISUAL_MOTION_SCALE", 1.0)
-XSENSE_MARKER_VISUAL_FLOW_SMOOTHING = max(_env_int("XSENSE_MARKER_VISUAL_FLOW_SMOOTHING", 0), 0)
-XSENSE_MARKER_VISUAL_MOTION_CLIP_PX = _env_float("XSENSE_MARKER_VISUAL_MOTION_CLIP_PX", 0.0)
-XSENSE_MARKER_VISUAL_NOISE = _env_float("XSENSE_MARKER_VISUAL_NOISE", 8.0)
-XSENSE_MARKER_VISUAL_BOUNDS = _env_float_quad("XSENSE_MARKER_VISUAL_BOUNDS", (0.05, 0.12, 0.95, 0.88))
-XSENSE_MARKER_VISUAL_BACKGROUND_SCALE = _env_float("XSENSE_MARKER_VISUAL_BACKGROUND_SCALE", 0.01)
-XSENSE_MARKER_VISUAL_CONTACT_GAIN = _env_float("XSENSE_MARKER_VISUAL_CONTACT_GAIN", 8.0)
-XSENSE_MARKER_VISUAL_CONTACT_GAMMA = _env_float("XSENSE_MARKER_VISUAL_CONTACT_GAMMA", 1.10)
-XSENSE_MARKER_VISUAL_BACKGROUND_THRESHOLD = _env_float("XSENSE_MARKER_VISUAL_BACKGROUND_THRESHOLD", 0.18)
-XSENSE_MARKER_MOTION_FORCE_ENABLED = _env_bool("XSENSE_MARKER_MOTION_FORCE_ENABLED", True)
-XSENSE_MARKER_MOTION_SHEAR_PX_PER_N = _env_float("XSENSE_MARKER_MOTION_SHEAR_PX_PER_N", 850.0)
-XSENSE_MARKER_MOTION_NORMAL_PX = _env_float("XSENSE_MARKER_MOTION_NORMAL_PX", 5.0)
-XSENSE_MARKER_MOTION_NORMAL_FORCE_REF = _env_float("XSENSE_MARKER_MOTION_NORMAL_FORCE_REF", 0.012)
-XSENSE_MARKER_MOTION_NORMAL_GAMMA = _env_float("XSENSE_MARKER_MOTION_NORMAL_GAMMA", 0.75)
-XSENSE_MARKER_MOTION_DEPTH_PX_PER_MM = _env_float("XSENSE_MARKER_MOTION_DEPTH_PX_PER_MM", 1.5)
-XSENSE_MARKER_MOTION_DEPTH_REF_MM = _env_float("XSENSE_MARKER_MOTION_DEPTH_REF_MM", 0.55)
-XSENSE_MARKER_MOTION_DEPTH_DEADBAND_MM = _env_float("XSENSE_MARKER_MOTION_DEPTH_DEADBAND_MM", 0.005)
+XSENSE_OPTICAL_RESPONSE_GAIN = 1.0
+XSENSE_MARKER_MOTION_GAIN = 1.0
+XSENSE_MARKER_VISUAL_NOISE = 8.0
+XSENSE_GEL_MASS_DENSITY = 1e3
+XSENSE_MARKER_GRID_BOUNDS = (0.05, 0.12, 0.95, 0.88)
 XSENSE_OUTPUT_ORIENTATION = os.environ.get("XSENSE_OUTPUT_ORIENTATION", "none").strip().lower()
 TACTILE_ATTACHMENT_DEBUG = _env_bool("TACTILE_ATTACHMENT_DEBUG", False)
 
@@ -268,29 +186,14 @@ def create_xensews_cfg(
             tactile_img_res=resolution,
             marker_shape=(11, 20),
             marker_interval=(
-                16.42 * (XSENSE_MARKER_VISUAL_BOUNDS[2] - XSENSE_MARKER_VISUAL_BOUNDS[0]) / 10,
-                27.84 * (XSENSE_MARKER_VISUAL_BOUNDS[3] - XSENSE_MARKER_VISUAL_BOUNDS[1]) / 19,
+                16.42 * (XSENSE_MARKER_GRID_BOUNDS[2] - XSENSE_MARKER_GRID_BOUNDS[0]) / 10,
+                27.84 * (XSENSE_MARKER_GRID_BOUNDS[3] - XSENSE_MARKER_GRID_BOUNDS[1]) / 19,
             ),
             sub_marker_num=0,
             marker_radius=3,
             sensor_type='xensews',
+            marker_motion_gain=XSENSE_MARKER_MOTION_GAIN,
             marker_visual_noise=XSENSE_MARKER_VISUAL_NOISE,
-            marker_visual_motion_scale=XSENSE_MARKER_VISUAL_MOTION_SCALE,
-            marker_visual_flow_smoothing=XSENSE_MARKER_VISUAL_FLOW_SMOOTHING,
-            marker_visual_motion_clip_px=XSENSE_MARKER_VISUAL_MOTION_CLIP_PX,
-            marker_visual_background_scale=XSENSE_MARKER_VISUAL_BACKGROUND_SCALE,
-            marker_visual_contact_gain=XSENSE_MARKER_VISUAL_CONTACT_GAIN,
-            marker_visual_contact_gamma=XSENSE_MARKER_VISUAL_CONTACT_GAMMA,
-            marker_visual_background_threshold=XSENSE_MARKER_VISUAL_BACKGROUND_THRESHOLD,
-            marker_motion_force_enabled=XSENSE_MARKER_MOTION_FORCE_ENABLED,
-            marker_motion_shear_px_per_n=XSENSE_MARKER_MOTION_SHEAR_PX_PER_N,
-            marker_motion_normal_px=XSENSE_MARKER_MOTION_NORMAL_PX,
-            marker_motion_normal_force_ref=XSENSE_MARKER_MOTION_NORMAL_FORCE_REF,
-            marker_motion_normal_gamma=XSENSE_MARKER_MOTION_NORMAL_GAMMA,
-            marker_motion_depth_px_per_mm=XSENSE_MARKER_MOTION_DEPTH_PX_PER_MM,
-            marker_motion_depth_ref_mm=XSENSE_MARKER_MOTION_DEPTH_REF_MM,
-            marker_motion_depth_deadband_mm=XSENSE_MARKER_MOTION_DEPTH_DEADBAND_MM,
-            marker_visual_bounds=XSENSE_MARKER_VISUAL_BOUNDS,
             # Bind both XSense lattices to the camera optical x-axis. The
             # runtime left gel surface is offset by about 1.1 mm, while the
             # right surface is centered; surface-centering made the two FEM
@@ -312,21 +215,11 @@ def create_xensews_cfg(
         device="cuda",
         background_img_override_path=_xsense_blur_bg_override_path(name),
         background_img_override_raw=XSENSE_BACKGROUND_OVERRIDE_RAW,
-        xsense_response_enabled=XSENSE_TAXIM_RESPONSE_ENABLED,
-        xsense_response_model=XSENSE_TAXIM_RESPONSE_MODEL,
-        xsense_response_residual_gain=XSENSE_TAXIM_RESPONSE_RESIDUAL_GAIN,
-        xsense_response_highpass_sigma_px=XSENSE_TAXIM_RESPONSE_HIGHPASS_SIGMA_PX,
-        xsense_response_contact_gate_threshold=XSENSE_TAXIM_RESPONSE_CONTACT_GATE_THRESHOLD,
-        xsense_response_contact_gate_gamma=XSENSE_TAXIM_RESPONSE_CONTACT_GATE_GAMMA,
-        xsense_response_contact_gate_blur_passes=XSENSE_TAXIM_RESPONSE_CONTACT_GATE_BLUR_PASSES,
-        xsense_response_contact_rgb=XSENSE_TAXIM_RESPONSE_CONTACT_RGB,
-        xsense_response_edge_rgb=XSENSE_TAXIM_RESPONSE_EDGE_RGB,
-        xsense_response_edge_gain=XSENSE_TAXIM_RESPONSE_EDGE_GAIN,
-        xsense_response_indent_gamma=XSENSE_TAXIM_RESPONSE_INDENT_GAMMA,
-        xsense_response_indent_support=XSENSE_TAXIM_RESPONSE_INDENT_SUPPORT,
-        xsense_response_taxim_residual_mix=XSENSE_TAXIM_RESPONSE_TAXIM_RESIDUAL_MIX,
-        # Taxim uses this as the nearest gel/contact surface. Keep it aligned
-        # with the tactile camera near plane so contact in 24~28mm produces RGB.
+        response_gain=XSENSE_OPTICAL_RESPONSE_GAIN,
+        subtract_zero_indentation_baseline=True,
+        use_physical_indentation_map=True,
+        gel_surface_depth=0.0280,
+        # The calibrated Xense gel occupies 24~28 mm from the optical center.
         gelpad_to_camera_min_distance=0.024,
     )
 
@@ -339,7 +232,7 @@ def create_xensews_cfg(
             # Xense uses raw depth, so keep the gelpad close to rigid to avoid
             # whole-pad bending/tilting dominating the tactile camera image.
             constitution_cfg=UipcObjectCfg.StableNeoHookeanCfg(youngs_modulus=15.0),
-            mass_density=1e4
+            mass_density=XSENSE_GEL_MASS_DENSITY
         ),
         gelpad_attachment_cfg=UipcIsaacAttachmentsCfg(
             constraint_strength_ratio=2e5,
@@ -686,6 +579,12 @@ class VisualTactileSensor:
                 obs['rgb_marker'] = self._orient_xsense_image(self.sensor.data.output['marker_rgb'].squeeze(0))
             elif data_type == 'depth':
                 obs['depth'] = self._orient_xsense_image(self.sensor.data.output['height_map'].squeeze(0))
+            elif data_type == 'indentation':
+                optical_simulator = getattr(self.sensor, 'optical_simulator', None)
+                indentation_map = getattr(optical_simulator, 'indentation_map', None)
+                if indentation_map is None:
+                    raise RuntimeError('Optical simulator does not expose an indentation map')
+                obs['indentation'] = self._orient_xsense_image(indentation_map.squeeze(0))
             elif data_type == 'marker':
                 obs['marker'] = self._orient_xsense_marker(self.sensor.data.output['marker_motion'].squeeze(0))
             elif data_type == 'points':
@@ -1099,11 +998,18 @@ class VisualTactileSensor:
             marker_simulator.reset_reference()
         marker_simulator.marker_data.zero_()
         output = self.sensor.data.output
+        marker_motion = None
+        if 'marker_motion' in output or 'marker_rgb' in output:
+            marker_motion = marker_simulator.marker_motion_simulation()
         if 'marker_motion' in output:
             output['marker_motion'].zero_()
-            output['marker_motion'][:] = marker_simulator.marker_motion_simulation()
-        if 'marker_rgb' in output and 'tactile_rgb' in output:
-            marker_uv = marker_simulator.marker_rgb_motion()
+            output['marker_motion'][:] = marker_motion
+        if (
+            'marker_rgb' in output
+            and 'tactile_rgb' in output
+            and marker_motion is not None
+        ):
+            marker_uv = marker_motion[0, 1]
             marker_img = marker_simulator.draw_markers(marker_uv=marker_uv)
             tactile_rgb = output['tactile_rgb'].to(dtype=torch.float32) / 255.0
             tactile_rgb *= torch.dstack([marker_img / 255.0] * 3)

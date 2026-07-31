@@ -158,7 +158,7 @@ class Task(BaseTask):
         # 柜体密度设得很大，近似作为固定基座；上下抽屉保留较低密度，允许被拉动。
         self.cabinet = self._actor_manager.add_from_usd_file(
             name='cabinet',
-            asset_path="task_0724/pull_drawer/cabinet_body.usd",
+            asset_path="task_assets/pull_drawer/cabinet_body.usd",
             # visual_asset_path="cabinet_body_picture.usd",
             pose=cabinet_pose,
             density=1e5,
@@ -167,14 +167,14 @@ class Task(BaseTask):
         )
         self.lower_drawer = self._actor_manager.add_from_usd_file(
             name='lower_drawer',
-            asset_path="task_0724/pull_drawer/lower_drawer.usd",
+            asset_path="task_assets/pull_drawer/lower_drawer.usd",
             pose=lower_drawer_pose,
             density=1e3,
             keep_constrained=True,
         )
         self.upper_drawer = self._actor_manager.add_from_usd_file(
             name='upper_drawer',
-            asset_path="task_0724/pull_drawer/upper_drawer.usd",
+            asset_path="task_assets/pull_drawer/upper_drawer.usd",
             pose=upper_drawer_pose,
             density=1e3
         )

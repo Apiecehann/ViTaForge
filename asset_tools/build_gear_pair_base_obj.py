@@ -2,11 +2,11 @@
 """Build the black base with two posts for the gear-pair visual check.
 
 Run:
-    cd /root/gpufree-data/UniVTAC-main
-    /root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/asset_tools/build_gear_pair_base_obj.py
+    cd /path/to/UniVTAC
+    python asset_tools/build_gear_pair_base_obj.py
 
 Convert to UniVTAC USD with tet data:
-    /root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/convert.py \
+    python scripts/convert.py \
       -i assets/objects/gear_pair_base.obj \
       -o assets/objects/gear_pair_base.usd
 """

@@ -90,21 +90,21 @@ class Task(BaseTask):
     def create_actors(self):
         self.yellow_area = self._actor_manager.add_from_usd_file(
             name="yellow_area",
-            asset_path="task_0724/place_cube_on_colored_area/square_frame_yellow.usd",
+            asset_path="task_assets/place_cube_on_colored_area/square_frame_yellow.usd",
             pose=self.yellow_frame_base_pose,
             density=1e6,
             keep_constrained=True,
         )
         self.blue_area = self._actor_manager.add_from_usd_file(
             name="blue_area",
-            asset_path="task_0724/place_cube_on_colored_area/square_frame_blue.usd",
+            asset_path="task_assets/place_cube_on_colored_area/square_frame_blue.usd",
             pose=self.blue_frame_base_pose,
             density=1e6,
             keep_constrained=True,
         )
         self.wooden_cube = self._actor_manager.add_from_usd_file(
             name="wooden_cube",
-            asset_path="task_0724/place_cube_on_colored_area/Cube_red.usd",
+            asset_path="task_assets/place_cube_on_colored_area/Cube_red.usd",
             pose=CUBE_BASE_POSE,
             density=1e3
         )

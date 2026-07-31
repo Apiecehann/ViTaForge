@@ -9,11 +9,11 @@ SUBDIV 控制 icosphere 细分等级:
   - SUBDIV=4: 2562 顶点 / 5120 面, 更圆, 但后续 tet/仿真更重
 
 运行:
-    cd /root/gpufree-data/UniVTAC-main
-    /root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/asset_tools/build_ball.py
+    cd /path/to/UniVTAC
+    python asset_tools/build_ball.py
 
 将生成的 OBJ 转成 UniVTAC USD:
-    /root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/convert.py \
+    python scripts/convert.py \
       -i assets/objects/ball_red.obj \
       -o assets/objects/ball_red.usd
 """

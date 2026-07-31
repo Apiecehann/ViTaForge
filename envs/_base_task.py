@@ -232,7 +232,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     xense_pour_cup_close_percent: float = 0.86
     xense_pour_ball_friction_ratio: float = 0.05
     xense_pour_grip_friction_ratio: float = 4.0
-    xense_pour_wrist_angle_deg: float = 150.0
+    xense_pour_wrist_angle_deg: float = 100.0
     xense_pour_wrist_steps: int = 160
     xense_pour_wrist_translation_x: float = 0.0
     xense_pour_wrist_translation_y: float = -0.030
@@ -250,7 +250,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     xense_pour_release_lift: float = 0.0
     xense_pour_release_snap_angle_deg: float = 25.0
     xense_pour_release_snap_steps: int = 30
-    xense_pour_release_snap_cycles: int = 1
+    xense_pour_release_snap_cycles: int = 0
     xense_pour_fix_cup_during_release: bool = True
     xense_pour_release_retract_x: float = 0.0
     xense_pour_release_carry_y: float = 0.100
@@ -262,7 +262,6 @@ class BaseTaskCfg(DirectRLEnvCfg):
     xense_cup_grasp_height_bias: float = -0.010
     xense_pour_cup_grasp_world_x_bias: float = 0.0
     xense_drawer_grasp_z_bias: float = 0.0
-    xense_gear_grasp_height_bias: float = 0.015
     xense_half_cylinder_grasp_world_y_bias: float = 0.0
     xense_insert_half_cylinder_grasp_world_y_bias: float = 0.0
     xense_cube_grasp_world_y_bias: float = 0.0

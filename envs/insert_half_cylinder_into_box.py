@@ -37,19 +37,19 @@ BLOCK_SPECS = {
     "cube": {
         "actor_name": "block_blue_cube",
         "description": "blue cube",
-        "asset_path": "task_0724/insert_block/block_blue_cube.usd",
+        "asset_path": "task_assets/insert_block/block_blue_cube.usd",
         "hole_center": np.array([-0.035000, 0.030000]),
     },
     "half_cylinder": {
         "actor_name": "block_blue_half_cylinder",
         "description": "blue half cylinder",
-        "asset_path": "task_0724/insert_block/block_blue_half_cylinder.usd",
+        "asset_path": "task_assets/insert_block/block_blue_half_cylinder.usd",
         "hole_center": np.array([0.034000, -0.018117]),
     },
     "hexagon": {
         "actor_name": "block_red_hexagonal_prism",
         "description": "red hexagonal prism",
-        "asset_path": "task_0724/insert_block/block_red_hexagonal_prism.usd",
+        "asset_path": "task_assets/insert_block/block_red_hexagonal_prism.usd",
         "hole_center": np.array([-0.026000, -0.036000]),
     },
 }
@@ -120,7 +120,7 @@ class Task(BaseTask):
         )
         self.wooden_box = self._actor_manager.add_from_usd_file(
             name="box_with_holes_yellow",
-            asset_path="task_0724/insert_block/box_with_holes_yellow.usd",
+            asset_path="task_assets/insert_block/box_with_holes_yellow.usd",
             pose=BOX_BASE_POSE,
             density=1e6,
             keep_constrained=is_xense,

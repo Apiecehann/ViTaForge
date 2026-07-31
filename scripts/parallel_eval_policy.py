@@ -78,8 +78,6 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
         worker_id = current_process().name.split('-')[-1]  # e.g., Process-1 -> '1'
         worker_save_dir = base_save_dir / worker_id
         env_cfg.save_dir = worker_save_dir
-        if "xense_use_baseline_filter" in task_config:
-            os.environ["XENSE_USE_BASELINE_FILTER"] = "1" if task_config["xense_use_baseline_filter"] else "0"
         env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
         env_cfg.dense_gelpad = bool(task_config.get('dense_gelpad', getattr(env_cfg, 'dense_gelpad', False)))
         env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
@@ -138,7 +136,6 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
             "xense_pour_cup_grasp_height_bias": float,
             "xense_pour_cup_grasp_world_x_bias": float,
             "xense_drawer_grasp_z_bias": float,
-            "xense_gear_grasp_height_bias": float,
             "xense_half_cylinder_grasp_world_y_bias": float,
             "xense_insert_half_cylinder_grasp_world_y_bias": float,
             "xense_cube_grasp_world_y_bias": float,

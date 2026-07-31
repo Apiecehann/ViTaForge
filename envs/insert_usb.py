@@ -144,7 +144,7 @@ class Task(BaseTask):
         constrain_slots = self._is_xense()
         self.start_slot = self._actor_manager.add_from_usd_file(
             name='start_slot',
-            asset_path="task_0724/insert_USB/USB_slot_start.usd",
+            asset_path="task_assets/insert_USB/USB_slot_start.usd",
             pose=start_slot_pose,
             density=1e6,
             keep_constrained=constrain_slots,
@@ -152,7 +152,7 @@ class Task(BaseTask):
 
         self.slot = self._actor_manager.add_from_usd_file(
             name='slot',
-            asset_path="task_0724/insert_USB/USB_slot_target.usd",
+            asset_path="task_assets/insert_USB/USB_slot_target.usd",
             pose=target_slot_pose,
             density=1e6,
             keep_constrained=constrain_slots,
@@ -160,8 +160,8 @@ class Task(BaseTask):
 
         self.prism = self._actor_manager.add_from_usd_file(
             name='prism',
-            asset_path="task_0724/insert_USB/USB.usd",
-            visual_asset_path="task_0724/insert_USB/USB03_visual.usd",
+            asset_path="task_assets/insert_USB/USB.usd",
+            visual_asset_path="task_assets/insert_USB/USB03_visual.usd",
             pose=usb_pose,
             show_physics_mesh=False
         )

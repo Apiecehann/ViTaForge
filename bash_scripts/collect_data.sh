@@ -14,7 +14,8 @@
 
 set -uo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/root/gpufree-data/UniVTAC}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 CONDA_ENV="${CONDA_ENV:-UniVTAC}"
 GPU="${GPU:-0}"
 EPISODE_NUM="${EPISODE_NUM:-1}"
@@ -108,6 +109,7 @@ run_one() {
     local config_file="${TEMP_CONFIG_DIR}/${modality}.yml"
     local log_file="${RUN_LOG_DIR}/${modality}__${task}.log"
     local suc_map="${RUN_OUTPUT_DIR}/${task}/${modality}/suc_map.txt"
+    local suc_map_before=""
     local exit_code=0
     local result=""
     local command=(
@@ -138,13 +140,35 @@ run_one() {
         return 0
     fi
 
+    if [[ -f "${suc_map}" ]]; then
+        # A failed simulator initialization can leave an older success marker
+        # untouched. Record its metadata so it cannot classify this run.
+        suc_map_before="$(stat -c '%i:%s:%Y:%Z' -- "${suc_map}" 2>/dev/null || true)"
+    fi
+
     "${command[@]}" 2>&1 | tee "${log_file}"
     exit_code=${PIPESTATUS[0]}
 
-    if (( exit_code != 0 )); then
+    local suc_map_after=""
+    local suc_map_fresh=0
+    if [[ -f "${suc_map}" ]]; then
+        suc_map_after="$(stat -c '%i:%s:%Y:%Z' -- "${suc_map}" 2>/dev/null || true)"
+        if [[ -z "${suc_map_before}" || "${suc_map_before}" != "${suc_map_after}" ]]; then
+            suc_map_fresh=1
+        fi
+    fi
+
+    # Isaac Sim may report exit code 0 after an exception during shutdown.
+    # Treat traceback/asset-load failures as program errors explicitly.
+    local log_has_program_error=0
+    if grep -qE 'Traceback \(most recent call last\)|Crate file missing|Could not load sublayer|Could not open asset|Boost\.Python\.ArgumentError|ModuleNotFoundError|ImportError' "${log_file}"; then
+        log_has_program_error=1
+    fi
+
+    if (( exit_code != 0 || log_has_program_error == 1 )); then
         result="PROGRAM_ERROR"
         ((program_error += 1))
-    elif [[ -f "${suc_map}" ]] && grep -qw '1' "${suc_map}"; then
+    elif (( suc_map_fresh == 1 )) && grep -qw '1' "${suc_map}"; then
         result="PASS"
         ((passed += 1))
     else

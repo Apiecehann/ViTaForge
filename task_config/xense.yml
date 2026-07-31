@@ -15,7 +15,7 @@ sensor_type: xensews
 
 observations:
   camera: ['rgb']
-  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'pose']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'indentation', 'pose']
   embodiment: ['joint', 'ee']
   actor: true
 

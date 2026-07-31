@@ -1,5 +1,6 @@
 from ._base_task import *
 import numpy as np
+import torch
 import transforms3d as t3d
 from uipc.unit import GPa
 
@@ -8,6 +9,8 @@ from uipc.unit import GPa
 XENSE_CUP_BASE_Z = 0.002
 XENSE_BALL_BASE_Z = 0.020
 XENSE_YELLOW_CUP_Y = -0.100
+CUP_HEIGHT = 0.0925
+POUR_MOUTH_CLEARANCE = 0.040
 
 # Reset constraints are released before grasping, so every sensor must start at
 # the physical ground-contact height. Keep the cup/ball relative layout unchanged.
@@ -93,32 +96,24 @@ class Task(BaseTask):
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
         cfg = super().load_robot_and_sensors(cfg)
 
-        # 这组是当前手调后的侧向平抬初始姿态, 用来避开开局的大幅姿态规划。
-        # 这个覆盖只影响 pour_ball_to_cup, 不改 envs/robot/robot_cfg.py 的全局默认姿态。
-        tilted_home_joint_pos = {
-            # "panda_joint1": 1.229010820,
-            # "panda_joint2": 0.878662646,
-            # "panda_joint3": -1.072338104,
-            # "panda_joint4": -2.460769415,
-            # "panda_joint5": -2.891249657,
-            # "panda_joint6": 1.975600839,
-            # "panda_joint7": -1.683924437,
-            "panda_joint1": 1.458306313,
-            "panda_joint2": 0.806513369,
-            "panda_joint3": -1.137000442,
-            "panda_joint4": -2.767615318,
-            "panda_joint5": -2.809691191,
-            "panda_joint6": 1.849624872,
-            "panda_joint7": -1.680763006,
-        }
-        # init_state stores real qpos, not the open_gripper() ratio.
-        if cfg.tactile_sensor_type == "xensews":
-            tilted_home_joint_pos["finger_joint"] = cfg.robot.gripper_open_qpos
-        else:
-            tilted_home_joint_pos["panda_finger.*"] = cfg.robot.gripper_max_qpos
-        self._use_tilted_home_joint_pos = bool(tilted_home_joint_pos)
-        if self._use_tilted_home_joint_pos:
-            cfg.robot.robot.init_state.joint_pos.update(tilted_home_joint_pos)
+        is_xense = getattr(cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        self._use_panda_pour_home_pose = not is_xense
+        if self._use_panda_pour_home_pose:
+            # Restore the horizontal Panda-Hand pose from the last successful
+            # GelSight/Neote rollout. Robotiq keeps its current default pose.
+            cfg.robot.robot.init_state.joint_pos.update({
+                "panda_joint1": 1.458306313,
+                "panda_joint2": 0.806513369,
+                "panda_joint3": -1.137000442,
+                "panda_joint4": -2.767615318,
+                "panda_joint5": -2.809691191,
+                "panda_joint6": 1.849624872,
+                "panda_joint7": -1.680763006,
+                "panda_finger.*": cfg.robot.gripper_max_qpos,
+            })
         return cfg
 
     def create_actors(self):
@@ -131,7 +126,7 @@ class Task(BaseTask):
         yellow_cup_y = XENSE_YELLOW_CUP_Y if keep_constrained else PANDA_YELLOW_CUP_Y
         self.blue_cup = self._actor_manager.add_from_usd_file(
             name="blue_cup",
-            asset_path="task_0724/pour_ball_to_cup/cup_blue.usd",
+            asset_path="task_assets/pour_ball_to_cup/cup_blue.usd",
             # 蓝色杯子创建时放在 x=50cm, y=10cm。
             pose=Pose([0.50, 0.10, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e3,
@@ -139,7 +134,7 @@ class Task(BaseTask):
         )
         self.yellow_cup = self._actor_manager.add_from_usd_file(
             name="yellow_cup",
-            asset_path="task_0724/pour_ball_to_cup/cup_yellow.usd",
+            asset_path="task_assets/pour_ball_to_cup/cup_yellow.usd",
             # 黄色杯子放在机械臂可达的接球位置。
             pose=Pose([0.50, yellow_cup_y, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e5,
@@ -147,7 +142,7 @@ class Task(BaseTask):
         )
         self.red_ball = self._actor_manager.add_from_usd_file(
             name="red_ball",
-            asset_path="task_0724/pour_ball_to_cup/ball_red.usd",
+            asset_path="task_assets/pour_ball_to_cup/ball_red.usd",
             # 红球跟蓝杯同 x/y; 球心高度 0.038m = 杯底 z 0.020m + 杯底厚约 0.002m + 预留 0.001m + 半径 0.015m。
             pose=Pose([0.50, 0.10, ball_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=200,
@@ -191,6 +186,9 @@ class Task(BaseTask):
         self.metadata["yellow_cup_xy_noise"] = yellow_offset.p.tolist()
         self.metadata["ball_bottom_z"] = ball_base_z - 0.015
         self.metadata["pour_layout"] = "xense" if is_xense else "panda"
+        self.metadata["motion_plan_profile"] = (
+            "robotiq_current" if is_xense else "panda_7404250"
+        )
         self.metadata["pour_grip_friction_ratio"] = self._pour_grip_friction_ratio
         if hasattr(self, "_xense_pour_ball_friction_ratio"):
             self.metadata["xense_pour_ball_friction_ratio"] = self._xense_pour_ball_friction_ratio
@@ -380,6 +378,166 @@ class Task(BaseTask):
         self._update_render()
         return True
 
+    def _tilt_gripper_center_to_target_mouth(
+        self,
+        actor,
+        actor_mouth_local: np.ndarray,
+        target_mouth_position: np.ndarray,
+        angle: float,
+        world_axis: np.ndarray,
+        tag: str,
+        max_segment_angle_deg: float = 10.0,
+    ):
+        actor_mouth_local = np.asarray(actor_mouth_local, dtype=float).reshape(3)
+        target_mouth_position = np.asarray(
+            target_mouth_position,
+            dtype=float,
+        ).reshape(3)
+        world_axis = np.asarray(world_axis, dtype=float).reshape(3)
+        world_axis /= np.linalg.norm(world_axis)
+        start_gripper_pose = self._robot_manager.get_gripper_center_pose()
+        start_actor_pose = actor.get_pose()
+        actor_in_gripper = (
+            np.linalg.inv(start_gripper_pose.to_transformation_matrix())
+            @ start_actor_pose.to_transformation_matrix()
+        )
+        start_mouth_position = (
+            start_actor_pose.to_transformation_matrix()
+            @ np.append(actor_mouth_local, 1.0)
+        )[:3]
+        segments = max(
+            1,
+            int(np.ceil(abs(np.rad2deg(angle)) / max_segment_angle_deg)),
+        )
+
+        def build_poses(target_lift: float):
+            gripper_poses = []
+            actor_poses = []
+            mouth_positions = []
+            lifted_target_mouth = target_mouth_position + np.array(
+                [0.0, 0.0, target_lift]
+            )
+            for index in range(1, segments + 1):
+                alpha = index / segments
+                rotation = t3d.quaternions.axangle2quat(
+                    world_axis,
+                    angle * alpha,
+                )
+                actor_q = t3d.quaternions.qmult(rotation, start_actor_pose.q)
+                actor_rotation = t3d.quaternions.quat2mat(actor_q)
+                mouth_position = (
+                    start_mouth_position
+                    + (lifted_target_mouth - start_mouth_position) * alpha
+                )
+                actor_pose = Pose(
+                    mouth_position - actor_rotation @ actor_mouth_local,
+                    actor_q,
+                )
+                gripper_pose = Pose.from_matrix(
+                    actor_pose.to_transformation_matrix()
+                    @ np.linalg.inv(actor_in_gripper)
+                )
+                actor_poses.append(actor_pose)
+                gripper_poses.append(gripper_pose)
+                mouth_positions.append(mouth_position)
+            return gripper_poses, actor_poses, mouth_positions
+
+        minimum_ee_z = float(self.cfg.uipc_sim.ground_height) + 0.10
+        poses, actor_poses, mouth_positions = build_poses(0.0)
+        clearance_lift = 0.0
+        for index, gripper_pose in enumerate(poses):
+            alpha = (index + 1) / segments
+            ee_z = float(
+                self._robot_manager.gripper_center_to_ee(gripper_pose).p[2]
+            )
+            clearance_lift = max(clearance_lift, (minimum_ee_z - ee_z) / alpha)
+        clearance_lift = max(0.0, clearance_lift)
+        if clearance_lift > 0.0:
+            poses, actor_poses, mouth_positions = build_poses(clearance_lift)
+
+        self.metadata[f"{tag}_world_axis"] = world_axis.tolist()
+        self.metadata[f"{tag}_angle_deg"] = float(np.rad2deg(angle))
+        self.metadata[f"{tag}_actor_mouth_local"] = actor_mouth_local.tolist()
+        self.metadata[f"{tag}_start_mouth_position"] = start_mouth_position.tolist()
+        self.metadata[f"{tag}_requested_target_mouth_position"] = (
+            target_mouth_position.tolist()
+        )
+        self.metadata[f"{tag}_target_mouth_position"] = (
+            target_mouth_position + np.array([0.0, 0.0, clearance_lift])
+        ).tolist()
+        self.metadata[f"{tag}_mouth_positions"] = [
+            position.tolist() for position in mouth_positions
+        ]
+        self.metadata[f"{tag}_actor_poses"] = [
+            pose.tolist() for pose in actor_poses
+        ]
+        self.metadata[f"{tag}_minimum_ee_z"] = minimum_ee_z
+        self.metadata[f"{tag}_clearance_lift"] = clearance_lift
+        self.metadata[f"{tag}_segments"] = int(segments)
+        ee_poses = [
+            self._robot_manager.gripper_center_to_ee(pose) for pose in poses
+        ]
+        self.metadata[f"{tag}_gripper_center_poses"] = [
+            pose.tolist() for pose in poses
+        ]
+        self.metadata[f"{tag}_ee_poses"] = [pose.tolist() for pose in ee_poses]
+        self.metadata[f"{tag}_actual_gripper_center_poses"] = []
+        self.metadata[f"{tag}_actual_position_errors"] = []
+        self.metadata[f"{tag}_gripper_qpos"] = []
+        self.metadata[f"{tag}_gripper_target_qpos"] = []
+        self.metadata[f"{tag}_tactile_min_depth"] = []
+        self.metadata[f"{tag}_red_ball_poses"] = []
+
+        hold_qpos = getattr(self, "_xense_pour_gripper_hold_qpos", None)
+        for index, (gripper_center_pose, ee_pose) in enumerate(zip(poses, ee_poses)):
+            if hold_qpos is not None:
+                command = torch.full(
+                    (len(self._robot_manager._gripper_ids),),
+                    float(hold_qpos),
+                    dtype=torch.float32,
+                    device=self._robot_manager.device,
+                )
+                hold_velocity = min(
+                    float(getattr(self.cfg, "xense_adaptive_grasp_hold_velocity", 0.0)),
+                    float(self._robot_manager.gripper_velocity_limit),
+                )
+                velocity = torch.full_like(command, hold_velocity)
+                self._robot_manager.set_gripper(
+                    command,
+                    velocity,
+                    force=False,
+                )
+
+            move_ok = self.move(
+                [Action("move", target_pose=ee_pose)],
+                tag=f"{tag}_{index}",
+                delay=False,
+                time_dilation_factor=0.4,
+            )
+            if not move_ok:
+                break
+
+            actual_pose = self._robot_manager.get_gripper_center_pose()
+            self.metadata[f"{tag}_actual_gripper_center_poses"].append(
+                actual_pose.tolist()
+            )
+            self.metadata[f"{tag}_actual_position_errors"].append(
+                float(np.linalg.norm(actual_pose.p - gripper_center_pose.p))
+            )
+            self.metadata[f"{tag}_gripper_qpos"].append(
+                float(self._robot_manager.get_gripper_qpos())
+            )
+            self.metadata[f"{tag}_gripper_target_qpos"].append(
+                float(self._robot_manager.get_gripper_target_qpos())
+            )
+            self.metadata[f"{tag}_tactile_min_depth"].append(
+                self._tactile_manager.get_min_depth().detach().cpu().tolist()
+            )
+            self.metadata[f"{tag}_red_ball_poses"].append(
+                self.red_ball.get_pose().tolist()
+            )
+        return self.plan_success
+
     def _rotate_last_arm_joint_with_actor_pour_pose(
         self,
         actor,
@@ -410,7 +568,7 @@ class Task(BaseTask):
         start_actor_pose = actor.get_pose()
         actor_tilt_rad = float(np.deg2rad(actor_tilt_deg))
         final_actor_q = t3d.quaternions.qmult(
-            t3d.axangles.axangle2quat(actor_tilt_axis, actor_tilt_rad),
+            t3d.quaternions.axangle2quat(actor_tilt_axis, actor_tilt_rad),
             start_actor_pose.q,
         )
         final_actor_pose = Pose(start_actor_pose.p + translation, final_actor_q)
@@ -463,7 +621,7 @@ class Task(BaseTask):
             qpos[-1] = start_qpos[-1] + delta * alpha
 
             actor_q = t3d.quaternions.qmult(
-                t3d.axangles.axangle2quat(actor_tilt_axis, actor_tilt_rad * alpha),
+                t3d.quaternions.axangle2quat(actor_tilt_axis, actor_tilt_rad * alpha),
                 start_actor_pose.q,
             )
             actor_pose = Pose(start_actor_pose.p + translation * alpha, actor_q)
@@ -604,49 +762,37 @@ class Task(BaseTask):
         )
         # 黄色杯子是接球杯, 这里先抓蓝色起始杯; 如果要抓 yellow, 把 self.blue_cup 换成 self.yellow_cup。
         cup_pose = self.blue_cup.get_pose()
-        # Base height is the rolled-rim center. Xense applies a negative bias
-        # to clamp a larger patch of the upper cup wall for pouring torque.
+        # Match the shared cup grasp geometry used by swap_cup_order.
         grasp_height_bias = self.get_xense_grasp_height_bias(
-            "xense_pour_cup_grasp_height_bias"
+            "xense_cup_grasp_height_bias"
         )
-        grasp_world_x_bias = (
-            float(getattr(self.cfg, "xense_pour_cup_grasp_world_x_bias", 0.01))
-            if is_xense else 0.01
-        )
+        grasp_world_x_bias = 0.0 if is_xense else 0.01
+        grasp_height = 0.0925 - 0.5 * 0.011
+        if is_xense:
+            grasp_height -= 0.010
         grasp_pos = cup_pose.p + np.array([
             grasp_world_x_bias,
             0.0,
-            0.0925 - 0.5 * 0.011 + grasp_height_bias,
+            grasp_height + grasp_height_bias,
         ])
 
-        # Xense/Robotiq needs an extra local Z rotation for a flatter side
-        # clamp.  The Panda/GelSight and Neote trajectories were tuned for the
-        # original tilted home pose, so keep their orientation unchanged.
         current_eef_pose = self._robot_manager.get_ee_pose()
-        side_grasp_rotation = np.deg2rad(
-            float(getattr(self.cfg, "xense_pour_side_grasp_rotation_deg", -45.0))
-            if is_xense
-            else 0.0
-        )
-        tilted_eef_q = t3d.quaternions.qmult(
-            current_eef_pose.q,
-            t3d.euler.euler2quat(0.0, 0.0, side_grasp_rotation),
-        )
-        side_grasp_rotation_mat = t3d.quaternions.quat2mat(tilted_eef_q)
+        grasp_q = current_eef_pose.q
+        grasp_rotation_mat = t3d.quaternions.quat2mat(grasp_q)
         self.metadata["initial_grasp_eef_pose"] = current_eef_pose.tolist()
-        self.metadata["side_grasp_local_z_rotation_deg"] = float(
-            np.rad2deg(side_grasp_rotation)
-        )
+        self.metadata["side_grasp_local_z_rotation_deg"] = 0.0
         self.metadata["side_grasp_local_axes_world"] = {
-            "x": side_grasp_rotation_mat[:, 0].tolist(),
-            "y": side_grasp_rotation_mat[:, 1].tolist(),
-            "z": side_grasp_rotation_mat[:, 2].tolist(),
+            "x": grasp_rotation_mat[:, 0].tolist(),
+            "y": grasp_rotation_mat[:, 1].tolist(),
+            "z": grasp_rotation_mat[:, 2].tolist(),
         }
-        self.metadata["use_tilted_home_joint_pos"] = bool(getattr(self, "_use_tilted_home_joint_pos", False))
+        self.metadata["use_task_specific_home_joint_pos"] = bool(
+            getattr(self, "_use_panda_pour_home_pose", False)
+        )
 
         # 保持当前侧向姿态, 平移到蓝杯抓取点上方 5cm。
         # 这里先写的是 gripper center 目标, move_to_pose 需要 EEF 目标, 所以下面要转换一次。
-        pre_grasp_gripper_center_pose = Pose(grasp_pos + np.array([0.0, 0.0, 0.050]), tilted_eef_q)
+        pre_grasp_gripper_center_pose = Pose(grasp_pos + np.array([0.0, 0.0, 0.050]), grasp_q)
         pre_grasp_ee_pose = self._robot_manager.gripper_center_to_ee(pre_grasp_gripper_center_pose)
         self.metadata["pre_grasp_gripper_center_pose"] = pre_grasp_gripper_center_pose.tolist()
         self.metadata["pre_grasp_ee_pose"] = pre_grasp_ee_pose.tolist()
@@ -657,7 +803,7 @@ class Task(BaseTask):
         )
 
         # 再从预抓取位直接平移到最终抓取位, 姿态保持当前侧向姿态。
-        grasp_pose = Pose(grasp_pos, tilted_eef_q)
+        grasp_pose = Pose(grasp_pos, grasp_q)
 
         self.metadata["rim_grasp_world_z"] = float(grasp_pos[2])
         self.metadata["grasp_world_x_bias"] = float(grasp_world_x_bias)
@@ -683,12 +829,9 @@ class Task(BaseTask):
             "xensews_robotiq",
         )
         grasp_height_bias = self.get_xense_grasp_height_bias(
-            "xense_pour_cup_grasp_height_bias"
+            "xense_cup_grasp_height_bias"
         )
-        close_percent = self.get_xense_close_percent(
-            "xense_pour_cup_close_percent",
-            fallback_key="xense_cup_close_percent",
-        )
+        close_percent = self.get_xense_close_percent("xense_cup_close_percent")
         if is_xense:
             # Xense approaches during pre_move while the reset constraint is
             # still active. Release it only when the pads are ready to close.
@@ -698,14 +841,20 @@ class Task(BaseTask):
             self.atom.close_gripper(pos=close_percent),
             tag="close_blue_cup_rim",
             gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
-                "xense_pour_cup_adaptive_grasp_depth_threshold",
-                fallback_key="xense_cup_adaptive_grasp_depth_threshold",
+                "xense_cup_adaptive_grasp_depth_threshold"
             ),
             gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
-                "xense_pour_cup_adaptive_grasp_require_both_contacts"
+                "xense_cup_adaptive_grasp_require_both_contacts"
             ),
         )
         self.settle_xense_after_close(is_save=False)
+        if is_xense:
+            self._xense_pour_gripper_hold_qpos = float(
+                self._robot_manager.get_gripper_target_qpos()
+            )
+            self.metadata["xense_pour_gripper_hold_qpos"] = (
+                self._xense_pour_gripper_hold_qpos
+            )
         self.record_xense_grasp_debug("xense_after_close_blue_cup_rim", self.blue_cup)
         self._blue_cup_shape_after_close = self._record_blue_cup_shape("after_close")
         self.metadata["grasp_height_bias"] = float(grasp_height_bias)
@@ -838,7 +987,30 @@ class Task(BaseTask):
         ])
         self.metadata["xense_pour_actor_tilt_deg"] = float(actor_tilt_deg)
         self.metadata["xense_pour_actor_tilt_axis"] = actor_tilt_axis.tolist()
-        if is_xense and abs(actor_tilt_deg) > 1e-6:
+        if is_xense:
+            yellow_cup_pose = self.yellow_cup.get_pose()
+            yellow_mouth_position = (
+                yellow_cup_pose.p
+                + yellow_cup_pose.R @ np.array([0.0, 0.0, CUP_HEIGHT])
+            )
+            target_mouth_position = yellow_mouth_position + np.array(
+                [0.0, 0.0, POUR_MOUTH_CLEARANCE]
+            )
+            self.metadata["yellow_cup_mouth_position"] = (
+                yellow_mouth_position.tolist()
+            )
+            self.metadata["target_blue_cup_mouth_position"] = (
+                target_mouth_position.tolist()
+            )
+            self._tilt_gripper_center_to_target_mouth(
+                actor=self.blue_cup,
+                actor_mouth_local=np.array([0.0, 0.0, CUP_HEIGHT]),
+                target_mouth_position=target_mouth_position,
+                angle=np.deg2rad(wrist_angle_deg),
+                world_axis=np.array([1.0, 0.0, 0.0]),
+                tag="tilt_gripper_center_to_pour",
+            )
+        elif abs(actor_tilt_deg) > 1e-6:
             self._rotate_last_arm_joint_with_actor_pour_pose(
                 self.blue_cup,
                 delta=np.deg2rad(wrist_angle_deg),

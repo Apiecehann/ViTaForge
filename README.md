@@ -64,7 +64,7 @@ bash collect_data.sh \
 
 The current benchmark contains eight contact-rich manipulation tasks. Task
 logic lives in `envs/`, while task assets are stored in
-`assets/objects/task_0724/`.
+`assets/objects/task_assets/`.
 
 | Task module | Category | Objective |
 |---|---|---|
