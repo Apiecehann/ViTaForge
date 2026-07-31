@@ -301,7 +301,7 @@ def rotate2rob(target_pose:Pose, rob_pose:Pose, box_pose:Pose, theta: float = 0.
     v2 = box_pose.p - rob_pose.p
     v2 = v2 / np.linalg.norm(v2)
     axis = np.cross(v1, v2)
-    angle = np.arccos(np.dot(v1, v2))
+    angle = np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))
 
     return rotate_along_axis(
         target_pose=target_pose,
@@ -358,7 +358,7 @@ def get_align_matrix(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
     v1 = v1 / np.linalg.norm(v1)
     v2 = v2 / np.linalg.norm(v2)
     axis = np.cross(v1, v2)
-    angle = np.arccos(np.dot(v1, v2))
+    angle = np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))
 
     if np.linalg.norm(axis) < 1e-6:
         return np.eye(3)
