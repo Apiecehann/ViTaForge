@@ -12,13 +12,13 @@ SUCCESS_MIN_LIFT = 0.0500
 SUCCESS_MAX_LIFT = 0.1500
 
 BLOCK_BASE_POSES = (
-    Pose([0.4, 0.0, 0.002], [1, 0, 0, 0]),
-    Pose([0.3, -0.06, 0.002], [1, 0, 0, 0]),
-    Pose([0.31, 0.06, 0.002], [1, 0, 0, 0]),
-    Pose([0.42, -0.09, 0.002], [1, 0, 0, 0]),
-    Pose([0.43, 0.10, 0.002], [1, 0, 0, 0]),
-    Pose([0.52, -0.06, 0.002], [1, 0, 0, 0]),
-    Pose([0.51, 0.06, 0.002], [1, 0, 0, 0]),
+    Pose([0.44, 0.0, 0.002], [1, 0, 0, 0]),
+    Pose([0.36, -0.09, 0.002], [1, 0, 0, 0]),
+    Pose([0.36, 0.09, 0.002], [1, 0, 0, 0]),
+    Pose([0.44, -0.12, 0.002], [1, 0, 0, 0]),
+    Pose([0.44, 0.12, 0.002], [1, 0, 0, 0]),
+    Pose([0.54, -0.08, 0.002], [1, 0, 0, 0]),
+    Pose([0.53, 0.08, 0.002], [1, 0, 0, 0]),
     # Pose([0.53, 0.12, 0.002], [1, 0, 0, 0]),
 )
 
@@ -65,8 +65,8 @@ BLOCK_SPECS = (
     # },
 )
 TARGET_BLOCKS = tuple(spec["name"] for spec in BLOCK_SPECS)
-DEFAULT_TARGET_BLOCK = "block_blue_half_cylinder"
-TASK_INSTRUCTION = "Grasp the blue half cylinder from the clutter and lift it up."
+DEFAULT_TARGET_BLOCK = "block_yellow_cylinder"
+TASK_INSTRUCTION = "Grasp the yellow cylinder from the clutter and lift it up."
 TASK_INITIAL_JOINT_POS = {
     "panda_joint1": -0.010809095,
     "panda_joint2": 0.096037410,
@@ -87,7 +87,7 @@ class TaskCfg(BaseTaskCfg):
             name="head",
             prim_path="/World/envs/env_.*/Camera",
             offset=CameraCfg.OffsetCfg(
-                pos=(0.84, 0.0, 0.20),
+                pos=(0.87, 0.0, 0.20),
                 rot=(0.579228, 0.405580, 0.405580, 0.579228),
                 convention="opengl",
             ),
@@ -177,7 +177,7 @@ class Task(BaseTask):
 
     def pre_move(self):
         self.delay(10)
-        self.move(self.atom.open_gripper(0.5), tag=f"open_gripper_for_{self.target_block_name}")
+        self.move(self.atom.open_gripper(0.6), tag=f"open_gripper_for_{self.target_block_name}")
 
         target_pose = self.target_block.get_pose()
         grasp_rotate = self.rng.uniform(-GRASP_ROTATE_NOISE, GRASP_ROTATE_NOISE)

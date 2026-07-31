@@ -5,7 +5,7 @@ import numpy as np
 
 # Set TaskCfg.target_block, or TARGET_BLOCK, to select the block to grasp.
 TARGET_BLOCKS = ("cube", "half_cylinder", "hexagon")
-DEFAULT_TARGET_BLOCK = os.environ.get("TARGET_BLOCK", "half_cylinder")
+DEFAULT_TARGET_BLOCK = os.environ.get("TARGET_BLOCK", "cube")
 TASK_INSTRUCTION = f"Insert the {DEFAULT_TARGET_BLOCK.replace('_', ' ')} into the matching hole in the yellow box."
 
 BOX_SIZE = 0.1500
@@ -186,7 +186,7 @@ class Task(BaseTask):
 
     def pre_move(self):
         self.delay(10)
-        self.move(self.atom.open_gripper(0.5), tag=f"open_gripper_for_{self.target_block_key}")
+        self.move(self.atom.open_gripper(0.6), tag=f"open_gripper_for_{self.target_block_key}")
 
         selected_pose = self.selected_block.get_pose()
         grasp_rotate = self.rng.uniform(-GRASP_ROTATE_NOISE, GRASP_ROTATE_NOISE)

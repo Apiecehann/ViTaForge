@@ -139,7 +139,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(
             color=(0.75, 0.75, 0.75), intensity=1500.0,
-            texture_file=str(SCENE_ASSETS_ROOT / 'base4.exr')
+            texture_file=str(SCENE_ASSETS_ROOT / 'base5.exr')
         ),
     )
 

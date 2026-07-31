@@ -27,7 +27,7 @@ SUCCESS_TABLE_HEIGHT_TOLERANCE = 0.003
 SUCCESS_MIN_GRIPPER_OPEN_RATIO = 0.4
 TARGET_AREA_COLORS = ("yellow", "blue")
 FRAME_ORDERS = ("yellow_left", "blue_left")
-TASK_INSTRUCTION = "Place the red cube on the yellow area."
+TASK_INSTRUCTION = "Place the red cube on the blue area."
 TASK_INITIAL_JOINT_POS = {
     "panda_joint1": -0.010809095,
     "panda_joint2": 0.096037410,
@@ -43,7 +43,7 @@ TASK_INITIAL_JOINT_POS = {
 @configclass
 class TaskCfg(BaseTaskCfg):
     # "random" 表示每个 episode 随机选择目标框，也可设为 "yellow" 或 "blue"。
-    target_area: Literal["random", "yellow", "blue"] = "yellow"
+    target_area: Literal["random", "yellow", "blue"] = "blue"
     # 左右按照 head 相机视野定义：世界 -Y 为左，+Y 为右。
     frame_order: Literal["yellow_left", "blue_left"] = "yellow_left"
 

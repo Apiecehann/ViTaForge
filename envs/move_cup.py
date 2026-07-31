@@ -6,9 +6,9 @@ is_random = True
 
 # 三个杯子的初始位置。通过修改各颜色对应的 Pose 可交换初始位置。
 CUP_BASE_POSES = {
-    "green": Pose([0.33, 0.00, 0.002], (1.0, 0.0, 0.0, 0.0)),
-    "yellow": Pose([0.45, 0.00, 0.002], (1.0, 0.0, 0.0, 0.0)),
-    "blue": Pose([0.57, 0.00, 0.002], (1.0, 0.0, 0.0, 0.0)),
+    "green": Pose([0.36, 0.00, 0.002], (1.0, 0.0, 0.0, 0.0)),
+    "yellow": Pose([0.48, 0.00, 0.002], (1.0, 0.0, 0.0, 0.0)),
+    "blue": Pose([0.60, 0.00, 0.002], (1.0, 0.0, 0.0, 0.0)),
 }
 CUP_ASSET_PATHS = {
     "yellow": "cup_yellow.usd",
@@ -53,7 +53,7 @@ class TaskCfg(BaseTaskCfg):
             name="head",
             prim_path="/World/envs/env_.*/Camera",
             offset=CameraCfg.OffsetCfg(
-                pos=(0.9, 0.0, 0.25),
+                pos=(0.93, 0.0, 0.25),
                 rot=(0.593537, 0.415599, 0.395306, 0.564555),
                 convention="opengl",
             ),

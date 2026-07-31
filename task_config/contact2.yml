@@ -9,7 +9,7 @@ render_frequency: 0
 random_texture: false
 
 use_seed: true
-episode_num: 100
+episode_num: 50
 
 sensor_type: gsmini
 
