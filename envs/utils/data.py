@@ -12,6 +12,36 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class HDF5Handler:
     @staticmethod
+    def _image_to_uint8(img: np.ndarray) -> np.ndarray:
+        img = np.asarray(img)
+
+        if img.ndim == 3 and img.shape[-1] not in (1, 3, 4) and img.shape[0] in (1, 3, 4):
+            img = np.moveaxis(img, 0, -1)
+        if img.ndim == 3 and img.shape[-1] == 4:
+            img = img[..., :3]
+        if img.ndim == 3 and img.shape[-1] == 1:
+            img = img[..., 0]
+        if img.ndim not in (2, 3):
+            raise ValueError(f"Expected 2D or 3D image, got shape {img.shape}")
+
+        if img.dtype == np.uint8:
+            return np.ascontiguousarray(img)
+
+        if img.dtype == np.bool_:
+            return np.ascontiguousarray(img.astype(np.uint8) * 255)
+
+        if np.issubdtype(img.dtype, np.floating):
+            img = np.nan_to_num(img, nan=0.0, posinf=255.0, neginf=0.0)
+            if img.size > 0 and img.min() >= 0.0 and img.max() <= 1.0:
+                img = img * 255.0
+            return np.ascontiguousarray(np.rint(np.clip(img, 0.0, 255.0)).astype(np.uint8))
+
+        if np.issubdtype(img.dtype, np.integer):
+            return np.ascontiguousarray(np.clip(img, 0, 255).astype(np.uint8))
+
+        raise TypeError(f"Unsupported image dtype for JPEG encoding: {img.dtype}")
+
+    @staticmethod
     def stream_to_img(data, resize=False, convert_channels=False, path=None) -> np.ndarray:
         """
         将一个字节流数组解码为图像数组。
@@ -59,7 +89,10 @@ class HDF5Handler:
         max_len = 0
         encode_data = []
         for i in range(len(imgs)):
-            success, encoded_image = cv2.imencode(".jpg", imgs[i])
+            img = HDF5Handler._image_to_uint8(imgs[i])
+            success, encoded_image = cv2.imencode(".jpg", img)
+            if not success:
+                raise ValueError(f"Failed to encode image at index {i} with shape {img.shape}")
             jpeg_data = encoded_image.tobytes()
             encode_data.append(jpeg_data)
             max_len = max(max_len, len(jpeg_data))
