@@ -13,13 +13,13 @@ SUCCESS_MAX_LIFT = 0.1500
 XENSE_BLOCK_Z_CLEARANCE = 0.0020
 
 BLOCK_BASE_POSES = (
-    Pose([0.40, 0.00, 0.002], [1, 0, 0, 0]),
-    Pose([0.30, -0.06, 0.002], [1, 0, 0, 0]),
-    Pose([0.31, 0.06, 0.002], [1, 0, 0, 0]),
-    Pose([0.42, -0.09, 0.002], [1, 0, 0, 0]),
-    Pose([0.43, 0.10, 0.002], [1, 0, 0, 0]),
-    Pose([0.52, -0.06, 0.002], [1, 0, 0, 0]),
-    Pose([0.51, 0.06, 0.002], [1, 0, 0, 0]),
+    Pose([0.44, 0.00, 0.002], [1, 0, 0, 0]),
+    Pose([0.36, -0.09, 0.002], [1, 0, 0, 0]),
+    Pose([0.36, 0.09, 0.002], [1, 0, 0, 0]),
+    Pose([0.44, -0.12, 0.002], [1, 0, 0, 0]),
+    Pose([0.44, 0.12, 0.002], [1, 0, 0, 0]),
+    Pose([0.54, -0.08, 0.002], [1, 0, 0, 0]),
+    Pose([0.53, 0.08, 0.002], [1, 0, 0, 0]),
 )
 
 BLOCK_SPECS = (
@@ -72,7 +72,7 @@ class TaskCfg(BaseTaskCfg):
         CameraCfg(
             name="head",
             prim_path="/World/envs/env_.*/Camera",
-            offset=CameraCfg.OffsetCfg(pos=(0.8, 0.0, 0.15), rot=(0.555057, 0.465748, 0.443006, 0.527954), convention="opengl"),
+            offset=CameraCfg.OffsetCfg(pos=(0.87, 0.0, 0.20), rot=(0.579228, 0.405580, 0.405580, 0.579228), convention="opengl"),
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=2.5, focus_distance=1.0, horizontal_aperture=2.4, clipping_range=(0.1, 100.0)
@@ -181,7 +181,7 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_policy")
+        self.move(self.atom.open_gripper(0.6), tag="open_gripper_for_policy")
 
     def _grasp_target(self):
         is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
