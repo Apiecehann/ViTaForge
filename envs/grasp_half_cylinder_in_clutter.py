@@ -26,37 +26,37 @@ BLOCK_SPECS = (
     {
         "name": "block_blue_half_cylinder",
         "description": "blue half cylinder",
-        "asset_path": "task_0724/grasp_in_clutter/block_blue_half_cylinder.usd",
+        "asset_path": "task_assets/grasp_in_clutter/block_blue_half_cylinder.usd",
     },
     {
         "name": "block_blue_quarter_cylinder",
         "description": "blue quarter cylinder",
-        "asset_path": "task_0724/grasp_in_clutter/block_blue_quarter_cylinder.usd",
+        "asset_path": "task_assets/grasp_in_clutter/block_blue_quarter_cylinder.usd",
     },
     {
         "name": "block_blue_star_prism",
         "description": "blue star prism",
-        "asset_path": "task_0724/grasp_in_clutter/block_blue_star_prism.usd",
+        "asset_path": "task_assets/grasp_in_clutter/block_blue_star_prism.usd",
     },
     {
         "name": "block_red_ellipse_cylinder",
         "description": "red ellipse cylinder",
-        "asset_path": "task_0724/grasp_in_clutter/block_red_ellipse_cylinder.usd",
+        "asset_path": "task_assets/grasp_in_clutter/block_red_ellipse_cylinder.usd",
     },
     {
         "name": "block_red_hexagonal_prism",
         "description": "red hexagonal prism",
-        "asset_path": "task_0724/grasp_in_clutter/block_red_hexagonal_prism.usd",
+        "asset_path": "task_assets/grasp_in_clutter/block_red_hexagonal_prism.usd",
     },
     {
         "name": "block_yellow_cylinder",
         "description": "yellow cylinder",
-        "asset_path": "task_0724/grasp_in_clutter/block_yellow_cylinder.usd",
+        "asset_path": "task_assets/grasp_in_clutter/block_yellow_cylinder.usd",
     },
     {
         "name": "block_yellow_triangular_prism",
         "description": "yellow triangular prism",
-        "asset_path": "task_0724/grasp_in_clutter/block_yellow_triangular_prism.usd",
+        "asset_path": "task_assets/grasp_in_clutter/block_yellow_triangular_prism.usd",
     },
 )
 TARGET_BLOCKS = tuple(spec["name"] for spec in BLOCK_SPECS)

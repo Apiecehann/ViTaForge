@@ -126,7 +126,7 @@ class Task(BaseTask):
         yellow_cup_y = XENSE_YELLOW_CUP_Y if keep_constrained else PANDA_YELLOW_CUP_Y
         self.blue_cup = self._actor_manager.add_from_usd_file(
             name="blue_cup",
-            asset_path="task_0724/pour_ball_to_cup/cup_blue.usd",
+            asset_path="task_assets/pour_ball_to_cup/cup_blue.usd",
             # 蓝色杯子创建时放在 x=50cm, y=10cm。
             pose=Pose([0.50, 0.10, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e3,
@@ -134,7 +134,7 @@ class Task(BaseTask):
         )
         self.yellow_cup = self._actor_manager.add_from_usd_file(
             name="yellow_cup",
-            asset_path="task_0724/pour_ball_to_cup/cup_yellow.usd",
+            asset_path="task_assets/pour_ball_to_cup/cup_yellow.usd",
             # 黄色杯子放在机械臂可达的接球位置。
             pose=Pose([0.50, yellow_cup_y, cup_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=1e5,
@@ -142,7 +142,7 @@ class Task(BaseTask):
         )
         self.red_ball = self._actor_manager.add_from_usd_file(
             name="red_ball",
-            asset_path="task_0724/pour_ball_to_cup/ball_red.usd",
+            asset_path="task_assets/pour_ball_to_cup/ball_red.usd",
             # 红球跟蓝杯同 x/y; 球心高度 0.038m = 杯底 z 0.020m + 杯底厚约 0.002m + 预留 0.001m + 半径 0.015m。
             pose=Pose([0.50, 0.10, ball_base_z], (1.0, 0.0, 0.0, 0.0)),
             density=200,

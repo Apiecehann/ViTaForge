@@ -10,9 +10,9 @@ CUP_BASE_XY = {
     "blue": (0.57, 0.00),
 }
 CUP_ASSET_PATHS = {
-    color: f"task_0724/move_cup/cup_{color}.usd" for color in CUP_COLORS
+    color: f"task_assets/move_cup/cup_{color}.usd" for color in CUP_COLORS
 }
-XENSE_CUP_PHYSICS_ASSET_PATH = "task_0724/move_cup/cup_physics_proxy.usda"
+XENSE_CUP_PHYSICS_ASSET_PATH = "task_assets/move_cup/cup_physics_proxy.usda"
 CUP_BASE_Z = 0.002
 CUP_RESET_XY_NOISE = 0.030
 CUP_MIN_RESET_XY_DISTANCE = 0.075
