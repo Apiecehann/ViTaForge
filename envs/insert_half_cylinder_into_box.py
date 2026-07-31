@@ -2,8 +2,8 @@ from ._base_task import *
 import numpy as np
 from uipc import view
 
-# 半圆柱体蓝色木块：assets/objects/Blue_half_cylinder.usd，尺寸为：半径22.8mm，高度30mm
-# 木箱：assets/objects/wooden_box_semicircle_hole.usd，半圆柱孔尺寸：半径24mm
+
+
 
 BOX_SIZE = 0.1500
 BOX_WALL_THICKNESS = 0.0060
@@ -71,6 +71,17 @@ INNER_Z_MIN = max(0.0, BOX_WALL_THICKNESS - SUCCESS_Z_FLOOR_TOL)
 INNER_Z_MAX = BOX_SIZE - BOX_WALL_THICKNESS
 XENSE_ACTOR_Z_CLEARANCE = 0.0020
 
+TASK_INITIAL_JOINT_POS = {
+    "panda_joint1": 0.0,
+    "panda_joint2": 0.0,
+    "panda_joint3": 0.0,
+    "panda_joint4": -2.46,
+    "panda_joint5": 0.0,
+    "panda_joint6": 2.5,
+    "panda_joint7": 0.741,
+    "panda_finger.*": 0.02,
+}
+
 
 @configclass
 class TaskCfg(BaseTaskCfg):
@@ -111,6 +122,20 @@ class Task(BaseTask):
         cfg.sim.physics_material.static_friction = 3.0
         cfg.uipc_sim.contact.default_friction_ratio = 3.0
         super().__init__(cfg, mode, render_mode, **kwargs)
+
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        joint_pos = {
+            key: value
+            for key, value in TASK_INITIAL_JOINT_POS.items()
+            if key.startswith("panda_joint")
+        }
+        if getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            joint_pos["finger_joint"] = cfg.robot.gripper_open_qpos
+        else:
+            joint_pos["panda_finger.*"] = TASK_INITIAL_JOINT_POS["panda_finger.*"]
+        cfg.robot.robot.init_state.joint_pos.update(joint_pos)
+        return cfg
 
     def create_actors(self):
         # 创建带半圆孔的木盒作为近似固定基座，蓝色半圆柱作为可抓取/插入物体。
@@ -204,7 +229,7 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        open_gripper_pos = 1.0 if is_xense else 0.5
+        open_gripper_pos = 1.0 if is_xense else 0.6
         self.move(self.atom.open_gripper(open_gripper_pos), tag="open_gripper_for_policy")
 
     def _grasp_selected_block(self):
@@ -461,7 +486,7 @@ class Task(BaseTask):
                 is_open=False,
             ), tag=f"move_{self.target_block_key}_to_pre_insert", time_dilation_factor=0.5)
 
-        # 从盒口上方向下插入 2cm，使半圆柱进入盒内有效空间。
+        # 从盒口上方向下插入 1cm，使半圆柱进入盒内有效空间。
         if is_xense:
             insert_position = self.selected_block.get_pose().p + np.array([0.0, 0.0, -INSERT_DEPTH])
             self.move_actor_with_gripper_center_to_position(
@@ -483,14 +508,14 @@ class Task(BaseTask):
             "xense_before_release_target_block",
             self.selected_block,
         )
-        release_percent = 1.0 if is_xense else 0.5
+        release_percent = 1.0 if is_xense else 0.6
         self.move(
             self.atom.open_gripper(release_percent),
             tag=f"release_{self.target_block_key}",
+            delay=False,
         )
         self.metadata["release_gripper_percent"] = float(release_percent)
-        # 释放后等待较长时间但不保存，给物体足够时间在盒内稳定下来再做 success 检查。
-        self.delay(420, is_save=False)
+        # 松爪动作完成后立即结束 scripted episode；外层随后用当前瞬时位姿做 success 检查。
 
     def _get_success_diagnostics(self):
         box_pose = self.wooden_box.get_pose()
@@ -501,6 +526,7 @@ class Task(BaseTask):
         x_ok = bool(INNER_X_MIN <= selected_block_in_box.p[0] <= INNER_X_MAX)
         y_ok = bool(INNER_Y_MIN <= selected_block_in_box.p[1] <= INNER_Y_MAX)
         z_ok = bool(INNER_Z_MIN <= selected_block_in_box.p[2] <= INNER_Z_MAX)
+        origin_inside_box = bool(x_ok and y_ok and z_ok)
 
         return {
             "target_block": self.target_block_key,
@@ -515,10 +541,11 @@ class Task(BaseTask):
             "y_ok": y_ok,
             "z_ok": z_ok,
             "xy_ok": bool(x_ok and y_ok),
+            "origin_inside_box": origin_inside_box,
         }
 
     def check_success(self):
-        # 成功要求半圆柱中心在盒内有效 xyz 范围内；完整诊断写入 metadata 便于离线分析。
+        # 成功要求松爪完成瞬间目标物体原点在盒内有效 xyz 范围内。
         diagnostics = self._get_success_diagnostics()
         self.metadata["success_diagnostics"] = diagnostics
-        return diagnostics["xy_ok"] and diagnostics["z_ok"]
+        return diagnostics["origin_inside_box"]

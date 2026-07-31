@@ -1,6 +1,9 @@
 from ._base_task import *
 import numpy as np
 
+# Variant of insert_usb.py where Xense follows the same scripted insertion
+# process as the standard gripper: no staged insertion and no XY correction.
+
 # USB尺寸：
 # assets/objects/USB.usd, 横截面：12.0mm x 4.5mm，插头长度：12.4mm，USB本体长度：45mm
 # assets/objects/usb.usd, 横截面：12.4mm x 4.4mm，插头长度：12.4mm，USB本体长度：50mm
@@ -92,7 +95,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1/120,
         )
     ]
-    step_lim = 300
+    step_lim = 400
 
 
 class Task(BaseTask):
@@ -227,12 +230,27 @@ class Task(BaseTask):
         debug[label] = entry
 
     def _open_gripper_after_insert(self):
-        release_percent = 1.0 if self._is_xense() else 0.5
-        self.move(
-            self.atom.open_gripper(release_percent),
-            tag="open_gripper_after_insert",
+        release_percent = 0.5
+        self.metadata['insert_release_gripper_qpos_before'] = float(
+            self._robot_manager.get_gripper_qpos()
         )
+        release_qpos = float(self._robot_manager.gripper_percent2qpos(release_percent))
+        gripper_plan = self._robot_manager.plan_gripper(release_qpos, type='qpos')
+        self.atom_id += 1
+        self.atom_tag = "open_gripper_after_insert"
+        self.take_dense_action(
+            {
+                "arm": None,
+                "gripper": gripper_plan,
+            },
+            is_save=True,
+        )
+        self.delay(30, is_save=True)
         self.metadata['insert_release_gripper_percent'] = float(release_percent)
+        self.metadata['insert_release_gripper_target_qpos'] = release_qpos
+        self.metadata['insert_release_gripper_qpos_after'] = float(
+            self._robot_manager.get_gripper_qpos()
+        )
         if self._is_xense():
             self._record_xense_debug_pose('after_insert_release_open')
 
@@ -298,83 +316,9 @@ class Task(BaseTask):
         self.metadata['approach_clearance'] = float(approach_clearance)
         self.metadata['approach_xy_noise'] = approach_offset.p.tolist()
 
-    def _prepare_usb_xense(self):
-        # The Xense/Robotiq tactile shell is larger than the GelSight Mini case.
-        # Keep the object target identical, but approach it with more vertical
-        # clearance and avoid recomputing a GelSight-style grasp orientation.
-        grasp_height = XENSE_USB_GRASP_HEIGHT + self.rng.uniform(
-            -XENSE_USB_GRASP_HEIGHT_NOISE,
-            XENSE_USB_GRASP_HEIGHT_NOISE,
-        )
-        target_p = self.prism.get_pose().p.copy()
-        target_p[:2] = self.start_slot.get_pose().p[:2]
-        target_p[2] = self.start_slot.get_pose().p[2] + USB_INSERT_Z + grasp_height
-        # Match the original GelSight/Neote trajectory: use the USB local X
-        # axis so the pads contact its long side faces.
-        xense_gripper_up = self.prism.get_pose().to_transformation_matrix()[:3, 0]
-        cpose = construct_grasp_pose(
-            target_p,
-            np.array([0.0, 0.0, 1.0]),
-            xense_gripper_up,
-        )
-        cid = self.prism.register_point(cpose, type='contact')
-        self.move(self.atom.grasp_actor(
-            self.prism,
-            contact_point_id=cid,
-            is_close=False,
-        ), tag="approach_usb")
-        self._record_xense_debug_pose('after_approach_usb')
-
-        usb_close_percent = float(getattr(self.cfg, "xense_usb_close_percent", XENSE_USB_CLOSE_PERCENT))
-        usb_close_percent = float(np.clip(usb_close_percent, 0.0, 1.0))
-        post_close_settle_steps = int(getattr(
-            self.cfg,
-            "xense_usb_post_close_settle_steps",
-            getattr(self.cfg, "xense_post_close_settle_steps", XENSE_POST_CLOSE_SETTLE_STEPS),
-        ))
-        self.metadata['usb_close_percent'] = float(usb_close_percent)
-        self.metadata['usb_close_target_qpos'] = float(
-            self._robot_manager.gripper_percent2qpos(usb_close_percent)
-        )
-        self.metadata['post_close_settle_steps'] = int(post_close_settle_steps)
-        self.prism.remove_animate(force=True)
-        self._actor_manager.update(dt=0.0)
-        self.move(
-            self.atom.close_gripper(pos=usb_close_percent),
-            tag="close_usb",
-            gripper_depth_threshold=self.get_xense_adaptive_grasp_depth_threshold(
-                "xense_usb_adaptive_grasp_depth_threshold"
-            ),
-            gripper_require_both_contacts=self.get_xense_adaptive_grasp_require_both_contacts(
-                "xense_usb_adaptive_grasp_require_both_contacts"
-            ),
-        )
-        self.delay(post_close_settle_steps, is_save=True)
-        self._record_xense_debug_pose('after_close')
-
-        lift_height = XENSE_LIFT_HEIGHT
-        self.move(self.atom.move_by_displacement(z=lift_height), tag="lift_usb")
-        self._record_xense_debug_pose('after_lift')
-
-        self._update_insert_reference_poses()
-        self._update_pre_insert_pose(XENSE_SLOT_APPROACH_CLEARANCE)
-        self._move_held_usb_by_translation(
-            self.pre_insert_pose,
-            tag="move_usb_to_pre_insert",
-        )
-        self._record_xense_debug_pose('after_pre_insert')
-
-        self.metadata['grasp_height'] = float(grasp_height)
-        self.metadata['xense_gripper_up'] = xense_gripper_up.tolist()
-        self.metadata['lift_height'] = float(lift_height)
-        self.metadata['approach_clearance'] = float(XENSE_SLOT_APPROACH_CLEARANCE)
-        self.metadata['play_insert_motion_bias'] = list(XENSE_PLAY_INSERT_MOTION_BIAS)
-
     def _play_once(self):
-        if self._is_xense():
-            self._prepare_usb_xense()
-            return self._play_once_xense()
-
+        # In this variant, Xense intentionally uses the same scripted process
+        # as the standard gripper instead of the staged/corrective branch.
         self._prepare_usb_standard()
 
         self._update_insert_reference_poses()
@@ -397,81 +341,6 @@ class Task(BaseTask):
         ), tag="insert_usb_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
         self._open_gripper_after_insert()
         # 下插后保存一段稳定观测，便于 success 检查和离线数据回放看到最终状态。
-        self.delay(40, is_save=True)
-
-    def _play_once_xense(self):
-        self._update_insert_reference_poses()
-        play_pre_insert_pose = self.opening_pose.add_bias([0.0, 0.0, XENSE_PLAY_PRE_INSERT_CLEARANCE])
-        motion_play_pre_insert_pose = play_pre_insert_pose.add_bias(
-            XENSE_PLAY_INSERT_MOTION_BIAS,
-            coord='world',
-        )
-        self._move_held_usb_by_translation(
-            motion_play_pre_insert_pose,
-            tag="move_usb_to_play_pre_insert",
-            time_dilation_factor=0.5,
-        )
-        self._record_xense_debug_pose('after_play_pre_insert')
-        self.metadata['play_pre_insert_clearance'] = XENSE_PLAY_PRE_INSERT_CLEARANCE
-
-        insert_distance = max(
-            0.0,
-            float(self.prism.get_pose().p[2] - self.target_pose.p[2] + XENSE_INSERT_EXTRA_DEPTH),
-        )
-        self.metadata['insert_distance'] = insert_distance
-        self.metadata['insert_extra_depth'] = XENSE_INSERT_EXTRA_DEPTH
-        self.metadata['insert_stage_max_step'] = XENSE_INSERT_STAGE_MAX_STEP
-
-        remaining_insert_distance = insert_distance
-        insert_stage_idx = 0
-        xy_corrections = []
-        while remaining_insert_distance > 1e-6:
-            insert_stage_idx += 1
-            dz = min(float(XENSE_INSERT_STAGE_MAX_STEP), remaining_insert_distance)
-            self.move(self.atom.move_by_displacement(
-                z=-dz,
-                xyz_coord='world',
-            ), tag=f"insert_usb_into_slot_stage_{insert_stage_idx}", time_dilation_factor=0.5,
-                constraint_pose=[1, 1, 1, 1, 1, 0])
-            self.delay(10, is_save=True)
-            self._record_xense_debug_pose(f'after_insert_stage_{insert_stage_idx}_raw')
-
-            rel_pose = self.prism.get_pose().rebase(self.target_pose)
-            correction_local = np.array([-float(rel_pose.p[0]), -float(rel_pose.p[1]), 0.0], dtype=float)
-            correction_norm = float(np.linalg.norm(correction_local[:2]))
-            applied_correction = [0.0, 0.0, 0.0]
-            if correction_norm > XENSE_INSERT_XY_CORRECTION_DEADBAND:
-                correction_scale = min(
-                    correction_norm,
-                    float(XENSE_INSERT_XY_CORRECTION_LIMIT),
-                ) / correction_norm
-                correction_local = correction_local * correction_scale
-                target_rot = self.target_pose.to_transformation_matrix()[:3, :3]
-                correction_world = target_rot @ correction_local
-                applied_correction = [float(correction_world[0]), float(correction_world[1]), 0.0]
-                self.move(self.atom.move_by_displacement(
-                    x=applied_correction[0],
-                    y=applied_correction[1],
-                    z=0.0,
-                    xyz_coord='world',
-                ), tag=f"insert_xy_correct_stage_{insert_stage_idx}", time_dilation_factor=0.5,
-                    constraint_pose=[1, 1, 1, 1, 1, 0])
-                self.delay(5, is_save=True)
-
-            xy_corrections.append({
-                'stage': insert_stage_idx,
-                'raw_xy_error': [float(rel_pose.p[0]), float(rel_pose.p[1])],
-                'applied_world_correction': applied_correction,
-            })
-            self._record_xense_debug_pose(f'after_insert_stage_{insert_stage_idx}')
-            remaining_insert_distance -= dz
-
-        self.metadata['insert_xy_correction_limit'] = XENSE_INSERT_XY_CORRECTION_LIMIT
-        self.metadata['insert_xy_correction_deadband'] = XENSE_INSERT_XY_CORRECTION_DEADBAND
-        self.metadata['insert_xy_corrections'] = xy_corrections
-        self.metadata['insert_stage_count'] = insert_stage_idx
-        self._record_xense_debug_pose('after_insert')
-        self._open_gripper_after_insert()
         self.delay(40, is_save=True)
 
     def _get_success_diagnostics(self, xy_threshold=0.002, z_threshold=0.003):

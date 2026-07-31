@@ -5,9 +5,9 @@ import numpy as np
 is_random = True
 CUP_COLORS = ("yellow", "green", "blue")
 CUP_BASE_XY = {
-    "yellow": (0.33, 0.00),
-    "green": (0.45, 0.00),
-    "blue": (0.57, 0.00),
+    "yellow": (0.36, 0.00),
+    "green": (0.48, 0.00),
+    "blue": (0.60, 0.00),
 }
 CUP_ASSET_PATHS = {
     color: f"task_assets/move_cup/cup_{color}.usd" for color in CUP_COLORS
@@ -37,7 +37,7 @@ class TaskCfg(BaseTaskCfg):
             name="head",
             prim_path="/World/envs/env_.*/Camera",
             offset=CameraCfg.OffsetCfg(
-                pos=(0.9, 0.0, 0.25),
+                pos=(0.93, 0.0, 0.25),
                 rot=(0.593537, 0.415599, 0.395306, 0.564555),
                 convention="opengl",
             ),
