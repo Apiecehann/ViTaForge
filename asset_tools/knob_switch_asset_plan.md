@@ -158,8 +158,8 @@ assets/objects/knob_switch_cap.mtl
 生成 OBJ 后，沿用已有 convert 流程：
 
 ```bash
-/root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/convert.py assets/objects/knob_switch_base.obj assets/objects/knob_switch_base.usd
-/root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/convert.py assets/objects/knob_switch_cap.obj assets/objects/knob_switch_cap.usd
+python scripts/convert.py assets/objects/knob_switch_base.obj assets/objects/knob_switch_base.usd
+python scripts/convert.py assets/objects/knob_switch_cap.obj assets/objects/knob_switch_cap.usd
 ```
 
 转换前建议先打印：

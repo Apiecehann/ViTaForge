@@ -21,6 +21,15 @@ RESET_XY_NOISE = 0.030
 GEAR_PLATE_HEIGHT = 0.010
 GEAR_SHAFT_TOP = 0.030
 GEAR_SHAFT_CENTER_HEIGHT = 0.5 * (GEAR_PLATE_HEIGHT + GEAR_SHAFT_TOP)
+# The composed Xense cases, adapters, and Robotiq inner-finger visuals have
+# collision disabled. Keep the gripper center above the shaft top so their
+# swept visual envelope cannot enter the gear plate while the wrist rotates.
+ROBOTIQ_GEAR_TARGET_CLEARANCE_ABOVE_SHAFT_TOP = 0.001
+ROBOTIQ_GEAR_MIN_SAFE_CLEARANCE_ABOVE_SHAFT_TOP = 0.001
+ROBOTIQ_GEAR_CLEARANCE_TRACKING_TOLERANCE = 0.0001
+ROBOTIQ_GEAR_TARGET_LOCAL_Z = (
+    GEAR_SHAFT_TOP + ROBOTIQ_GEAR_TARGET_CLEARANCE_ABOVE_SHAFT_TOP
+)
 GEAR_ASSET_ROOT = "task_0724/turn_gear_pair"
 XENSE_GEAR_PHYSICS_ASSET_PATH = f"{GEAR_ASSET_ROOT}/gear_physics_proxy.usda"
 XENSE_GEAR_BASE_PHYSICS_ASSET_PATH = (
@@ -77,6 +86,12 @@ class Task(BaseTask):
         return getattr(cfg, "tactile_sensor_type", "") in (
             "xensews",
             "xensews_robotiq",
+        )
+
+    def _uses_robotiq_gripper(self):
+        return (
+            getattr(getattr(self, "_robot_manager", None), "robot_type", None)
+            == "franka_robotiq"
         )
 
     def __init__(self, cfg: BaseTaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
@@ -159,6 +174,10 @@ class Task(BaseTask):
         self._gear_drive_angle = 0.0
         self._gear_drive_prev_gripper_pose = None
         self._gear_drive_pose_updates = 0
+        self._robotiq_grasp_clearance_monitor_enabled = False
+        self._robotiq_grasp_planned_clearance_safe = True
+        self._robotiq_grasp_min_clearance = None
+        self._robotiq_grasp_height_failure_reason = None
 
         # 三个物体整体在 xy 平面内随机平移，范围是 +/-5mm，保持相对位置不变。
         xy_offset = (
@@ -260,7 +279,43 @@ class Task(BaseTask):
         # The full-mesh UIPC revolute joint is prohibitively slow with Xense
         # contact. Drive real-gear transform targets from measured wrist motion.
         self._sync_driven_gears_to_gripper()
-        return super()._step(is_save=is_save)
+        result = super()._step(is_save=is_save)
+        self._record_robotiq_grasp_clearance()
+        return result
+
+    def _record_robotiq_grasp_clearance(self):
+        if not getattr(self, "_robotiq_grasp_clearance_monitor_enabled", False):
+            return
+        if not self._uses_robotiq_gripper():
+            return
+
+        initial_red_pose = getattr(self, "initial_red_pose", None)
+        if initial_red_pose is None:
+            return
+
+        gripper_pose = self._robot_manager.get_gripper_center_pose()
+        local_z = float(gripper_pose.p[2] - initial_red_pose.p[2])
+        clearance = local_z - GEAR_SHAFT_TOP
+        previous_min = self._robotiq_grasp_min_clearance
+        if previous_min is None or clearance < previous_min:
+            self._robotiq_grasp_min_clearance = clearance
+
+        measured_safe = (
+            self._robotiq_grasp_min_clearance
+            + ROBOTIQ_GEAR_CLEARANCE_TRACKING_TOLERANCE
+            >= ROBOTIQ_GEAR_MIN_SAFE_CLEARANCE_ABOVE_SHAFT_TOP
+        )
+        if not measured_safe:
+            self._robotiq_grasp_height_failure_reason = (
+                "actual_clearance_below_robotiq_safety_margin"
+            )
+
+        self.metadata["robotiq_gear_gripper_current_local_z"] = local_z
+        self.metadata["robotiq_gear_gripper_current_clearance"] = clearance
+        self.metadata["robotiq_gear_gripper_min_clearance"] = float(
+            self._robotiq_grasp_min_clearance
+        )
+        self.metadata["robotiq_gear_measured_clearance_safe"] = bool(measured_safe)
 
     def _record_initial_gear_poses(self):
         if self._is_xense_cfg(self.cfg) and hasattr(self, "_reset_red_pose"):
@@ -305,16 +360,18 @@ class Task(BaseTask):
         if not hasattr(self, "initial_red_pose"):
             self._record_initial_gear_poses()
         red_pose = self.red_gear.get_pose()
-        # The proxy follows the real two-level mesh: a 10mm plate and a
-        # 10-30mm shaft. Use the shaft center as the geometric reference; the
-        # Xense-specific bias accounts for the pad origin and keeps the pads
-        # clear of the toothed plate.
-        grasp_height_bias = self.get_xense_grasp_height_bias("xense_gear_grasp_height_bias")
+        uses_robotiq = self._uses_robotiq_gripper()
+        if uses_robotiq:
+            grasp_target_local_z = ROBOTIQ_GEAR_TARGET_LOCAL_Z
+            grasp_height_source = "collision_disabled_gripper_visual_envelope"
+        else:
+            grasp_target_local_z = GEAR_SHAFT_CENTER_HEIGHT
+            grasp_height_source = "gear_shaft_center"
         grasp_world_y_bias = self.get_xense_grasp_height_bias("xense_gear_grasp_world_y_bias")
         target_pose = (
             red_pose
             .add_bias(
-                [0.0, 0.0, GEAR_SHAFT_CENTER_HEIGHT + grasp_height_bias],
+                [0.0, 0.0, grasp_target_local_z],
                 coord="world",
             )
             .add_bias([0.0, grasp_world_y_bias, 0.0], coord="world")
@@ -326,14 +383,32 @@ class Task(BaseTask):
             np.array([1.0, 0.0, 0.0]),
         )
 
-        self.metadata["gear_grasp_height_ratio"] = (
-            GEAR_SHAFT_CENTER_HEIGHT / GEAR_SHAFT_TOP
-        )
-        self.metadata["gear_grasp_height"] = GEAR_SHAFT_CENTER_HEIGHT
-        self.metadata["gear_grasp_target_local_z"] = (
-            GEAR_SHAFT_CENTER_HEIGHT + grasp_height_bias
-        )
-        self.metadata["gear_grasp_height_bias"] = float(grasp_height_bias)
+        self.metadata["gear_grasp_height_source"] = grasp_height_source
+        self.metadata["gear_grasp_target_local_z"] = float(grasp_target_local_z)
+        if uses_robotiq:
+            planned_clearance = grasp_target_local_z - GEAR_SHAFT_TOP
+            self._robotiq_grasp_planned_clearance_safe = (
+                planned_clearance + 1e-12
+                >= ROBOTIQ_GEAR_MIN_SAFE_CLEARANCE_ABOVE_SHAFT_TOP
+            )
+            self._robotiq_grasp_clearance_monitor_enabled = True
+            if not self._robotiq_grasp_planned_clearance_safe:
+                self._robotiq_grasp_height_failure_reason = (
+                    "planned_clearance_below_robotiq_safety_margin"
+                )
+            self.metadata["gear_visual_clearance_above_shaft_top"] = float(
+                ROBOTIQ_GEAR_TARGET_CLEARANCE_ABOVE_SHAFT_TOP
+            )
+            self.metadata["gear_gripper_visual_collision_enabled"] = False
+            self.metadata["robotiq_gear_min_safe_clearance"] = float(
+                ROBOTIQ_GEAR_MIN_SAFE_CLEARANCE_ABOVE_SHAFT_TOP
+            )
+            self.metadata["robotiq_gear_clearance_tracking_tolerance"] = float(
+                ROBOTIQ_GEAR_CLEARANCE_TRACKING_TOLERANCE
+            )
+            self.metadata["robotiq_gear_planned_clearance_safe"] = bool(
+                self._robotiq_grasp_planned_clearance_safe
+            )
         self.metadata["gear_grasp_world_y_bias"] = float(grasp_world_y_bias)
         self.metadata["pre_grasp_dis"] = 0.050
         self.metadata["red_grasp_pose"] = grasp_pose.tolist()
@@ -523,7 +598,36 @@ class Task(BaseTask):
             )
         return rotation_success and position_success
 
+    def _is_robotiq_grasp_height_safe(self):
+        if not self._uses_robotiq_gripper():
+            return True
+
+        min_clearance = self._robotiq_grasp_min_clearance
+        measured_safe = (
+            min_clearance is not None
+            and min_clearance + ROBOTIQ_GEAR_CLEARANCE_TRACKING_TOLERANCE
+            >= ROBOTIQ_GEAR_MIN_SAFE_CLEARANCE_ABOVE_SHAFT_TOP
+        )
+        height_safe = bool(
+            self._robotiq_grasp_planned_clearance_safe and measured_safe
+        )
+        if not height_safe and self._robotiq_grasp_height_failure_reason is None:
+            self._robotiq_grasp_height_failure_reason = (
+                "robotiq_grasp_clearance_not_measured"
+                if min_clearance is None
+                else "actual_clearance_below_robotiq_safety_margin"
+            )
+
+        self.metadata["robotiq_gear_grasp_height_safe"] = height_safe
+        self.metadata["robotiq_gear_grasp_height_failure_reason"] = (
+            self._robotiq_grasp_height_failure_reason
+        )
+        return height_safe
+
     def check_success(self):
         result = self._get_gear_pair_turn_result()
         self._record_turn_result(result)
-        return self._is_physical_success(result)
+        physical_success = self._is_physical_success(result)
+        grasp_height_safe = self._is_robotiq_grasp_height_safe()
+        self.metadata["gear_physical_success"] = bool(physical_success)
+        return physical_success and grasp_height_safe

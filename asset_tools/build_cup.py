@@ -18,11 +18,11 @@ UniVTAC/UIPC 资产的表面网格输入。
   - assets/objects/cup_yellow.obj + cup_yellow.mtl
 
 运行:
-    cd /root/gpufree-data/UniVTAC-main
-    /root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/asset_tools/build_cup.py
+    cd /path/to/UniVTAC
+    python asset_tools/build_cup.py
 
 将某个生成的 OBJ 转成 UniVTAC USD:
-    /root/gpufree-data/UniVTAC-main/.venv/bin/python scripts/convert.py \
+    python scripts/convert.py \
       -i assets/objects/cup_green.obj \
       -o assets/objects/cup_green.usd
 """

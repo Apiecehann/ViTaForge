@@ -19,16 +19,17 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
 
+from pathlib import Path
+
 from tacex_assets import TACEX_ASSETS_DATA_DIR
 
 ##
 # Configuration
 ##
 
-# tmp xensews place. to be refined.
-FRANKA_ROBOTIQ_XENSEWS_USD = (
-    "/root/gpufree-data/assets/assemblies/franka_robotiq_xensews/"
-    "asset_package/usd/franka_robotiq_xensews_lift11p15_official2f85_xense_realcase_adapter_notips_tipdown_lr180_gelscale318_089_x1080_h4_padzdown20mm_gray_overlay_cameraalign1_drivefix.usda"
+FRANKA_ROBOTIQ_XENSEWS_USD = str(
+    Path(TACEX_ASSETS_DATA_DIR)
+    / "Robots/Franka/XenseWS/Gripper/uipc_franka_robotiq_xensews.usda"
 )
 
 # todo find a good way to save the prim path of the sensor for the user?

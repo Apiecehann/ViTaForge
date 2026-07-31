@@ -217,9 +217,6 @@ def main():
     
     curr_time = time.strftime(r'%Y-%m-%d_%H:%M:%S')
 
-    if "xense_use_baseline_filter" in task_config:
-        os.environ["XENSE_USE_BASELINE_FILTER"] = "1" if task_config["xense_use_baseline_filter"] else "0"
-
     env_cfg:BaseTaskCfg = task_module.TaskCfg()
     env_cfg.save_dir = Path('eval_result') / policy_name / task_file_name / deploy_config_file.stem / curr_time
     env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
@@ -282,7 +279,6 @@ def main():
         "xense_pour_cup_grasp_height_bias": float,
         "xense_pour_cup_grasp_world_x_bias": float,
         "xense_drawer_grasp_z_bias": float,
-        "xense_gear_grasp_height_bias": float,
         "xense_half_cylinder_grasp_world_y_bias": float,
         "xense_insert_half_cylinder_grasp_world_y_bias": float,
         "xense_cube_grasp_world_y_bias": float,

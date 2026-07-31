@@ -15,20 +15,16 @@ class TaximSimulatorCfg(GelSightSimulatorCfg):
     calib_folder_path: str = ""
     background_img_override_path: str = ""
     background_img_override_raw: bool = False
+    response_gain: float = 1.0
+    subtract_zero_indentation_baseline: bool = False
+    """Render optical response relative to a cached zero-indentation frame."""
+    use_physical_indentation_map: bool = False
+    gel_surface_depth: float | None = None
+    """Calibrated camera-to-gel-surface distance in meters.
 
-    xsense_response_enabled: bool = False
-    xsense_response_model: str = "taxim_residual"
-    xsense_response_residual_gain: float = 1.0
-    xsense_response_highpass_sigma_px: float = 0.0
-    xsense_response_contact_gate_threshold: float = 0.05
-    xsense_response_contact_gate_gamma: float = 1.0
-    xsense_response_contact_gate_blur_passes: int = 1
-    xsense_response_contact_rgb: tuple[float, float, float] = (-0.052, -0.002, 0.072)
-    xsense_response_edge_rgb: tuple[float, float, float] = (-0.010, 0.0, 0.016)
-    xsense_response_edge_gain: float = 1.0
-    xsense_response_indent_gamma: float = 0.85
-    xsense_response_indent_support: float = 0.35
-    xsense_response_taxim_residual_mix: float = 0.0
+    When ``use_physical_indentation_map`` is enabled, every depth pixel is
+    converted to a continuous indentation before it is passed to Taxim.
+    """
 
     device: str = "cuda"
 
