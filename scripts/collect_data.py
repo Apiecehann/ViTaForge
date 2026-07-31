@@ -196,6 +196,7 @@ def main():
         "reset_first_frame_steps",
         "reset_after_actor_steps",
         "reset_final_steps",
+        "reset_render_warmup_steps",
     ):
         if key in task_config:
             setattr(env_cfg, key, int(task_config[key]))

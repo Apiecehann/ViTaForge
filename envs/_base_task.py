@@ -131,6 +131,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     reset_first_frame_steps: int | None = None
     reset_after_actor_steps: int | None = None
     reset_final_steps: int | None = None
+    reset_render_warmup_steps: int = 32
     xense_marker_reference_max_settle_steps = 180
     xense_marker_reference_stable_steps = 8
     eval_start_delay_steps = 20
@@ -620,7 +621,8 @@ class BaseTask(UipcRLEnv):
                 raise RuntimeError(
                     f'Timeout: reset exceed time limit of {self.cfg.reset_time_limit} s, cost {reset_test_cost} s.'
                 )
-        self._update_render()
+        for _ in range(int(getattr(self.cfg, 'reset_render_warmup_steps', 32))):
+            self._update_render()
 
         is_xsense = str(self.cfg.tactile_sensor_type).startswith('xense')
         marker_reference_settle_steps = 0
@@ -776,6 +778,7 @@ class BaseTask(UipcRLEnv):
         dt = self.physics_dt * self.cfg.decimation * max(1, self.step_count - self.last_render)
         self.scene.update(dt=dt)
         self._actor_manager.update(dt=dt)
+        self._camera_manager.update(dt=dt, force_recompute=True)
         self._tactile_manager.update(dt=dt, force_recompute=True)
  
         self.last_render = self.step_count

@@ -82,6 +82,14 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
         env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
         if "reset_time_limit" in task_config:
             env_cfg.reset_time_limit = float(task_config["reset_time_limit"])
+        for key in (
+            "reset_first_frame_steps",
+            "reset_after_actor_steps",
+            "reset_final_steps",
+            "reset_render_warmup_steps",
+        ):
+            if key in task_config:
+                setattr(env_cfg, key, int(task_config[key]))
         if "video_size" in task_config:
             env_cfg.video_size = tuple(task_config["video_size"])
         env_cfg.obs_data_type = task_config.get("observations", {})
