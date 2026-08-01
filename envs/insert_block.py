@@ -70,6 +70,7 @@ SUCCESS_Z_FLOOR_TOL = 0.006
 INNER_Z_MIN = max(0.0, BOX_WALL_THICKNESS - SUCCESS_Z_FLOOR_TOL)
 INNER_Z_MAX = BOX_SIZE - BOX_WALL_THICKNESS
 XENSE_ACTOR_Z_CLEARANCE = 0.0020
+INITIAL_HEIGHT_LIFT_JOINT2_DELTA = -0.104
 
 TASK_INITIAL_JOINT_POS = {
     "panda_joint1": 0.0,
@@ -135,7 +136,9 @@ class Task(BaseTask):
             for key, value in TASK_INITIAL_JOINT_POS.items()
             if key.startswith("panda_joint")
         }
+        joint_pos["panda_joint2"] += INITIAL_HEIGHT_LIFT_JOINT2_DELTA
         if getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            joint_pos = apply_xense_wrist_y_alignment(joint_pos)
             joint_pos["finger_joint"] = cfg.robot.gripper_open_qpos
         else:
             joint_pos["panda_finger.*"] = TASK_INITIAL_JOINT_POS["panda_finger.*"]
@@ -232,6 +235,7 @@ class Task(BaseTask):
         self.metadata["target_block"] = target_key
         self.metadata["target_hole_center_xy"] = self.selected_hole_center.tolist()
         self.metadata["xense_inhand_drive_mode"] = "physical_contact_only"
+        self._xense_initial_gripper_ready = False
 
     def build_instruction(self) -> str:
         description = BLOCK_SPECS[self.target_block_key]["description"]
@@ -254,10 +258,21 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        open_gripper_pos = 0.6 if is_xense else 0.6
-        self.move(self.atom.open_gripper(open_gripper_pos), tag="open_gripper_for_policy")
+        if not is_xense:
+            self.move(self.atom.open_gripper(0.6), tag="open_gripper_for_policy")
 
-    def _grasp_selected_block(self):
+    def _setup_xense_initial_gripper(self):
+        if self._xense_initial_gripper_ready:
+            return
+        self.move(
+            self.atom.open_gripper(0.7),
+            tag="setup_open_gripper_for_policy",
+            is_save=False,
+        )
+        self.delay(20, is_save=False)
+        self._xense_initial_gripper_ready = True
+
+    def _build_grasp_plan(self):
         is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
             "xensews",
             "xensews_robotiq",
@@ -330,6 +345,15 @@ class Task(BaseTask):
             is_close=False,
             pre_dis=0.05,
         )
+        plan = {
+            "is_xense": is_xense,
+            "grasp_rotate": grasp_rotate,
+            "grasp_height_bias": grasp_height_bias,
+            "grasp_world_y_bias": grasp_world_y_bias,
+            "grasp_height": grasp_height,
+            "grasp_pose": grasp_pose,
+            "approach_actions": approach_actions,
+        }
         if is_xense:
             approach_target_pose = self._robot_manager.ee_to_gripper_center(
                 approach_actions[0].target_pose
@@ -349,6 +373,29 @@ class Task(BaseTask):
             self.metadata["xense_insert_half_cylinder_pregrasp_pose"] = (
                 pregrasp_pose.tolist()
             )
+            plan["pregrasp_pose"] = pregrasp_pose
+        return plan
+
+    def prepare_initial_state(self):
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        if not is_xense:
+            return
+        self._setup_xense_initial_gripper()
+
+    def _grasp_selected_block(self):
+        plan = self._build_grasp_plan()
+        is_xense = plan["is_xense"]
+        grasp_rotate = plan["grasp_rotate"]
+        grasp_height_bias = plan["grasp_height_bias"]
+        grasp_world_y_bias = plan["grasp_world_y_bias"]
+        grasp_height = plan["grasp_height"]
+        grasp_pose = plan["grasp_pose"]
+        approach_actions = plan["approach_actions"]
+        if is_xense:
+            pregrasp_pose = plan["pregrasp_pose"]
             self.move(
                 [Action(
                     "move",
@@ -512,23 +559,11 @@ class Task(BaseTask):
             ), tag=f"move_{self.target_block_key}_to_pre_insert", time_dilation_factor=0.5)
 
         # 从盒口上方向下插入 1cm，使半圆柱进入盒内有效空间。
-        if is_xense:
-            insert_position = self.selected_block.get_pose().p + np.array([0.0, 0.0, -INSERT_DEPTH])
-            self.move_actor_with_gripper_center_to_position(
-                self.selected_block,
-                insert_position,
-                tag=f"insert_{self.target_block_key}_into_box",
-                segments=4,
-                settle_steps=5,
-                time_dilation_factor=0.5,
-                metadata_prefix="xense_target_block_insert_path",
-            )
-        else:
-            self.move(
-                self.atom.move_by_displacement(z=-INSERT_DEPTH),
-                tag=f"insert_{self.target_block_key}_into_box",
-                time_dilation_factor=0.5,
-            )
+        self.move(
+            self.atom.move_by_displacement(z=-INSERT_DEPTH),
+            tag=f"insert_{self.target_block_key}_into_box",
+            time_dilation_factor=0.5,
+        )
         self.record_xense_grasp_debug(
             "xense_before_release_target_block",
             self.selected_block,

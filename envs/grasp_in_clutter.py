@@ -60,8 +60,17 @@ BLOCK_SPECS = (
     },
 )
 TARGET_BLOCKS = tuple(spec["name"] for spec in BLOCK_SPECS)
-DEFAULT_TARGET_BLOCK = "block_blue_half_cylinder"
+DEFAULT_TARGET_BLOCK = "block_yellow_cylinder"
 TASK_INSTRUCTION = "Grasp the blue half cylinder from the clutter and lift it up."
+TASK_INITIAL_JOINT_POS = {
+    "panda_joint1": -0.010809095,
+    "panda_joint2": 0.096037410,
+    "panda_joint3": 0.000734462,
+    "panda_joint4": -2.433035851,
+    "panda_joint5": 0.035354517,
+    "panda_joint6": 2.500859022,
+    "panda_joint7": 0.741,
+}
 
 
 @configclass
@@ -105,6 +114,14 @@ class Task(BaseTask):
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
         super().__init__(cfg, mode, render_mode, **kwargs)
 
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        joint_pos = TASK_INITIAL_JOINT_POS
+        if getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            joint_pos = apply_xense_wrist_y_alignment(joint_pos)
+        cfg.robot.robot.init_state.joint_pos.update(joint_pos)
+        return cfg
+
     def create_actors(self):
         pose_indices = tuple(int(index) for index in self.cfg.block_base_pose_indices)
         if sorted(pose_indices) != list(range(len(BLOCK_BASE_POSES))):
@@ -146,6 +163,7 @@ class Task(BaseTask):
         self.metadata["block_poses"] = {}
         self.metadata["block_xy_noise"] = {}
         self.metadata["block_base_pose_indices"] = {}
+        self._xense_initial_gripper_ready = False
 
         for name, actor in self.wooden_blocks.items():
             pose_index, base_pose = self.initial_pose_assignments[name]
@@ -170,8 +188,12 @@ class Task(BaseTask):
 
     def pre_move(self):
         # 正式动作前等待物理状态稳定，再打开夹爪准备从目标物体上方接近。
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
         initial_settle_steps = 10
-        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+        if is_xense:
             initial_settle_steps = int(
                 getattr(
                     self.cfg,
@@ -181,9 +203,21 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        self.move(self.atom.open_gripper(0.6), tag="open_gripper_for_policy")
+        if not is_xense:
+            self.move(self.atom.open_gripper(0.6), tag="open_gripper_for_policy")
 
-    def _grasp_target(self):
+    def _setup_xense_initial_gripper(self):
+        if self._xense_initial_gripper_ready:
+            return
+        self.move(
+            self.atom.open_gripper(0.7),
+            tag="setup_open_gripper_for_policy",
+            is_save=False,
+        )
+        self.delay(20, is_save=False)
+        self._xense_initial_gripper_ready = True
+
+    def _build_grasp_plan(self):
         is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
             "xensews",
             "xensews_robotiq",
@@ -257,6 +291,16 @@ class Task(BaseTask):
         approach_target_pose = self._robot_manager.ee_to_gripper_center(
             approach_actions[0].target_pose
         )
+        plan = {
+            "is_xense": is_xense,
+            "grasp_rotate": grasp_rotate,
+            "grasp_height_bias": grasp_height_bias,
+            "grasp_world_y_bias": grasp_world_y_bias,
+            "grasp_height": grasp_height,
+            "grasp_pose": grasp_pose,
+            "approach_actions": approach_actions,
+            "approach_target_pose": approach_target_pose,
+        }
         if is_xense:
             pregrasp_clearance = float(
                 getattr(self.cfg, "xense_half_cylinder_pregrasp_clearance", 0.08)
@@ -267,6 +311,30 @@ class Task(BaseTask):
             )
             self.metadata["xense_half_cylinder_pregrasp_clearance"] = pregrasp_clearance
             self.metadata["xense_half_cylinder_pregrasp_pose"] = pregrasp_pose.tolist()
+            plan["pregrasp_pose"] = pregrasp_pose
+        return plan
+
+    def prepare_initial_state(self):
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
+            "xensews",
+            "xensews_robotiq",
+        )
+        if not is_xense:
+            return
+        self._setup_xense_initial_gripper()
+
+    def _grasp_target(self):
+        plan = self._build_grasp_plan()
+        is_xense = plan["is_xense"]
+        grasp_rotate = plan["grasp_rotate"]
+        grasp_height_bias = plan["grasp_height_bias"]
+        grasp_world_y_bias = plan["grasp_world_y_bias"]
+        grasp_height = plan["grasp_height"]
+        grasp_pose = plan["grasp_pose"]
+        approach_actions = plan["approach_actions"]
+        approach_target_pose = plan["approach_target_pose"]
+        if is_xense:
+            pregrasp_pose = plan["pregrasp_pose"]
             self.move(
                 [Action(
                     "move",

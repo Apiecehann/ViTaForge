@@ -100,6 +100,14 @@ class Task(BaseTask):
         cfg.uipc_sim.contact.default_friction_ratio = 1.0
         super().__init__(cfg, mode, render_mode, **kwargs)
 
+    def load_robot_and_sensors(self, cfg: BaseTaskCfg):
+        cfg = super().load_robot_and_sensors(cfg)
+        if self._is_xense_cfg(cfg):
+            joint_pos = dict(cfg.robot.robot.init_state.joint_pos)
+            joint_pos = apply_xense_wrist_y_alignment(joint_pos)
+            cfg.robot.robot.init_state.joint_pos.update(joint_pos)
+        return cfg
+
     def create_actors(self):
         is_xense = self._is_xense_cfg(self.cfg)
         # base 中心放在 x=0.45；底座局部 z=0 是底面，所以世界 z=0.002 表示放在桌面上方 2mm。
@@ -349,14 +357,29 @@ class Task(BaseTask):
             "xensews",
             "xensews_robotiq",
         )
-        open_percent = 0.5 if is_xense else 0.5
-        self.move(self.atom.open_gripper(open_percent), delay=False)
+        open_percent = 0.5
         self.metadata["gripper_open_percent"] = float(open_percent)
-        if is_xense:
+        if not is_xense:
+            self.move(self.atom.open_gripper(open_percent), delay=False)
+        else:
             self._approach_red_gear()
             self._update_render()
 
-    def _approach_red_gear(self):
+    def prepare_initial_state(self):
+        if not self._is_xense_cfg(self.cfg):
+            return
+        self._record_initial_gear_poses()
+        open_percent = 0.5
+        self.metadata["gripper_open_percent"] = float(open_percent)
+        self.move(
+            self.atom.open_gripper(open_percent),
+            tag="setup_open_gripper_for_policy",
+            is_save=False,
+            delay=False,
+        )
+        self.delay(20, is_save=False)
+
+    def _approach_red_gear(self, is_save: bool = True):
         if not hasattr(self, "initial_red_pose"):
             self._record_initial_gear_poses()
         red_pose = self.red_gear.get_pose()
@@ -425,6 +448,7 @@ class Task(BaseTask):
         self.move(
             approach_actions,
             tag="grasp_red_gear",
+            is_save=is_save,
             delay=False,
         )
         self.record_xense_grasp_debug("xense_after_approach_red_gear", self.red_gear)

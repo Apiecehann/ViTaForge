@@ -74,6 +74,18 @@ from .sensors.camera import CameraManager, CameraCfg
 from .sensors.tactile import TactileManager, TactileCfg, create_tactile_cfg
 
 
+XENSE_WRIST_Y_ALIGNMENT_OFFSET = -np.pi / 4
+
+
+def apply_xense_wrist_y_alignment(joint_pos: dict[str, float]) -> dict[str, float]:
+    joint_pos = dict(joint_pos)
+    if "panda_joint7" in joint_pos:
+        joint_pos["panda_joint7"] = (
+            float(joint_pos["panda_joint7"]) + XENSE_WRIST_Y_ALIGNMENT_OFFSET
+        )
+    return joint_pos
+
+
 SENSOR_RUNTIME_DEFAULTS: dict[str, dict[str, Any]] = {
     "gsmini": {
         "video_size": (960, 320),
@@ -498,6 +510,9 @@ class BaseTask(UipcRLEnv):
     def pre_move(self):
         pass
 
+    def prepare_initial_state(self):
+        pass
+
     def build_instruction(self) -> str:
         """Build an instruction after episode randomization has selected its goal."""
         return str(getattr(sys.modules[self.__class__.__module__], 'TASK_INSTRUCTION', ''))
@@ -677,6 +692,8 @@ class BaseTask(UipcRLEnv):
             marker_reference_reset_result = self._tactile_manager.reset_marker_reference()
             self.metadata['marker_reference_reset_result'] = marker_reference_reset_result
             self.metadata['marker_reference_reset_step'] = int(self.step_count)
+
+        self.prepare_initial_state()
 
         run_pre_move = not bool(getattr(self.cfg, 'skip_pre_move', False))
         if options is not None and 'run_pre_move' in options:

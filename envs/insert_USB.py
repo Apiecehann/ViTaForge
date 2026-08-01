@@ -112,7 +112,10 @@ class Task(BaseTask):
         cfg = super().load_robot_and_sensors(cfg)
         if cfg.tactile_sensor_type == "xensews":
             cfg.reset_time_limit = max(float(cfg.reset_time_limit), 300.0)
-        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        joint_pos = TASK_INITIAL_JOINT_POS
+        if cfg.tactile_sensor_type == "xensews":
+            joint_pos = apply_xense_wrist_y_alignment(joint_pos)
+        cfg.robot.robot.init_state.joint_pos.update(joint_pos)
         return cfg
 
     def _is_xense(self):
@@ -256,11 +259,19 @@ class Task(BaseTask):
 
     def pre_move(self):
         self.delay(10)
-        open_percent = 0.5 if self._is_xense() else 0.5
-        self.move(self.atom.open_gripper(open_percent), tag="open_gripper_for_policy")
-        if self._is_xense():
-            self.delay(20, is_save=False)
-            self._record_xense_debug_pose('after_policy_handoff_open')
+        if not self._is_xense():
+            self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_policy")
+
+    def prepare_initial_state(self):
+        if not self._is_xense():
+            return
+        self.move(
+            self.atom.open_gripper(0.5),
+            tag="setup_open_gripper_for_policy",
+            is_save=False,
+        )
+        self.delay(20, is_save=False)
+        self._record_xense_debug_pose('after_policy_handoff_open')
 
     def _prepare_usb_standard(self):
         # 抓取姿态保留少量俯仰角和高度噪声，让演示覆盖轻微抓取误差。

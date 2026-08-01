@@ -123,7 +123,10 @@ class Task(BaseTask):
 
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
         cfg = super().load_robot_and_sensors(cfg)
-        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        joint_pos = TASK_INITIAL_JOINT_POS
+        if getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            joint_pos = apply_xense_wrist_y_alignment(joint_pos)
+        cfg.robot.robot.init_state.joint_pos.update(joint_pos)
         return cfg
 
     def _is_xense(self):
@@ -205,8 +208,9 @@ class Task(BaseTask):
 
     def pre_move(self):
         # pre_move 在正式记录动作前执行：先稳定仿真，再张开夹爪准备靠近把手。
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq")
         initial_settle_steps = 10
-        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+        if is_xense:
             initial_settle_steps = int(
                 getattr(
                     self.cfg,
@@ -216,7 +220,18 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_policy")
+        if not is_xense:
+            self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_policy")
+
+    def prepare_initial_state(self):
+        if not self._is_xense():
+            return
+        self.move(
+            self.atom.open_gripper(0.5),
+            tag="setup_open_gripper_for_policy",
+            is_save=False,
+        )
+        self.delay(20, is_save=False)
 
     def _grasp_drawer_handle(self):
         # 把局部把手坐标转换到当前 upper_drawer 的世界坐标中。

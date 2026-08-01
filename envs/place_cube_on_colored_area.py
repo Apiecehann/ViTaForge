@@ -84,7 +84,10 @@ class Task(BaseTask):
 
     def load_robot_and_sensors(self, cfg: BaseTaskCfg):
         cfg = super().load_robot_and_sensors(cfg)
-        cfg.robot.robot.init_state.joint_pos.update(TASK_INITIAL_JOINT_POS)
+        joint_pos = TASK_INITIAL_JOINT_POS
+        if getattr(cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+            joint_pos = apply_xense_wrist_y_alignment(joint_pos)
+        cfg.robot.robot.init_state.joint_pos.update(joint_pos)
         return cfg
 
     def create_actors(self):
@@ -173,13 +176,24 @@ class Task(BaseTask):
     def pre_move(self):
         # 初始先等待若干仿真步，让物体在物理引擎中稳定，再打开夹爪准备抓取。
         # Xense/Robotiq 的前几次空仿真步非常贵；保留 settle，但避免十个纯等待步把正式视频验证拖到超时。
+        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq")
         initial_settle_steps = 10
-        if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq"):
+        if is_xense:
             initial_settle_steps = int(getattr(self.cfg, "xense_cube_initial_settle_steps", 1))
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        open_gripper_pos = 0.5 if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq") else 0.5
-        self.move(self.atom.open_gripper(open_gripper_pos), tag="open_gripper_for_policy")
+        if not is_xense:
+            self.move(self.atom.open_gripper(0.5), tag="open_gripper_for_policy")
+
+    def prepare_initial_state(self):
+        if getattr(self.cfg, "tactile_sensor_type", "") not in ("xensews", "xensews_robotiq"):
+            return
+        self.move(
+            self.atom.open_gripper(0.6),
+            tag="setup_open_gripper_for_policy",
+            is_save=False,
+        )
+        self.delay(20, is_save=False)
 
     def _grasp_cube(self):
         cube_pose = self.wooden_cube.get_pose()
@@ -259,41 +273,17 @@ class Task(BaseTask):
 
     def _play_once(self):
         self._grasp_cube()
-        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq")
         place_pose = self._sample_place_pose()
 
-        if is_xense:
-            cube_pose = self.wooden_cube.get_pose()
-            lift_position = cube_pose.p + np.array([0.0, 0.0, LIFT_HEIGHT])
-            self.move_actor_by_world_displacement_to_position(
-                self.wooden_cube,
-                lift_position,
-                tag="lift_wooden_cube",
-                metadata_prefix="xense_wooden_cube_lift_path",
-            )
-            pre_place_position = place_pose.p + np.array([0.0, 0.0, 0.04])
-            self.move_actor_by_world_displacement_to_position(
-                self.wooden_cube,
-                pre_place_position,
-                tag=f"carry_wooden_cube_above_{self.target_area_color}_area",
-                metadata_prefix="xense_wooden_cube_carry_path",
-            )
-            self.move_actor_by_world_displacement_to_position(
-                self.wooden_cube,
-                place_pose.p,
-                tag=f"place_wooden_cube_on_{self.target_area_color}_area",
-                metadata_prefix="xense_wooden_cube_place_path",
-            )
-        else:
-            # 抓牢后先竖直上提 3cm，给方块离开桌面和越过黄色区域边框留出余量。
-            self.move(self.atom.move_by_displacement(z=LIFT_HEIGHT), tag="lift_wooden_cube")
-            self.move(self.atom.place_actor(
-                self.wooden_cube,
-                target_pose=place_pose,
-                pre_dis=0.02,
-                dis=0.005,
-                is_open=False,
-            ), tag=f"place_wooden_cube_on_{self.target_area_color}_area", time_dilation_factor=0.5)
+        # 抓牢后先竖直上提 3cm，给方块离开桌面和越过黄色区域边框留出余量。
+        self.move(self.atom.move_by_displacement(z=LIFT_HEIGHT), tag="lift_wooden_cube")
+        self.move(self.atom.place_actor(
+            self.wooden_cube,
+            target_pose=place_pose,
+            pre_dis=0.02,
+            dis=0.005,
+            is_open=False,
+        ), tag=f"place_wooden_cube_on_{self.target_area_color}_area", time_dilation_factor=0.5)
         self.move(self.atom.open_gripper(0.5), tag="release_wooden_cube")
         # 松爪后不保存等待帧，避免把纯稳定过程混入动作数据，同时让 success 检查读到更稳定的物理状态。
         self.delay(20, is_save=False)
