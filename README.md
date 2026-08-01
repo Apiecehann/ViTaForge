@@ -131,6 +131,53 @@ EPISODE_NUM=100 \
 bash bash_scripts/collect_data.sh
 ```
 
+Benchmark baseline task scripts:
+
+Four multi-object benchmark tasks provide dedicated baseline collection scripts
+that explicitly enumerate target/layout or target/order conditions. These
+scripts keep the original per-episode reset noise, but group outputs by semantic
+condition with `save_dir_exact` so each subset is easy to inspect and train on.
+
+| Task | Script | Default successful demonstrations |
+|---|---|---:|
+| `insert_block` | `bash_scripts/collect_insert_block_balanced.sh` | `3 targets x 4 layouts x 20 = 240` |
+| `grasp_in_clutter` | `bash_scripts/collect_grasp_in_clutter_baseline.sh` | `3 targets x 4 layouts x 20 = 240` |
+| `move_cup` | `bash_scripts/collect_move_cup_baseline.sh` | `4 semantic variants x 3 layouts x 20 = 240` |
+| `place_cube_on_colored_area` | `bash_scripts/collect_place_cube_on_colored_area_baseline.sh` | `4 target/order cases x 50 = 200` |
+
+Run one sensor modality at a time. The common commands are:
+
+```bash
+MODALITY=gelsight CONFIG=task_config/gelsight.yml GPU=0 bash <baseline_script>
+MODALITY=xense CONFIG=task_config/xense.yml GPU=1 bash <baseline_script>
+MODALITY=neote CONFIG=task_config/neote.yml GPU=2 bash <baseline_script>
+```
+
+For example:
+
+```bash
+MODALITY=gelsight CONFIG=task_config/gelsight.yml GPU=0 \
+bash bash_scripts/collect_grasp_in_clutter_baseline.sh
+
+MODALITY=xense CONFIG=task_config/xense.yml GPU=1 \
+bash bash_scripts/collect_move_cup_baseline.sh
+
+MODALITY=neote CONFIG=task_config/neote.yml GPU=2 \
+bash bash_scripts/collect_place_cube_on_colored_area_baseline.sh
+```
+
+The baseline scripts write to semantic subdirectories under `data/`:
+
+```text
+data/insert_block/<modality>/<target>/
+data/grasp_in_clutter/<modality>/<target>/
+data/move_cup/<modality>/<target>/<side>_of_<reference>/
+data/place_cube_on_colored_area/<modality>/<target_area>/<frame_order>/
+```
+
+Use `DRY_RUN=1` to print the planned sub-runs without launching Isaac Sim, and
+press `Ctrl-C` once to stop the current planner run and exit the outer loop.
+
 Parallel collection launches one Isaac Sim application per worker:
 
 ```bash

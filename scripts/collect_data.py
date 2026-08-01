@@ -45,6 +45,60 @@ parser.add_argument(
     type=str,
     default=None,
 )
+parser.add_argument(
+    "--target_block",
+    type=str,
+    default=None,
+    help="Override env_cfg.target_block when the selected task supports it.",
+)
+parser.add_argument(
+    "--block_base_pose_indices",
+    type=str,
+    default=None,
+    help=(
+        "Override env_cfg.block_base_pose_indices when supported. "
+        "Accepts comma-separated values such as 0,1,4 or a YAML/JSON list in the config."
+    ),
+)
+parser.add_argument(
+    "--target_cup",
+    type=str,
+    default=None,
+    help="Override env_cfg.target_cup when the selected task supports it.",
+)
+parser.add_argument(
+    "--reference_cup",
+    type=str,
+    default=None,
+    help="Override env_cfg.reference_cup when the selected task supports it.",
+)
+parser.add_argument(
+    "--placement_side",
+    type=str,
+    default=None,
+    help="Override env_cfg.placement_side when the selected task supports it.",
+)
+parser.add_argument(
+    "--cup_base_pose_indices",
+    type=str,
+    default=None,
+    help=(
+        "Override env_cfg.cup_base_pose_indices when supported. "
+        "Accepts comma-separated values such as 0,1,2 or a YAML/JSON list in the config."
+    ),
+)
+parser.add_argument(
+    "--target_area",
+    type=str,
+    default=None,
+    help="Override env_cfg.target_area when the selected task supports it.",
+)
+parser.add_argument(
+    "--frame_order",
+    type=str,
+    default=None,
+    help="Override env_cfg.frame_order when the selected task supports it.",
+)
 
 args_cli = parser.parse_args()
 if args_cli.gpu is not None:
@@ -74,6 +128,27 @@ def get_config(file, default_root:Path, type:Literal['yaml', 'json']):
         with open(file, 'r') as f:
             config = json.load(f)
         return config, file
+
+def parse_int_tuple(value, name: str):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.startswith("["):
+            value = json.loads(text)
+        else:
+            value = text.replace(",", " ").split()
+    try:
+        parsed = tuple(int(item) for item in value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a list or comma-separated string, got {value!r}") from exc
+    except ValueError as exc:
+        raise ValueError(f"{name} must contain only integers, got {value!r}") from exc
+    if not parsed:
+        raise ValueError(f"{name} must not be empty")
+    return parsed
 
 task_config, task_config_file = get_config(
     args_cli.config, 
@@ -179,10 +254,44 @@ def main():
 
     task_module = importlib.import_module(f"envs.{task_file_name}")
     env_cfg:'BaseTaskCfg' = task_module.TaskCfg()
+    if hasattr(env_cfg, "target_block"):
+        target_block = args_cli.target_block
+        if target_block is None:
+            target_block = task_config.get("target_block", None)
+        if target_block is not None:
+            env_cfg.target_block = str(target_block)
+            task_config["target_block"] = env_cfg.target_block
+    if hasattr(env_cfg, "block_base_pose_indices"):
+        pose_indices = args_cli.block_base_pose_indices
+        if pose_indices is None:
+            pose_indices = task_config.get("block_base_pose_indices", None)
+        pose_indices = parse_int_tuple(pose_indices, "block_base_pose_indices")
+        if pose_indices is not None:
+            env_cfg.block_base_pose_indices = pose_indices
+            task_config["block_base_pose_indices"] = list(pose_indices)
+    for key in ("target_cup", "reference_cup", "placement_side", "target_area", "frame_order"):
+        if hasattr(env_cfg, key):
+            value = getattr(args_cli, key)
+            if value is None:
+                value = task_config.get(key, None)
+            if value is not None:
+                setattr(env_cfg, key, str(value))
+                task_config[key] = str(value)
+    if hasattr(env_cfg, "cup_base_pose_indices"):
+        pose_indices = args_cli.cup_base_pose_indices
+        if pose_indices is None:
+            pose_indices = task_config.get("cup_base_pose_indices", None)
+        pose_indices = parse_int_tuple(pose_indices, "cup_base_pose_indices")
+        if pose_indices is not None:
+            env_cfg.cup_base_pose_indices = pose_indices
+            task_config["cup_base_pose_indices"] = list(pose_indices)
     env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
     env_cfg.dense_gelpad = bool(task_config.get('dense_gelpad', env_cfg.dense_gelpad))
     env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
-    env_cfg.save_dir = Path(task_config.get("save_dir", "./data")) / task_file_name / task_config_file.stem
+    if "save_dir_exact" in task_config:
+        env_cfg.save_dir = Path(task_config["save_dir_exact"])
+    else:
+        env_cfg.save_dir = Path(task_config.get("save_dir", "./data")) / task_file_name / task_config_file.stem
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
     env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)

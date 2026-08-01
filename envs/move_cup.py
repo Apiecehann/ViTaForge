@@ -9,6 +9,7 @@ CUP_BASE_XY = {
     "green": (0.48, 0.00),
     "blue": (0.60, 0.00),
 }
+CUP_BASE_ANCHORS = tuple(CUP_BASE_XY[color] for color in CUP_COLORS)
 CUP_ASSET_PATHS = {
     color: f"task_assets/move_cup/cup_{color}.usd" for color in CUP_COLORS
 }
@@ -32,6 +33,9 @@ class TaskCfg(BaseTaskCfg):
     target_cup: Literal["random", "yellow", "green", "blue"] = "blue"
     reference_cup: Literal["random", "yellow", "green", "blue"] = "yellow"
     placement_side: Literal["random", "left", "right"] = "left"
+    # Optional layout override in CUP_COLORS order: (yellow, green, blue).
+    # Each value indexes CUP_BASE_ANCHORS. None keeps the original layout.
+    cup_base_pose_indices: tuple[int, ...] | None = None
     cameras = [
         CameraCfg(
             name="head",
@@ -105,9 +109,29 @@ class Task(BaseTask):
 
     def create_actors(self):
         is_xense = self._is_xense_cfg(self.cfg)
+        indices = self.cfg.cup_base_pose_indices
+        if indices is None:
+            indices = tuple(range(len(CUP_COLORS)))
+        indices = tuple(int(index) for index in indices)
+        if len(indices) != len(CUP_COLORS):
+            raise ValueError(
+                "cup_base_pose_indices must provide one pose index for each "
+                f"cup in {CUP_COLORS}, got {indices}"
+            )
+        if len(set(indices)) != len(indices):
+            raise ValueError(f"cup_base_pose_indices must be unique, got {indices}")
+        if any(index < 0 or index >= len(CUP_BASE_ANCHORS) for index in indices):
+            raise ValueError(
+                "cup_base_pose_indices values must be in "
+                f"0..{len(CUP_BASE_ANCHORS) - 1}, got {indices}"
+            )
+        self.cup_base_pose_assignments = {
+            cup_name: (int(index), CUP_BASE_ANCHORS[int(index)])
+            for cup_name, index in zip(CUP_COLORS, indices)
+        }
         self.cups = {}
         for cup_name in CUP_COLORS:
-            x, y = CUP_BASE_XY[cup_name]
+            _, (x, y) = self.cup_base_pose_assignments[cup_name]
             asset_path = (
                 XENSE_CUP_PHYSICS_ASSET_PATH if is_xense else CUP_ASSET_PATHS[cup_name]
             )
@@ -148,6 +172,10 @@ class Task(BaseTask):
         self.metadata["target_cup"] = self.target_cup_name
         self.metadata["reference_cup"] = self.reference_cup_name
         self.metadata["placement_side"] = self.placement_side
+        self.metadata["cup_base_pose_indices"] = {
+            name: int(index)
+            for name, (index, _) in self.cup_base_pose_assignments.items()
+        }
         self.metadata["cup_xy_noises"] = cup_xy_noises
         self.metadata["cup_poses"] = {
             name: pose.tolist() for name, pose in self.cup_poses.items()
@@ -162,8 +190,8 @@ class Task(BaseTask):
             poses = {
                 name: Pose(
                     [
-                        CUP_BASE_XY[name][0] + noises[name][0],
-                        CUP_BASE_XY[name][1] + noises[name][1],
+                        self.cup_base_pose_assignments[name][1][0] + noises[name][0],
+                        self.cup_base_pose_assignments[name][1][1] + noises[name][1],
                         CUP_BASE_Z,
                     ],
                     (1.0, 0.0, 0.0, 0.0),

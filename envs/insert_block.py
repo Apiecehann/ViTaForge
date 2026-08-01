@@ -86,6 +86,11 @@ TASK_INITIAL_JOINT_POS = {
 @configclass
 class TaskCfg(BaseTaskCfg):
     target_block: str = DEFAULT_TARGET_BLOCK
+    # Optional layout override for balanced data collection. The tuple follows
+    # TARGET_BLOCKS order: (cube, half_cylinder, hexagon). Each value indexes
+    # BLOCK_BASE_POSES. When left as None, the legacy one-time random assignment
+    # in create_actors() is used.
+    block_base_pose_indices: tuple[int, ...] | None = None
     cameras = [
         CameraCfg(
             name="head",
@@ -150,7 +155,27 @@ class Task(BaseTask):
             density=1e6,
             keep_constrained=is_xense,
         )
-        indices = self.rng.choice(len(BLOCK_BASE_POSES), size=len(TARGET_BLOCKS), replace=False)
+        indices = self.cfg.block_base_pose_indices
+        if indices is None:
+            indices = self.rng.choice(
+                len(BLOCK_BASE_POSES),
+                size=len(TARGET_BLOCKS),
+                replace=False,
+            )
+        indices = tuple(int(index) for index in indices)
+        if len(indices) != len(TARGET_BLOCKS):
+            raise ValueError(
+                "block_base_pose_indices must provide one pose index for each "
+                f"target block in {TARGET_BLOCKS}, got {indices}"
+            )
+        if len(set(indices)) != len(indices):
+            raise ValueError(f"block_base_pose_indices must be unique, got {indices}")
+        if any(index < 0 or index >= len(BLOCK_BASE_POSES) for index in indices):
+            raise ValueError(
+                "block_base_pose_indices values must be in "
+                f"0..{len(BLOCK_BASE_POSES) - 1}, got {indices}"
+            )
+        self.block_base_pose_indices = indices
         self.initial_block_pose_assignments = {
             key: (int(index), BLOCK_BASE_POSES[int(index)])
             for key, index in zip(TARGET_BLOCKS, indices)
