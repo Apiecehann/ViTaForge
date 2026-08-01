@@ -56,8 +56,14 @@ After installation, run a one-episode smoke collection from the repository
 root:
 
 ```bash
-bash collect_data.sh \
-  grasp_half_cylinder_in_clutter gelsight 0 0 0 1
+CONDA_ENV=UniVTAC \
+GPU=0 \
+MODALITIES=gelsight \
+TASKS=grasp_half_cylinder_in_clutter \
+START_SEED=0 \
+MAX_SEED=0 \
+EPISODE_NUM=1 \
+bash bash_scripts/collect_data.sh
 ```
 
 ## Task Suite
@@ -97,17 +103,32 @@ resume without repeating completed work.
 
 Serial collection:
 
+`bash_scripts/collect_data.sh` reads its configuration from environment
+variables. Selected modality/task pairs run sequentially. Without `MODALITIES`
+or `TASKS` overrides, it runs the complete four-modality, eight-task suite.
+
 ```bash
-bash collect_data.sh \
-  <task_name> <task_config> <gpu_id> \
-  <start_seed> <max_seed> <successful_episodes>
+CONDA_ENV=<conda_env> \
+GPU=<gpu_id> \
+MODALITIES="<modality ...>" \
+TASKS="<task_name ...>" \
+START_SEED=<start_seed> \
+MAX_SEED=<max_seed> \
+EPISODE_NUM=<successful_episodes_per_pair> \
+bash bash_scripts/collect_data.sh
 ```
 
 Example:
 
 ```bash
-bash collect_data.sh \
-  grasp_half_cylinder_in_clutter xense 0 0 999 100
+CONDA_ENV=UniVTAC \
+GPU=0 \
+MODALITIES=xense \
+TASKS=grasp_half_cylinder_in_clutter \
+START_SEED=0 \
+MAX_SEED=999 \
+EPISODE_NUM=100 \
+bash bash_scripts/collect_data.sh
 ```
 
 Parallel collection launches one Isaac Sim application per worker:
