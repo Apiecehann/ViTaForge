@@ -229,7 +229,7 @@ class Task(BaseTask):
             )
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        open_gripper_pos = 1.0 if is_xense else 0.6
+        open_gripper_pos = 0.6 if is_xense else 0.6
         self.move(self.atom.open_gripper(open_gripper_pos), tag="open_gripper_for_policy")
 
     def _grasp_selected_block(self):

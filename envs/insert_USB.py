@@ -76,7 +76,7 @@ class TaskCfg(BaseTaskCfg):
         CameraCfg(
             name="head",
             prim_path="/World/envs/env_.*/Camera",
-            offset=CameraCfg.OffsetCfg(pos=(0.65, 0.14, 0.11), rot=(0.370608, 0.310977, 0.562556, 0.670428), convention="opengl"),
+            offset=CameraCfg.OffsetCfg(pos=(0.66, 0.14, 0.11), rot=(0.370608, 0.310977, 0.562556, 0.670428), convention="opengl"),
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.6, focus_distance=1.0, horizontal_aperture=2.4, clipping_range=(0.1, 100.0)
@@ -256,7 +256,7 @@ class Task(BaseTask):
 
     def pre_move(self):
         self.delay(10)
-        open_percent = 1.0 if self._is_xense() else 0.5
+        open_percent = 0.5 if self._is_xense() else 0.5
         self.move(self.atom.open_gripper(open_percent), tag="open_gripper_for_policy")
         if self._is_xense():
             self.delay(20, is_save=False)

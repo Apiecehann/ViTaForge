@@ -42,7 +42,7 @@ class TaskCfg(BaseTaskCfg):
         CameraCfg(
             name="head",
             prim_path="/World/envs/env_.*/Camera",
-            offset=CameraCfg.OffsetCfg(pos=(0.8, 0.0, 0.15), rot=(0.555057, 0.465748, 0.443006, 0.527954), convention="opengl"),
+            offset=CameraCfg.OffsetCfg(pos=(0.8, 0.0, 0.15), rot=(0.54167522, 0.454519478, 0.454519478, 0.54167522), convention="opengl"),
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.6, focus_distance=1.0, horizontal_aperture=2.4, clipping_range=(0.1, 100.0)
@@ -178,7 +178,7 @@ class Task(BaseTask):
             initial_settle_steps = int(getattr(self.cfg, "xense_cube_initial_settle_steps", 1))
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
-        open_gripper_pos = 1.0 if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq") else 0.5
+        open_gripper_pos = 0.5 if getattr(self.cfg, "tactile_sensor_type", "") in ("xensews", "xensews_robotiq") else 0.5
         self.move(self.atom.open_gripper(open_gripper_pos), tag="open_gripper_for_policy")
 
     def _grasp_cube(self):

@@ -349,7 +349,7 @@ class Task(BaseTask):
             "xensews",
             "xensews_robotiq",
         )
-        open_percent = 1.0 if is_xense else 0.5
+        open_percent = 0.5 if is_xense else 0.5
         self.move(self.atom.open_gripper(open_percent), delay=False)
         self.metadata["gripper_open_percent"] = float(open_percent)
         if is_xense:
