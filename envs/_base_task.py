@@ -1213,7 +1213,8 @@ class BaseTask(UipcRLEnv):
                             if gripper_depth_threshold is not None
                             else action_depth_threshold
                         )
-                        if depth_threshold is None:
+                        is_opening = self._robot_manager.is_gripper_opening(target_pos)
+                        if depth_threshold is None and not is_opening:
                             depth_threshold = self.cfg.adaptive_grasp_depth_threshold
                         action_require_both_contacts = action.args.get('gripper_require_both_contacts', None)
                         require_both_contacts = (
