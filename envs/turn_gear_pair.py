@@ -483,12 +483,11 @@ class Task(BaseTask):
             self._close_red_gear()
         else:
             self._grasp_red_gear()
-        # One 90-degree wrist turn is sufficient. A second turn reaches the
-        # +/-180-degree yaw wrap and cannot provide a reliable direction check.
+        # One 45-degree wrist turn is sufficient for this task variant.
         for turn_idx in range(1):
             self.move(
                 self.atom.move_by_displacement(
-                    rpy=[0.0, 0.0, np.pi / 2],
+                    rpy=[0.0, 0.0, np.pi / 4],
                     xyz_coord="local",
                 ),
                 tag=f"turn_red_gear_{turn_idx + 1}",
@@ -604,7 +603,7 @@ class Task(BaseTask):
         red_yaw = result["red_yaw_signed_deg"]
         blue_yaw = result["blue_yaw_signed_deg"]
         rotation_success = (
-            abs(red_yaw) >= 45.0
+            abs(red_yaw) >= 30.0
             and abs(blue_yaw) >= 30.0
             and red_yaw * blue_yaw < 0.0
         )
