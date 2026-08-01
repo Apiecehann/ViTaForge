@@ -100,8 +100,8 @@ class TaskCfg(BaseTaskCfg):
         ),
     ]
 
-    # 策略评测时最多执行 300 个高层动作。
-    step_lim = 300
+    # 策略评测时最多执行 400 个高层动作。
+    step_lim = 400
 
 
 class Task(BaseTask):

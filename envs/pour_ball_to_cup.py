@@ -58,7 +58,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1/120,
         ),
     ]
-    step_lim = 2000
+    step_lim = 1400
     pass
 
 

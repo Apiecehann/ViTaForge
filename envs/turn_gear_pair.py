@@ -77,7 +77,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1 / 120,
         ),
     ]
-    step_lim = 500
+    step_lim = 300
 
 
 class Task(BaseTask):
