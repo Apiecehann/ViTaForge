@@ -39,19 +39,19 @@
         "camera_type": "head",
         "downsample": 1
     },
-    "insert_usb": {
+    "insert_USB": {
         "camera_type": "all",
         "downsample": 1
     },
-    "insert_half_cylinder_into_box": {
+    "insert_block": {
         "camera_type": "all",
         "downsample": 1
     },
-    "grasp_half_cylinder_in_clutter": {
+    "grasp_in_clutter": {
         "camera_type": "all",
         "downsample": 1
     },
-    "place_wooden_cube_on_yellow_area": {
+    "place_cube_on_colored_area": {
         "camera_type": "all",
         "downsample": 1
     },
@@ -63,7 +63,7 @@
         "camera_type": "all",
         "downsample": 1
     },
-    "swap_cup_order": {
+    "move_cup": {
         "camera_type": "all",
         "downsample": 1
     },

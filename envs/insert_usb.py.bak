@@ -394,7 +394,7 @@ class Task(BaseTask):
         self.move(self.atom.move_by_displacement(
             z=-insert_distance,
             xyz_coord='world'
-        ), tag="insert_usb_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
+        ), tag="insert_USB_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
         self._open_gripper_after_insert()
         # 下插后保存一段稳定观测，便于 success 检查和离线数据回放看到最终状态。
         self.delay(40, is_save=True)
@@ -431,7 +431,7 @@ class Task(BaseTask):
             self.move(self.atom.move_by_displacement(
                 z=-dz,
                 xyz_coord='world',
-            ), tag=f"insert_usb_into_slot_stage_{insert_stage_idx}", time_dilation_factor=0.5,
+            ), tag=f"insert_USB_into_slot_stage_{insert_stage_idx}", time_dilation_factor=0.5,
                 constraint_pose=[1, 1, 1, 1, 1, 0])
             self.delay(10, is_save=True)
             self._record_xense_debug_pose(f'after_insert_stage_{insert_stage_idx}_raw')

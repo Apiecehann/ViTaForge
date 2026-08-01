@@ -351,7 +351,7 @@ class Task(BaseTask):
             self.move(self.atom.move_by_displacement(
                 z=-dz,
                 xyz_coord='world'
-            ), tag=f"insert_usb_into_slot_stage_{insert_stage_idx}", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
+            ), tag=f"insert_USB_into_slot_stage_{insert_stage_idx}", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
             self.delay(10, is_save=True)
             self._record_xense_debug_pose(f'after_insert_stage_{insert_stage_idx}_raw')
 

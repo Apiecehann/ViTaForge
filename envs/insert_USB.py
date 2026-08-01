@@ -1,7 +1,7 @@
 from ._base_task import *
 import numpy as np
 
-# Variant of insert_usb.py where Xense follows the same scripted insertion
+# Variant of insert_USB.py where Xense follows the same scripted insertion
 # process as the standard gripper: no staged insertion and no XY correction.
 
 # USB尺寸：
@@ -338,7 +338,7 @@ class Task(BaseTask):
         self.move(self.atom.move_by_displacement(
             z=-insert_distance,
             xyz_coord='world'
-        ), tag="insert_usb_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
+        ), tag="insert_USB_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
         self._open_gripper_after_insert()
         # 下插后保存一段稳定观测，便于 success 检查和离线数据回放看到最终状态。
         self.delay(40, is_save=True)

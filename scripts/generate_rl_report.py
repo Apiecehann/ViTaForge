@@ -230,7 +230,7 @@ def rounded_box(axis, xy, width, height, title, body, color=BLUE):
 def page_overview(pdf: PdfPages, stats: dict, page: int) -> None:
     figure = new_page(
         "GelSight 多模态 BC + Residual SAC",
-        "grasp_half_cylinder_in_clutter | 20K policy timesteps | 最终 20 集独立评估",
+        "grasp_in_clutter | 20K policy timesteps | 最终 20 集独立评估",
     )
     axis = figure.add_axes([0.07, 0.12, 0.88, 0.70])
     axis.set_xlim(0, 1)
@@ -492,7 +492,7 @@ def page_reproducibility(pdf: PdfPages, stats: dict, bc_eval: dict, sac_eval: di
     axis = figure.add_axes([0.07, 0.12, 0.88, 0.70])
     axis.axis("off")
     parameters = [
-        ("Task", "grasp_half_cylinder_in_clutter"),
+        ("Task", "grasp_in_clutter"),
         ("Sensor", "GelSight Mini, left/right rgb_marker"),
         ("Sampling", "100 successful episodes, save_frequency=2"),
         ("BC", "ResNet18, image=128, batch=32, max=30 epochs, patience=5"),

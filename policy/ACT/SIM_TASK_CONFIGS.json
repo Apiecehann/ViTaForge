@@ -1,6 +1,6 @@
 {
-    "sim-insert_usb-neote-100": {
-        "dataset_dir": "./data/sim-insert_usb/neote-100",
+    "sim-insert_USB-neote-100": {
+        "dataset_dir": "./data/sim-insert_USB/neote-100",
         "num_episodes": 100,
         "episode_len": 1000,
         "camera_names": [
@@ -11,8 +11,8 @@
         ],
         "tactile_key": "gel_particle"
     },
-    "sim-insert_half_cylinder_into_box-neote-100": {
-        "dataset_dir": "./data/sim-insert_half_cylinder_into_box/neote-100",
+    "sim-insert_block-neote-100": {
+        "dataset_dir": "./data/sim-insert_block/neote-100",
         "num_episodes": 100,
         "episode_len": 1000,
         "camera_names": [
@@ -23,8 +23,8 @@
         ],
         "tactile_key": "gel_particle"
     },
-    "sim-grasp_half_cylinder_in_clutter-neote-100": {
-        "dataset_dir": "./data/sim-grasp_half_cylinder_in_clutter/neote-100",
+    "sim-grasp_in_clutter-neote-100": {
+        "dataset_dir": "./data/sim-grasp_in_clutter/neote-100",
         "num_episodes": 100,
         "episode_len": 1000,
         "camera_names": [
@@ -35,8 +35,8 @@
         ],
         "tactile_key": "gel_particle"
     },
-    "sim-place_wooden_cube_on_yellow_area-neote-100": {
-        "dataset_dir": "./data/sim-place_wooden_cube_on_yellow_area/neote-100",
+    "sim-place_cube_on_colored_area-neote-100": {
+        "dataset_dir": "./data/sim-place_cube_on_colored_area/neote-100",
         "num_episodes": 100,
         "episode_len": 1000,
         "camera_names": [
@@ -71,8 +71,8 @@
         ],
         "tactile_key": "gel_particle"
     },
-    "sim-swap_cup_order-neote-100": {
-        "dataset_dir": "./data/sim-swap_cup_order/neote-100",
+    "sim-move_cup-neote-100": {
+        "dataset_dir": "./data/sim-move_cup/neote-100",
         "num_episodes": 100,
         "episode_len": 1000,
         "camera_names": [

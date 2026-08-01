@@ -762,7 +762,7 @@ class Task(BaseTask):
         )
         # 黄色杯子是接球杯, 这里先抓蓝色起始杯; 如果要抓 yellow, 把 self.blue_cup 换成 self.yellow_cup。
         cup_pose = self.blue_cup.get_pose()
-        # Match the shared cup grasp geometry used by swap_cup_order.
+        # Match the shared cup grasp geometry used by move_cup.
         grasp_height_bias = self.get_xense_grasp_height_bias(
             "xense_cup_grasp_height_bias"
         )

@@ -59,7 +59,7 @@ root:
 CONDA_ENV=UniVTAC \
 GPU=0 \
 MODALITIES=gelsight \
-TASKS=grasp_half_cylinder_in_clutter \
+TASKS=grasp_in_clutter \
 START_SEED=0 \
 MAX_SEED=0 \
 EPISODE_NUM=1 \
@@ -74,13 +74,13 @@ logic lives in `envs/`, while task assets are stored in
 
 | Task module | Category | Objective |
 |---|---|---|
-| `grasp_half_cylinder_in_clutter` | Grasping | Find and grasp a target half-cylinder among distractors |
-| `insert_half_cylinder_into_box` | Insertion | Grasp a half-cylinder and insert it into the matching opening |
-| `insert_usb` | Precision insertion | Grasp and insert a USB connector into a target slot |
-| `place_wooden_cube_on_yellow_area` | Pick and place | Move a wooden cube onto a marked target region |
+| `grasp_in_clutter` | Grasping | Find and grasp a target half-cylinder among distractors |
+| `insert_block` | Insertion | Grasp a half-cylinder and insert it into the matching opening |
+| `insert_USB` | Precision insertion | Grasp and insert a USB connector into a target slot |
+| `place_cube_on_colored_area` | Pick and place | Move a wooden cube onto a marked target region |
 | `pour_ball_to_cup` | Non-rigid/contact-rich | Grasp a cup, carry it, and pour balls into another cup |
 | `pull_drawer` | Articulated manipulation | Grasp a handle and pull the drawer open |
-| `swap_cup_order` | Rearrangement | Reorder cups while maintaining stable tactile contact |
+| `move_cup` | Rearrangement | Reorder cups while maintaining stable tactile contact |
 | `turn_gear_pair` | Rotational manipulation | Grasp and rotate a gear pair to the target state |
 
 All task modules use the same reset, observation, demonstration, and policy
@@ -124,7 +124,7 @@ Example:
 CONDA_ENV=UniVTAC \
 GPU=0 \
 MODALITIES=xense \
-TASKS=grasp_half_cylinder_in_clutter \
+TASKS=grasp_in_clutter \
 START_SEED=0 \
 MAX_SEED=999 \
 EPISODE_NUM=100 \
@@ -135,7 +135,7 @@ Parallel collection launches one Isaac Sim application per worker:
 
 ```bash
 python scripts/parallel_collect_data.py \
-  grasp_half_cylinder_in_clutter xense \
+  grasp_in_clutter xense \
   --workers 2 --episodes 100 --gpu 0
 ```
 

@@ -5,7 +5,7 @@ set -euo pipefail
 project_root="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 python_bin="${PYTHON_BIN:-${CONDA_PREFIX:+$CONDA_PREFIX/bin/python}}"
 python_bin="${python_bin:-$(command -v python)}"
-source_dataset_root="${SOURCE_DATASET_ROOT:-$project_root/data_gelsight_rl_100/grasp_half_cylinder_in_clutter/gelsight_rl_100}"
+source_dataset_root="${SOURCE_DATASET_ROOT:-$project_root/data_gelsight_rl_100/grasp_in_clutter/gelsight_rl_100}"
 run_root="${RUN_ROOT:-$project_root/policy/RL/runs/grasp_half_cylinder_gelsight}"
 dataset_root="$run_root/dataset_layout_b"
 timesteps="${1:-20000}"
@@ -49,7 +49,7 @@ if [[ ! -f "$bc_checkpoint" ]]; then
 fi
 
 if [[ ! -f "$train_evaluation_root/sft/evaluation.json" ]]; then
-  "$python_bin" scripts/eval_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+  "$python_bin" scripts/eval_rl.py grasp_in_clutter gelsight_rl_100 \
     "$bc_checkpoint" "$train_evaluation_root" --algorithm sft \
     --episodes "$train_evaluation_episodes" --start-seed 3 \
     --control-mode direct --action-repeat 2 --step-limit 120 \
@@ -71,7 +71,7 @@ if success_rate < threshold:
 PY
 
 if [[ ! -f "$evaluation_root/sft/evaluation.json" ]]; then
-  "$python_bin" scripts/eval_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+  "$python_bin" scripts/eval_rl.py grasp_in_clutter gelsight_rl_100 \
     "$bc_checkpoint" "$evaluation_root" --algorithm sft \
     --episodes "$evaluation_episodes" --start-seed 20000 \
     --control-mode direct --action-repeat 2 --step-limit 120 \
@@ -92,14 +92,14 @@ if success_rate < threshold:
     raise SystemExit(f"{label} gate failed; refusing to start RL")
 PY
 
-"$python_bin" scripts/train_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+"$python_bin" scripts/train_rl.py grasp_in_clutter gelsight_rl_100 \
   "$bc_checkpoint" "$run_root" --algorithm sac --total-timesteps "$timesteps" \
   --bc-dataset-root "$dataset_root" \
   --control-mode direct --action-repeat 2 --step-limit 120 \
   --control-gripper --force-control \
   2>&1 | tee "$run_root/logs/train_sac_final.log"
 
-"$python_bin" scripts/eval_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+"$python_bin" scripts/eval_rl.py grasp_in_clutter gelsight_rl_100 \
   "$bc_checkpoint" "$evaluation_root" --algorithm sac \
   --model-path "$run_root/sac/final_model.zip" \
   --episodes "$evaluation_episodes" --start-seed 20000 \
@@ -108,13 +108,13 @@ PY
   2>&1 | tee "$run_root/logs/eval_sac_final.log"
 
 if [[ "$run_ppo" == "1" ]]; then
-    "$python_bin" scripts/train_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+    "$python_bin" scripts/train_rl.py grasp_in_clutter gelsight_rl_100 \
       "$bc_checkpoint" "$run_root" --algorithm ppo --total-timesteps "$timesteps" \
     --control-mode direct --action-repeat 2 --step-limit 120 \
     --control-gripper --force-control --no-initialize-actor \
     2>&1 | tee "$run_root/logs/train_ppo_final.log"
 
-  "$python_bin" scripts/eval_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+  "$python_bin" scripts/eval_rl.py grasp_in_clutter gelsight_rl_100 \
     "$bc_checkpoint" "$evaluation_root" --algorithm ppo \
     --model-path "$run_root/ppo/final_model.zip" \
     --episodes "$evaluation_episodes" --start-seed 20000 \

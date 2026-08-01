@@ -37,18 +37,18 @@ Train BC:
 
 ```bash
 python scripts/train_bc.py \
-  data_gelsight_rl_100_20260725/grasp_half_cylinder_in_clutter/gelsight_rl_100/hdf5 \
+  data_gelsight_rl_100_20260725/grasp_in_clutter/gelsight_rl_100/hdf5 \
   policy/RL/runs/grasp_half_cylinder/bc
 ```
 
 Train both residual policies in separate runs:
 
 ```bash
-python scripts/train_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+python scripts/train_rl.py grasp_in_clutter gelsight_rl_100 \
   policy/RL/runs/grasp_half_cylinder/bc/bc_best.pt \
   policy/RL/runs/grasp_half_cylinder --algorithm sac
 
-python scripts/train_rl.py grasp_half_cylinder_in_clutter gelsight_rl_100 \
+python scripts/train_rl.py grasp_in_clutter gelsight_rl_100 \
   policy/RL/runs/grasp_half_cylinder/bc/bc_best.pt \
   policy/RL/runs/grasp_half_cylinder --algorithm ppo
 ```

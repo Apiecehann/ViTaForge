@@ -8,7 +8,7 @@
 # Examples:
 #   bash bash_scripts/collect_data.sh
 #   DRY_RUN=1 bash bash_scripts/collect_data.sh
-#   GPU=1 MODALITIES="xense neote" TASKS="insert_usb pull_drawer" \
+#   GPU=1 MODALITIES="xense neote" TASKS="insert_USB pull_drawer" \
 #     bash bash_scripts/collect_data.sh
 #   MAX_SEED=9 bash bash_scripts/collect_data.sh
 
@@ -25,7 +25,7 @@ DRY_RUN="${DRY_RUN:-0}"
 STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
 
 MODALITIES="${MODALITIES:-gelsight xense neote neote_force_field}"
-TASKS="${TASKS:-insert_usb insert_half_cylinder_into_box grasp_half_cylinder_in_clutter place_wooden_cube_on_yellow_area pull_drawer pour_ball_to_cup swap_cup_order turn_gear_pair}"
+TASKS="${TASKS:-insert_USB insert_block grasp_in_clutter place_cube_on_colored_area pull_drawer pour_ball_to_cup move_cup turn_gear_pair}"
 
 RUN_NAME="${RUN_NAME:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/data}"
