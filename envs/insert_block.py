@@ -265,7 +265,7 @@ class Task(BaseTask):
         if self._xense_initial_gripper_ready:
             return
         self.move(
-            self.atom.open_gripper(0.7),
+            self.atom.open_gripper(0.8),
             tag="setup_open_gripper_for_policy",
             is_save=False,
         )
