@@ -362,7 +362,9 @@ class MeshConverter(AssetConverterBase):
             
             # points, triangles = msh.vertices, msh.faces
             points, triangles = v_clean, f_clean
-            trimesh.Scene([trimesh.Trimesh(vertices=points, faces=triangles.reshape(-1, 3))]).show()
+            global args_cli
+            if args_cli.show:
+                trimesh.Scene([trimesh.Trimesh(vertices=points, faces=triangles.reshape(-1, 3))]).show()
 
             tg = tetgen.TetGen(points, triangles)
             tg.tetrahedralize()

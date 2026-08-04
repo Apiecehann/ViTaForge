@@ -259,7 +259,7 @@ class Task(BaseTask):
         if initial_settle_steps > 0:
             self.delay(initial_settle_steps)
         if not is_xense:
-            self.move(self.atom.open_gripper(0.6), tag="open_gripper_for_policy")
+            self.move(self.atom.open_gripper(0.8), tag="open_gripper_for_policy")
 
     def _setup_xense_initial_gripper(self):
         if self._xense_initial_gripper_ready:
@@ -477,13 +477,14 @@ class Task(BaseTask):
                 self.selected_block,
             )
         else:
-            self.move(self.atom.place_actor(
-                self.selected_block,
-                target_pose=LIFT_TARGET_POSE,
-                pre_dis=PRE_PLACE_DISTANCE,
-                dis=0.0,
-                is_open=False,
-            ), tag=f"lift_{self.target_block_key}", time_dilation_factor=0.5)
+            lift_delta_z = float(LIFT_TARGET_POSE.p[2] - self.selected_block.get_pose().p[2])
+            self.metadata["gelsight_vertical_lift_target_z"] = float(LIFT_TARGET_POSE.p[2])
+            self.metadata["gelsight_vertical_lift_delta_z"] = lift_delta_z
+            self.move(
+                self.atom.move_by_displacement(z=lift_delta_z),
+                tag=f"lift_{self.target_block_key}",
+                time_dilation_factor=0.5,
+            )
 
         pre_insert_pose = self._sample_pre_insert_pose()
         # 再移动到当前随机化木盒正上方的预插入点，保持夹爪闭合不释放物体。
