@@ -65,8 +65,7 @@ class Actor(UipcObject):
         super().__init__(cfg, task.uipc_sim)
         task.scene.uipc_objects[cfg.name] = self
 
-        self.next_status, self.next_pts, self.next_mat = None, None, None
-        self.next_status, self.next_mat, self.next_pts = None, None, None
+        self.next_status, self.next_pts, self.next_mat, self.next_mask = None, None, None, None
         if isinstance(self.cfg.constitution_cfg, UipcObjectCfg.AffineBodyConstitutionCfg):
             self.actor_type = 'affine_body'
             soft_transform_constraint = SoftTransformConstraint()
@@ -84,7 +83,10 @@ class Actor(UipcObject):
         
     def _initialize_impl(self):
         ret = super()._initialize_impl()
-        self.origin_surf_pts = self.vertices - self.init_pose.p
+        vertices = self.vertices
+        if vertices.shape[0] == 0:
+            vertices = self.init_vertex_pos.detach().cpu().numpy()
+        self.origin_surf_pts = vertices - self.init_pose.p
         self.origin_surf_pts = self.origin_surf_pts @ self.init_pose.R
 
         self.animator = self._uipc_sim.scene.animator()
@@ -201,7 +203,18 @@ class Actor(UipcObject):
             orient_op.Set(quat)
 
     def get_pose(self, type:Literal['pose', 'matrix']='pose'):
-        mat = estimate_rigid_transform(self.origin_surf_pts, self.vertices)
+        vertices = self.vertices
+        if vertices.shape[0] == 0:
+            vertices = self.init_vertex_pos.detach().cpu().numpy()
+        if (
+            self.origin_surf_pts.shape[0] == 0
+            or vertices.shape[0] != self.origin_surf_pts.shape[0]
+            or not np.isfinite(vertices).all()
+            or not np.isfinite(self.origin_surf_pts).all()
+        ):
+            mat = self.init_pose.to_transformation_matrix()
+            return mat if type == "matrix" else self.init_pose
+        mat = estimate_rigid_transform(self.origin_surf_pts, vertices)
         if type == 'matrix':
             return mat
         else:
@@ -229,9 +242,17 @@ class Actor(UipcObject):
             if self.next_status == 'unset':
                 view(is_constrained)[:] = 0
             else:
-                view(is_constrained)[:] = 1
+                is_constrained_view = view(is_constrained)
                 aim_position_view = view(geo.vertices().find(builtin.aim_position))
-                aim_position_view[:] = self.next_pts.reshape(1, -1, 3)
+                target_positions = self.next_pts.reshape(aim_position_view.shape)
+                if self.next_mask is None:
+                    is_constrained_view[:] = 1
+                    aim_position_view[:] = target_positions
+                else:
+                    mask = np.asarray(self.next_mask, dtype=bool).reshape(-1)
+                    is_constrained_view[:] = 0
+                    is_constrained_view.reshape(-1)[mask] = 1
+                    aim_position_view[mask] = target_positions[mask]
  
         if self.next_status == 'unset':
             self.next_status = None
@@ -242,11 +263,34 @@ class Actor(UipcObject):
  
         self.next_pts = (self.init_vertex_pos @ mat[:3, :3].T + mat[:3, 3]).cpu().numpy()
         self.next_mat = mat.cpu().numpy()
+        self.next_mask = None
+        self.next_status = 'set'
+
+    def set_vertex_targets(self, vertex_positions: np.ndarray | torch.Tensor, mask: np.ndarray | torch.Tensor | None = None):
+        if isinstance(vertex_positions, torch.Tensor):
+            vertex_positions = vertex_positions.detach().cpu().numpy()
+        vertex_positions = np.asarray(vertex_positions, dtype=np.float64).reshape(-1, 3)
+        if vertex_positions.shape[0] != self._vertex_count:
+            raise ValueError(
+                f"Expected {self._vertex_count} vertex targets, got {vertex_positions.shape[0]}."
+            )
+
+        if mask is not None:
+            if isinstance(mask, torch.Tensor):
+                mask = mask.detach().cpu().numpy()
+            mask = np.asarray(mask, dtype=bool).reshape(-1)
+            if mask.shape[0] != self._vertex_count:
+                raise ValueError(f"Expected {self._vertex_count} mask values, got {mask.shape[0]}.")
+
+        self.next_pts = vertex_positions
+        self.next_mat = None
+        self.next_mask = mask
         self.next_status = 'set'
     
     def remove_animate(self, force: bool = False):
         if force or not self.cfg.keep_constrained:
             self.next_status = 'unset'
+            self.next_mask = None
 
     def set_texture(self, mdl_path:str, rng=None):
         prim = self._prim_view.prims[0]
@@ -301,11 +345,13 @@ class Actor(UipcObject):
     @property
     def vertices(self):
         all_trimesh_points = self._uipc_sim.sio.simplicial_surface(2).positions().view().reshape(-1, 3)
-        surf_points = all_trimesh_points[
-            self._uipc_sim._surf_vertex_offsets[self.obj_id - 1] : self._uipc_sim._surf_vertex_offsets[
-                self.obj_id
-            ]
-        ]
+        if hasattr(self, "_surf_vertex_offset_start"):
+            start = self._surf_vertex_offset_start
+            end = self._surf_vertex_offset_end
+        else:
+            start = self._uipc_sim._surf_vertex_offsets[self.obj_id - 1]
+            end = self._uipc_sim._surf_vertex_offsets[self.obj_id]
+        surf_points = all_trimesh_points[start:end]
         return surf_points
     
     def get_point(
