@@ -2,9 +2,8 @@
 # Units: meters
 # Coordinate system: Z up, origin at bottom-face center
 # Core dimensions: 0.015 x 0.015 x 0.080
-# Surface style: smooth top and bottom faces, rough side faces only
+# Surface style: rough black material on all faces
 mtllib black_rough_cuboid.mtl
-mtllib black_smooth_cuboid.mtl
 
 o black_rough_cuboid
 
@@ -1675,7 +1674,7 @@ v -0.007900000 -0.003281250  0.078333333
 v -0.007880000 -0.005156250  0.078333333
 v -0.007860000 -0.006796875  0.078333333
 
-usemtl black_smooth_cuboid
+usemtl black_rough_cuboid
 s off
 
 f 1 10 11

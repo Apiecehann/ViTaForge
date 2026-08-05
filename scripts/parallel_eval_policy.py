@@ -92,6 +92,11 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
             env_cfg.video_size = tuple(task_config["video_size"])
         env_cfg.random_texture = task_config.get("random_texture", False)
         env_cfg.save_pre_move = task_config.get("save_pre_move", getattr(env_cfg, "save_pre_move", False))
+        env_cfg.skip_pre_move = bool(task_config.get("skip_pre_move", getattr(env_cfg, "skip_pre_move", False)))
+        default_eval_start_delay_steps = 0 if env_cfg.skip_pre_move else getattr(env_cfg, "eval_start_delay_steps", 20)
+        env_cfg.eval_start_delay_steps = int(
+            task_config.get("eval_start_delay_steps", default_eval_start_delay_steps)
+        )
         env_cfg.tactile_video_key = task_config.get("tactile_video_key", env_cfg.tactile_video_key)
         if "use_adaptive_grasp" in task_config:
             env_cfg.use_adaptive_grasp = bool(task_config["use_adaptive_grasp"])

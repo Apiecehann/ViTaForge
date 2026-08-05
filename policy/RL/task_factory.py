@@ -34,7 +34,10 @@ def create_task(
     if save_pre_move is None:
         save_pre_move = source.get("save_pre_move", False)
     env_config.save_pre_move = bool(save_pre_move)
-    env_config.eval_start_delay_steps = 0
+    env_config.skip_pre_move = bool(
+        source.get("skip_pre_move", getattr(env_config, "skip_pre_move", False))
+    )
+    env_config.eval_start_delay_steps = int(source.get("eval_start_delay_steps", 0))
     env_config.step_lim = int(step_limit)
     env_config.tactile_video_key = source.get(
         "tactile_video_key",
