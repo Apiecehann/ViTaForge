@@ -183,6 +183,9 @@ class Task(BaseTask):
             name: pose.tolist() for name, pose in self.cup_poses.items()
         }
 
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
+
     def _sample_cup_reset_poses(self):
         for _ in range(MAX_RESET_SAMPLE_ATTEMPTS):
             noises = {
@@ -387,10 +390,6 @@ class Task(BaseTask):
             "xense_cup_grasp_height_bias"
         )
         close_percent = self.get_xense_close_percent("xense_cup_close_percent")
-        # Reset poses are held by an animator constraint for every sensor.
-        # Release the selected cup only when the gripper is ready to close.
-        self.target_cup.remove_animate(force=True)
-        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag=f"close_{self.target_cup_name}_cup",

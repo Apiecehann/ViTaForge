@@ -10,7 +10,7 @@ GRASP_HEIGHT_NOISE = 0.003
 LIFT_HEIGHT = 0.1000
 SUCCESS_MIN_LIFT = 0.0500
 SUCCESS_MAX_LIFT = 0.1500
-XENSE_BLOCK_Z_CLEARANCE = 0.0020
+XENSE_BLOCK_Z_CLEARANCE = 0.0
 
 BLOCK_BASE_POSES = (
     Pose([0.44, 0.00, 0.002], [1, 0, 0, 0]),
@@ -139,8 +139,7 @@ class Task(BaseTask):
             "xensews",
             "xensews_robotiq",
         )
-        # Hold all XSense blocks at their sampled reset poses during approach.
-        # The selected target is released immediately before physical closure.
+        # Hold XSense blocks at their sampled reset poses only during reset settling.
         for spec in BLOCK_SPECS:
             _, initial_pose = self.initial_pose_assignments[spec["name"]]
             actor = self._actor_manager.add_from_usd_file(
@@ -185,6 +184,9 @@ class Task(BaseTask):
     def build_instruction(self) -> str:
         description = self.wooden_block_specs[self.target_block_name]["description"]
         return f"Grasp the {description} from the clutter and lift it up."
+
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
 
     def pre_move(self):
         # 正式动作前等待物理状态稳定，再打开夹爪准备从目标物体上方接近。
@@ -372,10 +374,6 @@ class Task(BaseTask):
         close_percent = self.get_xense_close_percent(
             "xense_half_cylinder_close_percent"
         )
-        # Reset poses are held by an animator constraint for every sensor.
-        # Release the selected block only when the gripper is ready to close.
-        self.target_block.remove_animate(force=True)
-        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag=f"close_{self.target_block_name}",

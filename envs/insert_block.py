@@ -69,7 +69,7 @@ INNER_Y_MAX = BOX_SIZE * 0.5 - BOX_WALL_THICKNESS
 SUCCESS_Z_FLOOR_TOL = 0.006
 INNER_Z_MIN = max(0.0, BOX_WALL_THICKNESS - SUCCESS_Z_FLOOR_TOL)
 INNER_Z_MAX = BOX_SIZE - BOX_WALL_THICKNESS
-XENSE_ACTOR_Z_CLEARANCE = 0.0020
+XENSE_ACTOR_Z_CLEARANCE = 0.0
 INITIAL_HEIGHT_LIFT_JOINT2_DELTA = -0.104
 
 TASK_INITIAL_JOINT_POS = {
@@ -236,6 +236,9 @@ class Task(BaseTask):
         self.metadata["target_hole_center_xy"] = self.selected_hole_center.tolist()
         self.metadata["xense_inhand_drive_mode"] = "physical_contact_only"
         self._xense_initial_gripper_ready = False
+
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
 
     def build_instruction(self) -> str:
         description = BLOCK_SPECS[self.target_block_key]["description"]
@@ -416,10 +419,6 @@ class Task(BaseTask):
         close_percent = self.get_xense_close_percent(
             "xense_insert_half_cylinder_close_percent"
         )
-        # Reset poses are held by an animator constraint for every sensor.
-        # Release the selected block only when the gripper is ready to close.
-        self.selected_block.remove_animate(force=True)
-        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag=f"close_{self.target_block_key}",

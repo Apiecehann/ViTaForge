@@ -143,17 +143,15 @@ class Task(BaseTask):
         target_slot_pose = Pose([0.52, 0.0, 0.002], [1, 0, 0, 0])
         usb_pose = self._usb_pose_in_slot(start_slot_pose)
 
-        # The slots are fixtures, not task targets.  Constrain them for the
-        # XSense/UIPC scene so contact cannot translate or rotate the opening
-        # while the USB is inserted.  Preserve the original behavior for the
-        # other two sensors.
-        constrain_slots = self._is_xense()
+        # The slots are held only during XSense reset settling; high density
+        # keeps them fixture-like after the reset constraints are released.
+        hold_slots_during_reset = self._is_xense()
         self.start_slot = self._actor_manager.add_from_usd_file(
             name='start_slot',
             asset_path="task_assets/insert_USB/USB_slot_start.usd",
             pose=start_slot_pose,
             density=1e6,
-            keep_constrained=constrain_slots,
+            keep_constrained=hold_slots_during_reset,
         )
 
         self.slot = self._actor_manager.add_from_usd_file(
@@ -161,7 +159,7 @@ class Task(BaseTask):
             asset_path="task_assets/insert_USB/USB_slot_target.usd",
             pose=target_slot_pose,
             density=1e6,
-            keep_constrained=constrain_slots,
+            keep_constrained=hold_slots_during_reset,
         )
 
         self.prism = self._actor_manager.add_from_usd_file(
@@ -190,6 +188,9 @@ class Task(BaseTask):
         self.metadata['usb_slot_contact_clearance'] = float(
             XENSE_USB_SLOT_CONTACT_CLEARANCE if self._is_xense() else 0.0
         )
+
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
 
     def _move_held_usb_by_translation(
         self,
@@ -295,8 +296,6 @@ class Task(BaseTask):
             contact_point_id=cid,
             is_close=False
         ), tag="approach_usb")
-        self.prism.remove_animate(force=True)
-        self._actor_manager.update(dt=0.0)
         self.move(self.atom.close_gripper(), tag="close_usb")
 
         # 抓住后先上提约 3cm，并加入少量 z 噪声，给 USB 离开起始槽和桌面留出安全余量。

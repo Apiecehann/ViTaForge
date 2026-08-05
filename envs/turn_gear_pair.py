@@ -230,6 +230,9 @@ class Task(BaseTask):
         self.metadata["red_gear_pose"] = red_pose.tolist()
         self.metadata["blue_gear_pose"] = blue_pose.tolist()
 
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
+
     @staticmethod
     def _rotate_pose_about_world_z(pose, angle):
         pose_mat = pose.to_transformation_matrix()

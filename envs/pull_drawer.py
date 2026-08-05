@@ -31,7 +31,7 @@ DRAWER_Y_OFFSET = CABINET_FRONT_Y - DRAWER_FRONT_Y
 # 抽屉的局部 z 偏移。额外的 clearance 用于给抽屉和柜体之间留出微小间隙，
 # 避免 reset 后 UIPC/物理仿真初始状态过度接触。
 DRAWER_Z_CLEARANCE = 0.0010
-XENSE_DRAWER_Z_CLEARANCE = 0.0020
+XENSE_DRAWER_Z_CLEARANCE = DRAWER_Z_CLEARANCE
 LOWER_DRAWER_Z_OFFSET = 0.0085 + DRAWER_Z_CLEARANCE
 UPPER_DRAWER_Z_OFFSET = 0.0700 + DRAWER_Z_CLEARANCE
 
@@ -203,8 +203,15 @@ class Task(BaseTask):
         self.metadata['drawer_z_clearance'] = float(
             XENSE_DRAWER_Z_CLEARANCE if self._is_xense() else DRAWER_Z_CLEARANCE
         )
-        self.metadata['static_fixture_constraints'] = True
-        self.metadata['static_fixture_actor_names'] = ['cabinet', 'lower_drawer']
+        self.metadata['static_fixture_constraints'] = False
+        self.metadata['reset_constraint_actor_names'] = [
+            'cabinet',
+            'lower_drawer',
+            'upper_drawer',
+        ]
+
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
 
     def pre_move(self):
         # pre_move 在正式记录动作前执行：先稳定仿真，再张开夹爪准备靠近把手。
@@ -265,10 +272,6 @@ class Task(BaseTask):
 
         # 靠近把手后再闭合夹爪。这里把 close 单独放一步，方便采集到“接近”和“夹紧”阶段。
         close_percent = self.get_xense_close_percent("xense_drawer_close_percent")
-        # Reset poses are held by an animator constraint for every sensor.
-        # Release the upper drawer only when the gripper is ready to close.
-        self.upper_drawer.remove_animate(force=True)
-        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_upper_drawer_handle",

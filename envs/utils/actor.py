@@ -433,9 +433,9 @@ class ActorManager:
         for actor in self.actors.values():
             actor.sync_visual_mesh()
     
-    def remove_animate(self):
+    def remove_animate(self, force: bool = False):
         for actor in self.actors.values():
-            actor.remove_animate()
+            actor.remove_animate(force=force)
     
     def get_observations(self):
         obs = {}

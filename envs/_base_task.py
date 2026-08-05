@@ -105,7 +105,7 @@ SENSOR_RUNTIME_DEFAULTS: dict[str, dict[str, Any]] = {
         "video_size": (1760, 700),
         "reset_time_limit": 600.0,
         "reset_first_frame_steps": 1,
-        "reset_after_actor_steps": 1,
+        "reset_after_actor_steps": 20,
         "reset_final_steps": 5,
     },
 }
@@ -618,8 +618,6 @@ class BaseTask(UipcRLEnv):
                         f'Timeout: reset exceed time limit of {self.cfg.reset_time_limit} s, cost {reset_test_cost} s.'
                     )
             self._update_render()
-            # Keep task-authored constraints through pre_move. Tasks release
-            # each target explicitly when physical interaction should begin.
 
         if instructions is not None:
             self.set_instruction(self.rng.choice(instructions))
@@ -694,6 +692,18 @@ class BaseTask(UipcRLEnv):
             self.metadata['marker_reference_reset_step'] = int(self.step_count)
 
         self.prepare_initial_state()
+
+        if hasattr(self, '_release_reset_constraints'):
+            self._release_reset_constraints()
+            self._actor_manager.update(dt=0.0)
+            reset_test_start = time.perf_counter()
+            for _ in range(int(getattr(self.cfg, 'reset_final_steps', 5))):
+                self._step(is_save=save_reset_steps)
+                reset_test_cost = time.perf_counter() - reset_test_start
+                if reset_test_cost > self.cfg.reset_time_limit:
+                    raise RuntimeError(
+                        f'Timeout: reset exceed time limit of {self.cfg.reset_time_limit} s, cost {reset_test_cost} s.'
+                    )
 
         run_pre_move = not bool(getattr(self.cfg, 'skip_pre_move', False))
         if options is not None and 'run_pre_move' in options:

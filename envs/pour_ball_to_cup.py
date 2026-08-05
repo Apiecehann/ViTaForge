@@ -193,6 +193,9 @@ class Task(BaseTask):
         if hasattr(self, "_xense_pour_ball_friction_ratio"):
             self.metadata["xense_pour_ball_friction_ratio"] = self._xense_pour_ball_friction_ratio
 
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
+
     def pre_move(self):
         # 先等待 10 step 看初始 settling。夹爪开口已经在 init_state 里设成最大值, 不再额外规划 open_gripper。
         initial_settle_steps = 10
@@ -214,14 +217,10 @@ class Task(BaseTask):
             self._approach_blue_cup_rim()
             self._update_render()
         else:
-            # Panda/GelSight and Neote used to rely on BaseTask releasing all
-            # reset constraints before pre_move. Release both pour actors here
-            # and settle them before deriving the rim grasp pose.
-            blue_cup_pose_before_release = self.blue_cup.get_pose()
-            red_ball_pose_before_release = self.red_ball.get_pose()
-            self.blue_cup.remove_animate(force=True)
-            self.red_ball.remove_animate(force=True)
-            self._actor_manager.update(dt=0.0)
+            # Reset has already released the initialization constraints. Settle
+            # the cup and ball before deriving the rim grasp pose.
+            blue_cup_pose_before_settle = self.blue_cup.get_pose()
+            red_ball_pose_before_settle = self.red_ball.get_pose()
             self._wait_actor_until_still(
                 self.blue_cup,
                 max_steps=120,
@@ -236,11 +235,11 @@ class Task(BaseTask):
                 tag="wait_red_ball_still_before_grasp",
             )
             blue_cup_pose_after_settle = self.blue_cup.get_pose()
-            self.metadata["blue_cup_pose_before_pregrasp_release"] = (
-                blue_cup_pose_before_release.tolist()
+            self.metadata["blue_cup_pose_before_pregrasp_settle"] = (
+                blue_cup_pose_before_settle.tolist()
             )
-            self.metadata["red_ball_pose_before_pregrasp_release"] = (
-                red_ball_pose_before_release.tolist()
+            self.metadata["red_ball_pose_before_pregrasp_settle"] = (
+                red_ball_pose_before_settle.tolist()
             )
             self.metadata["blue_cup_pose_after_pregrasp_settle"] = (
                 blue_cup_pose_after_settle.tolist()
@@ -249,7 +248,7 @@ class Task(BaseTask):
                 self.red_ball.get_pose().tolist()
             )
             self.metadata["blue_cup_pregrasp_settle_drop_m"] = float(
-                blue_cup_pose_before_release.p[2] - blue_cup_pose_after_settle.p[2]
+                blue_cup_pose_before_settle.p[2] - blue_cup_pose_after_settle.p[2]
             )
 
     def _record_blue_cup_shape(self, label: str):
@@ -824,19 +823,10 @@ class Task(BaseTask):
         self.record_xense_grasp_debug("xense_after_approach_blue_cup_rim", self.blue_cup)
 
     def _close_blue_cup_rim(self):
-        is_xense = getattr(self.cfg, "tactile_sensor_type", "") in (
-            "xensews",
-            "xensews_robotiq",
-        )
         grasp_height_bias = self.get_xense_grasp_height_bias(
             "xense_cup_grasp_height_bias"
         )
         close_percent = self.get_xense_close_percent("xense_cup_close_percent")
-        if is_xense:
-            # Xense approaches during pre_move while the reset constraint is
-            # still active. Release it only when the pads are ready to close.
-            self.blue_cup.remove_animate(force=True)
-            self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_blue_cup_rim",
@@ -955,8 +945,7 @@ class Task(BaseTask):
         self._blue_cup_shape_before_pour = self._record_blue_cup_shape("before_pour")
         self.record_xense_grasp_debug("xense_before_pour_blue_cup", self.blue_cup)
 
-        # Ensure the ball is governed only by contact and gravity during the
-        # pour, even if a reset constraint survived an earlier step.
+        # Ensure the ball is governed only by contact and gravity during the pour.
         self.red_ball.remove_animate(force=True)
         self._actor_manager.update(dt=0.0)
 

@@ -140,6 +140,9 @@ class Task(BaseTask):
         self.metadata["target_area_color"] = self.target_area_color
         self.metadata["frame_order"] = self.frame_order
 
+    def _release_reset_constraints(self):
+        self._actor_manager.remove_animate(force=True)
+
     def build_instruction(self) -> str:
         return f"Place the red cube on the {self.target_area_color} area."
 
@@ -245,10 +248,6 @@ class Task(BaseTask):
         self.record_xense_grasp_debug("xense_after_approach_wooden_cube", self.wooden_cube)
 
         close_percent = self.get_xense_close_percent("xense_cube_close_percent")
-        # Reset poses are held by an animator constraint for every sensor.
-        # Release the cube only when the gripper is ready to close.
-        self.wooden_cube.remove_animate(force=True)
-        self._actor_manager.update(dt=0.0)
         self.move(
             self.atom.close_gripper(pos=close_percent),
             tag="close_wooden_cube",
