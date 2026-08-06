@@ -104,6 +104,7 @@ class Task(BaseTask):
 
         self.move(self.atom.open_gripper(0.5))
 
+    def _play_once(self):
         grasp_rotate = self.rng.uniform(-np.pi / 36, np.pi / 36)
         target_pose = self.block.get_pose().add_bias([0.0, 0.0, 0.035 + 0.01 * self.rng.random()])\
             .add_rotation([0, grasp_rotate, 0])
@@ -128,7 +129,6 @@ class Task(BaseTask):
             0.01
         ])
 
-    def _play_once(self):
         self.move(self.atom.place_actor(
             self.block,
             target_pose=self.target_pose,
