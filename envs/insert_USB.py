@@ -14,6 +14,8 @@ import numpy as np
 # assets/objects/USB_slot_target.usd, 孔：13.2mm x 5.7mm
 # assets/objects/USB_slot_start_001.usd, 孔：13.9mm x 5.9mm
 # assets/objects/USB_slot_target_001.usd, 孔：13.4mm x 5.4mm
+# assets/objects/task_assets/insert_USB/USB_slot_target_1_5mm.usd, 孔：13.5mm x 6.0mm
+# assets/objects/task_assets/insert_USB/USB_slot_target_2mm.usd, 孔：14mm x 6.5mm
 
 # 下面的尺寸来自 assets/objects/*.usd 的网格顶点，用于把 USB 和插槽在 z 方向上对齐。
 USB_PLUG_HEIGHT = 0.0124
@@ -28,7 +30,7 @@ SLOT_HOLE_BOTTOM = 0.0050
 USB_INSERT_Z = max(SLOT_HOLE_BOTTOM, SLOT_HEIGHT - USB_PLUG_HEIGHT)
 
 # episode 级随机化和脚本动作幅度。xy 噪声只扰动插槽平面位置，不扰动高度。
-SLOT_XY_NOISE = (0.030, 0.030, 0.0)
+SLOT_XY_NOISE = (0.010, 0.010, 0.0)
 LIFT_HEIGHT = 0.0300
 LIFT_HEIGHT_NOISE = 0.0100
 # pre_move 先移到槽口上方 10 mm，并在插槽平面内叠加小幅位置噪声。
@@ -156,7 +158,7 @@ class Task(BaseTask):
 
         self.slot = self._actor_manager.add_from_usd_file(
             name='slot',
-            asset_path="task_assets/insert_USB/USB_slot_target.usd",
+            asset_path="task_assets/insert_USB/USB_slot_target_1_5mm.usd",
             pose=target_slot_pose,
             density=1e6,
             keep_constrained=hold_slots_during_reset,
@@ -349,7 +351,6 @@ class Task(BaseTask):
             z=-insert_distance,
             xyz_coord='world'
         ), tag="insert_USB_into_slot", time_dilation_factor=0.5, constraint_pose=[1, 1, 1, 1, 1, 0])
-        self._open_gripper_after_insert()
         # 下插后保存一段稳定观测，便于 success 检查和离线数据回放看到最终状态。
         self.delay(40, is_save=True)
 
