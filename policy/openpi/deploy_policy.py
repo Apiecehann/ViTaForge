@@ -1,0 +1,315 @@
+from __future__ import annotations
+
+import numpy as np
+
+from .._base_policy import BasePolicy
+from .client import OpenPiClientRuntime, OpenPiServerConfig
+from .debug import save_openpi_observation_images
+from .transforms import openpi_obs_from_univtac, sanitize_abs_joint_action, sanitize_delta_eef_action
+
+
+class Policy(BasePolicy):
+    """ViTaForge OpenPI eval policy。
+
+    输入:
+        deploy_config: eval_policy.py 读取 deploy.yml 后传入的配置 dict。
+
+    输出:
+        一个兼容 ViTaForge BasePolicy 接口的 policy 实例。
+
+    支持模式:
+        abs_joint: state/action 都是 [7 arm qpos, gripper qpos]。
+        delta_eef: state 支持 [ee_pos(3), ee_quat_xyzw(4), gripper qpos]
+            或 [ee_pos(3), ee_rot6d(6), gripper qpos]；
+            action 是 [delta_xyz(3), delta_rotvec(3), gripper_abs_qpos(1)]。
+    """
+
+    def __init__(self, deploy_config: dict):
+        super().__init__(deploy_config)
+        openpi_cfg = dict(deploy_config.get("openpi", {}))
+        if not openpi_cfg:
+            raise KeyError("deploy config 缺少 openpi 配置段。")
+
+        self.control_mode = str(openpi_cfg.get("control_mode", "abs_joint")).lower()
+        if self.control_mode not in ("abs_joint", "delta_eef"):
+            raise ValueError(f"OpenPI control_mode 只支持 'abs_joint' 或 'delta_eef'，实际为 {self.control_mode!r}")
+
+        default_state_dim = 8
+        default_action_dim = 7 if self.control_mode == "delta_eef" else 8
+        self.state_dim = int(openpi_cfg.get("state_dim", default_state_dim))
+        self.action_dim = int(openpi_cfg.get("action_dim", default_action_dim))
+        if self.control_mode == "abs_joint" and (self.state_dim != 8 or self.action_dim != 8):
+            raise ValueError(
+                "abs_joint 模式要求 state_dim=8 且 action_dim=8，"
+                f"实际 state_dim={self.state_dim}, action_dim={self.action_dim}"
+            )
+        self.eef_state_mode = str(openpi_cfg.get("eef_state_mode", "")).lower()
+        if self.control_mode == "delta_eef":
+            if not self.eef_state_mode:
+                self.eef_state_mode = "rot6d_10" if self.state_dim == 10 else "quat_xyzw_8"
+            if self.eef_state_mode not in ("quat_xyzw_8", "rot6d_10"):
+                raise ValueError(
+                    "openpi.eef_state_mode 只支持 'quat_xyzw_8' 或 'rot6d_10'，"
+                    f"实际为 {self.eef_state_mode!r}"
+                )
+        else:
+            self.eef_state_mode = ""
+        expected_delta_state_dim = 10 if self.eef_state_mode == "rot6d_10" else 8
+        if self.control_mode == "delta_eef" and (self.state_dim != expected_delta_state_dim or self.action_dim != 7):
+            raise ValueError(
+                f"delta_eef/{self.eef_state_mode} 模式要求 "
+                f"state_dim={expected_delta_state_dim} 且 action_dim=7，"
+                f"实际 state_dim={self.state_dim}, action_dim={self.action_dim}"
+            )
+
+        api_key = openpi_cfg.get("api_key")
+        if api_key == "":
+            api_key = None
+
+        self.prompt = str(openpi_cfg.get("prompt", "pick and insert the HDMI"))
+        self.prompt_from_task_instruction = bool(openpi_cfg.get("prompt_from_task_instruction", True))
+        self.image_size = int(openpi_cfg.get("image_size", 224))
+        self.send_tactile = bool(openpi_cfg.get("send_tactile", True))
+        tactile_image_key = openpi_cfg.get("tactile_image_key", None)
+        if tactile_image_key is None:
+            self.tactile_image_keys = None
+        elif isinstance(tactile_image_key, str):
+            self.tactile_image_keys = (tactile_image_key,)
+        else:
+            self.tactile_image_keys = tuple(str(item) for item in tactile_image_key)
+        self.image_color_order = str(openpi_cfg.get("image_color_order", "rgb")).lower()
+        if self.image_color_order not in ("rgb", "bgr"):
+            raise ValueError(f"image_color_order 只支持 'rgb' 或 'bgr'，实际为 {self.image_color_order!r}")
+        self.open_loop_horizon = max(1, int(openpi_cfg.get("open_loop_horizon", 20)))
+        self.debug_dump_first_n_obs = max(0, int(openpi_cfg.get("debug_dump_first_n_obs", 0)))
+        self.debug_dump_dir = str(openpi_cfg.get("debug_dump_dir", "debug/openpi_obs"))
+        self.max_position_delta = _optional_float(openpi_cfg.get("max_position_delta", None))
+        self.max_rotation_delta = _optional_float(openpi_cfg.get("max_rotation_delta", None))
+        self.eef_action_type = str(openpi_cfg.get("eef_action_type", "delta_ee_rotvec_ik"))
+        if self.eef_action_type not in ("delta_ee_rotvec_ik", "delta_ee_rotvec"):
+            raise ValueError(
+                "openpi.eef_action_type 只支持 'delta_ee_rotvec_ik' 或 'delta_ee_rotvec'，"
+                f"实际为 {self.eef_action_type!r}"
+            )
+        # EEF OpenPI 默认和 abs_joint 一样直接写入 IK 求得的 joint position。
+        self.eef_servo_force = bool(openpi_cfg.get("eef_servo_force", True))
+
+        self.chunk_smoothing_enabled = bool(
+            openpi_cfg.get(
+                "chunk_smoothing_enabled",
+                openpi_cfg.get("temporal_ensemble_enabled", False),
+            )
+        )
+        self.chunk_smoothing_k = float(
+            openpi_cfg.get(
+                "chunk_smoothing_k",
+                openpi_cfg.get("temporal_ensemble_k", 0.01),
+            )
+        )
+        self.chunk_smoothing_max_history = max(
+            1,
+            int(
+                openpi_cfg.get(
+                    "chunk_smoothing_max_history",
+                    openpi_cfg.get("temporal_ensemble_max_history", self.open_loop_horizon),
+                )
+            ),
+        )
+
+        self.client = OpenPiClientRuntime(
+            OpenPiServerConfig(
+                host=str(openpi_cfg.get("host", "10.176.42.49")),
+                port=int(openpi_cfg.get("port", 8000)),
+                api_key=None if api_key is None else str(api_key),
+                action_dim=self.action_dim,
+                open_loop_horizon=self.open_loop_horizon,
+                websocket_ping_interval=_optional_float(openpi_cfg.get("websocket_ping_interval", None)),
+                websocket_ping_timeout=_optional_float(openpi_cfg.get("websocket_ping_timeout", None)),
+                websocket_open_timeout=_optional_float(openpi_cfg.get("websocket_open_timeout", 10.0)),
+                websocket_close_timeout=_optional_float(openpi_cfg.get("websocket_close_timeout", 10.0)),
+            )
+        )
+        self.client.connect()
+
+        self._action_chunk: np.ndarray | None = None
+        self._chunk_step = 0
+        self._policy_step_index = 0
+        self._action_predictions: dict[int, list[tuple[int, np.ndarray]]] = {}
+        print(
+            "OpenPI policy connected: "
+            f"{self.client.config.host}:{self.client.config.port}, "
+            f"control_mode={self.control_mode}, state_dim={self.state_dim}, "
+            f"action_dim={self.action_dim}, image_size={self.image_size}, "
+            f"send_tactile={self.send_tactile}, image_color_order={self.image_color_order}, "
+            f"open_loop_horizon={self.open_loop_horizon}, "
+            f"chunk_smoothing_enabled={self.chunk_smoothing_enabled}"
+        )
+
+    def eval(self, task, observation):
+        """执行一次 OpenPI policy step。
+
+        输入:
+            task: ViTaForge BaseTask 实例。
+            observation: task._get_observations() 返回的当前 observation。
+
+        输出:
+            task.take_action() 返回的 (exec_succ, eval_succ)，用于兼容 ViTaForge 现有 policy 接口。
+        """
+
+        obs = openpi_obs_from_univtac(
+            observation=observation,
+            prompt=self._get_prompt(task),
+            image_size=self.image_size,
+            send_tactile=self.send_tactile,
+            tactile_image_keys=self.tactile_image_keys,
+            image_color_order=self.image_color_order,
+            control_mode=self.control_mode,
+            eef_state_mode=self.eef_state_mode,
+        )
+        if self._policy_step_index < self.debug_dump_first_n_obs:
+            saved_paths = save_openpi_observation_images(
+                obs,
+                self.debug_dump_dir,
+                self._policy_step_index,
+            )
+            print(f"OpenPI debug obs dump step={self._policy_step_index}: {saved_paths}")
+
+        if self.chunk_smoothing_enabled:
+            action = self._chunk_smoothing_action(obs)
+        else:
+            action = self._open_loop_action(obs)
+
+        if self.control_mode == "abs_joint":
+            torch_action = sanitize_abs_joint_action(action, task)
+            result = task.take_action(
+                torch_action,
+                action_type="qpos",
+            )
+        elif self.control_mode == "delta_eef":
+            torch_action = sanitize_delta_eef_action(
+                action,
+                task,
+                max_position_delta=self.max_position_delta,
+                max_rotation_delta=self.max_rotation_delta,
+            )
+            result = task.take_action(
+                torch_action,
+                action_type=self.eef_action_type,
+                force=self.eef_servo_force,
+            )
+        else:
+            raise RuntimeError(f"不支持的 control_mode: {self.control_mode!r}")
+        self._policy_step_index += 1
+        return result
+
+    def reset(self):
+        """重置本地 action chunk 和 server policy 状态。
+
+        输入:
+            无。
+
+        输出:
+            无。
+        """
+
+        self._clear_action_state()
+        self.client.reset()
+
+    def close(self):
+        """关闭 OpenPI client。
+
+        输入:
+            无。
+
+        输出:
+            无。
+        """
+
+        self.client.close()
+
+    def _get_prompt(self, task) -> str:
+        """Return the prompt sent to OpenPI for the current eval step."""
+
+        if self.prompt_from_task_instruction:
+            task_instruction = str(getattr(task, "instruction", "") or "").strip()
+            if task_instruction:
+                return task_instruction
+        return self.prompt
+
+    def _open_loop_action(self, obs: dict) -> np.ndarray:
+        """按 open_loop_horizon 消费 server 返回的动作块。
+
+        输入:
+            obs: OpenPI observation dict。
+
+        输出:
+            np.ndarray，shape [action_dim]，当前要执行的动作。
+        """
+
+        if self._action_chunk is None or self._chunk_step >= self.open_loop_horizon:
+            self._action_chunk = self.client.infer(obs)
+            self._chunk_step = 0
+            print(f"OpenPI action chunk: {self._action_chunk.shape}")
+
+        action = np.asarray(self._action_chunk[self._chunk_step], dtype=np.float64)
+        self._chunk_step += 1
+        return action
+
+    def _chunk_smoothing_action(self, obs: dict) -> np.ndarray:
+        """模仿 ACT temporal aggregation，对重叠 action chunks 做指数加权平滑。
+
+        输入:
+            obs: OpenPI observation dict。
+
+        输出:
+            np.ndarray，shape [action_dim]，ensemble 后当前 step 的动作。
+
+        行为:
+            每个 env step 都向 server query 一个 action chunk。
+            chunk[t] 会被登记为对未来 step=current_step+t 的预测。
+            当前 step 如果有多个历史 chunk 都预测过它，就按 ACT 风格权重:
+            exp(-k * arange(num_predictions)) 加权平均。
+        """
+
+        chunk = self.client.infer(obs)
+        current_step = self._policy_step_index
+        for offset, action in enumerate(chunk):
+            target_step = current_step + offset
+            self._action_predictions.setdefault(target_step, []).append(
+                (current_step, np.asarray(action, dtype=np.float64))
+            )
+
+        predictions = self._action_predictions.get(current_step, [])
+        predictions = [
+            (query_step, action)
+            for query_step, action in predictions
+            if 0 <= current_step - query_step < self.chunk_smoothing_max_history
+        ]
+        if not predictions:
+            raise RuntimeError("chunk smoothing 没有当前 step 可用预测。")
+
+        predictions = sorted(predictions, key=lambda item: item[0])
+        weights = np.exp(-self.chunk_smoothing_k * np.arange(len(predictions), dtype=np.float64))
+        weights = weights / np.sum(weights)
+        actions = np.asarray([action for _, action in predictions], dtype=np.float64)
+        action = np.sum(actions * weights[:, None], axis=0)
+
+        stale_before = current_step - self.chunk_smoothing_max_history
+        for step in list(self._action_predictions):
+            if step <= stale_before or step < current_step:
+                self._action_predictions.pop(step, None)
+        return action
+
+    def _clear_action_state(self) -> None:
+        self._action_chunk = None
+        self._chunk_step = 0
+        self._policy_step_index = 0
+        self._action_predictions.clear()
+
+
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.lower() in ("none", "null", ""):
+        return None
+    return float(value)

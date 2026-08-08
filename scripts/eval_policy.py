@@ -14,6 +14,9 @@ import traceback
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
+from PIL import Image
+
 from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(
@@ -55,8 +58,90 @@ parser.add_argument(
     default=100
 )
 parser.add_argument(
+    "--eval_step_timeout_seconds",
+    type=float,
+    default=None,
+    help="Fail an eval episode if one observation->policy->action iteration exceeds this many seconds.",
+)
+parser.add_argument(
+    "--openpi_host",
+    type=str,
+    default=None,
+    help="Override openpi.host in the deploy config.",
+)
+parser.add_argument(
+    "--openpi_port",
+    type=int,
+    default=None,
+    help="Override openpi.port in the deploy config.",
+)
+parser.add_argument(
     "--print_only",
     action='store_true',
+)
+parser.add_argument(
+    "--tactile_sensor",
+    type=str,
+    default=None,
+    choices=("gelsight", "xense", "neote", "neote_force_field", "gsmini", "xensews"),
+    help=(
+        "Override tactile sensor for eval. User-facing names gelsight/xense/neote "
+        "are mapped to task cfg sensor_type gsmini/xensews/neote."
+    ),
+)
+parser.add_argument(
+    "--target_block",
+    type=str,
+    default=None,
+    help="Override env_cfg.target_block when the selected task supports it.",
+)
+parser.add_argument(
+    "--block_base_pose_indices",
+    type=str,
+    default=None,
+    help=(
+        "Override env_cfg.block_base_pose_indices when supported. "
+        "Accepts comma-separated values such as 0,1,4 or a YAML/JSON list in the config."
+    ),
+)
+parser.add_argument(
+    "--target_cup",
+    type=str,
+    default=None,
+    help="Override env_cfg.target_cup when the selected task supports it.",
+)
+parser.add_argument(
+    "--reference_cup",
+    type=str,
+    default=None,
+    help="Override env_cfg.reference_cup when the selected task supports it.",
+)
+parser.add_argument(
+    "--placement_side",
+    type=str,
+    default=None,
+    help="Override env_cfg.placement_side when the selected task supports it.",
+)
+parser.add_argument(
+    "--cup_base_pose_indices",
+    type=str,
+    default=None,
+    help=(
+        "Override env_cfg.cup_base_pose_indices when supported. "
+        "Accepts comma-separated values such as 0,1,2 or a YAML/JSON list in the config."
+    ),
+)
+parser.add_argument(
+    "--target_area",
+    type=str,
+    default=None,
+    help="Override env_cfg.target_area when the selected task supports it.",
+)
+parser.add_argument(
+    "--frame_order",
+    type=str,
+    default=None,
+    help="Override env_cfg.frame_order when the selected task supports it.",
 )
 parser.add_argument(
     "--weight_label",
@@ -93,6 +178,48 @@ def log(msg):
         with open(log_path, 'a') as f:
             f.write(msg + '\n')
     print(msg)
+
+
+def save_eval_timeout_images(observation: dict, output_dir: Path, prefix: str) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+
+    def save_image(value, stem: str):
+        if value is None:
+            return
+        if isinstance(value, torch.Tensor):
+            image = value.detach().cpu().numpy()
+        else:
+            image = np.asarray(value)
+        if image.ndim == 4 and image.shape[0] == 1:
+            image = image[0]
+        if image.ndim != 3 or image.shape[-1] != 3:
+            return
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        path = output_dir / f"{prefix}_{stem}.png"
+        Image.fromarray(np.ascontiguousarray(image), mode="RGB").save(path)
+        saved_paths.append(path)
+
+    camera_obs = observation.get("observation", {})
+    for camera_name in ("head", "wrist"):
+        camera_data = camera_obs.get(camera_name, {})
+        save_image(camera_data.get("rgb"), f"{camera_name}_image")
+
+    tactile_obs = observation.get("tactile", {})
+    for tactile_name in ("left_tactile", "right_tactile"):
+        tactile_data = tactile_obs.get(tactile_name, {})
+        for image_key in ("rgb_marker", "gel_particle", "force_field_img", "marker_force_img", "rgb"):
+            if image_key in tactile_data:
+                save_image(tactile_data[image_key], f"{tactile_name}_{image_key}")
+                break
+
+    return saved_paths
+
+
+class StepTimeoutError(RuntimeError):
+    pass
+
 
 def eval_policy(
     task: 'BaseTask', policy: 'BasePolicy', expert_check,
@@ -143,18 +270,38 @@ def eval_policy(
         eval_start = time.perf_counter()
         task.mode = 'eval'
         try:
-            task.reset(seed=seed, instructions=instructions[instruciton_type])
+            if instructions is None:
+                task.reset(seed=seed)
+            else:
+                task.reset(seed=seed, instructions=instructions[instruciton_type])
             task.mean_steps = task.cfg.step_lim
             policy.reset()
             while task.take_action_cnt < task.cfg.step_lim:
+                step_start = time.perf_counter()
                 observation = task._get_observations()
                 policy.eval(task, observation)
+                step_cost = time.perf_counter() - step_start
+                timeout = args_cli.eval_step_timeout_seconds
+                if timeout is None:
+                    timeout = float(getattr(task.cfg, "eval_step_timeout_seconds", 0.0) or 0.0)
+                if timeout > 0.0 and step_cost > timeout:
+                    timeout_dir = task.save_root / "step_timeout"
+                    prefix = f"seed_{seed}_step_{task.step_count}_cost_{step_cost:.2f}s"
+                    saved_paths = save_eval_timeout_images(observation, timeout_dir, prefix)
+                    raise StepTimeoutError(
+                        f"{step_cost:.2f}s > {timeout:.2f}s, saved {saved_paths}"
+                    )
                 if task.eval_success:
                     succ = True
                     break
                 if task.check_early_stop():
                     break
         except Exception as e:
+            if e.__class__.__name__ == "StepTimeoutError":
+                log(f"[{test_num:<3d}] Seed {seed} step timeout, mark failed: {e}")
+                succ_status = 'failed'
+                task.clean_cache(result=succ_status)
+                continue
             log(f"[{test_num:<3d}] Seed {seed} occurred exception: {e}\n{traceback.format_exc()}")
             succ_status = 'error'
             task.clean_cache(result=succ_status)
@@ -196,6 +343,43 @@ def get_config(file, default_root:Path, type:Literal['yaml', 'json']):
             config = json.load(f)
         return config, file
 
+
+def parse_int_tuple(value, name: str):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.startswith("["):
+            value = json.loads(text)
+        else:
+            value = text.replace(",", " ").split()
+    try:
+        parsed = tuple(int(item) for item in value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a list or comma-separated string, got {value!r}") from exc
+    except ValueError as exc:
+        raise ValueError(f"{name} must contain only integers, got {value!r}") from exc
+    if not parsed:
+        raise ValueError(f"{name} must not be empty")
+    return parsed
+
+
+def tactile_sensor_type_from_override(value: str | None) -> str | None:
+    if value is None:
+        return None
+    mapping = {
+        "gelsight": "gsmini",
+        "xense": "xensews",
+        "neote": "neote",
+        "neote_force_field": "neote",
+        "gsmini": "gsmini",
+        "xensews": "xensews",
+    }
+    return mapping[value]
+
+
 task_module, policy_module = None, None
 def main():
     global args_cli, task_module, policy_module, log_path
@@ -207,17 +391,30 @@ def main():
     deploy_config, deploy_config_file = get_config(
         args_cli.deploy_config, default_root=Path(__file__).parent.parent / 'policy', type='yaml'
     )
+    if args_cli.openpi_host is not None or args_cli.openpi_port is not None:
+        openpi_config = deploy_config.setdefault("openpi", {})
+        if args_cli.openpi_host is not None:
+            openpi_config["host"] = args_cli.openpi_host
+        if args_cli.openpi_port is not None:
+            openpi_config["port"] = args_cli.openpi_port
+    if "openpi_debug_dump_first_n_obs" in task_config:
+        deploy_config.setdefault("openpi", {})["debug_dump_first_n_obs"] = int(
+            task_config["openpi_debug_dump_first_n_obs"]
+        )
     policy_name = deploy_config['policy_name']
     deploy_config['task_name'] = task_file_name
     deploy_config['task_config'] = task_config_file.stem
  
-    deploy_config['instuction_file'] = deploy_config.get('instuction_file', task_file_name)
+    deploy_config['instuction_file'] = deploy_config.get(
+        'instruction_file',
+        deploy_config.get('instuction_file', task_file_name),
+    )
     if deploy_config['instuction_file'] is not None:
         instructions, _ = get_config(
             deploy_config['instuction_file'], default_root=Path(__file__).parent.parent / 'instructions', type='json'
         )
     else:
-        instructions = {'seen': ['Empty'], 'unseen': ['Empty']}
+        instructions = None
 
     task_module = importlib.import_module(f"envs.{task_file_name}")
     policy_module = importlib.import_module(f"policy.{policy_name}")
@@ -226,7 +423,47 @@ def main():
 
     env_cfg:BaseTaskCfg = task_module.TaskCfg()
     env_cfg.save_dir = Path('eval_result') / policy_name / task_file_name / deploy_config_file.stem / curr_time
-    env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
+    eval_case_name = task_config.get("eval_case_name", None)
+    if eval_case_name:
+        env_cfg.save_dir = env_cfg.save_dir / str(eval_case_name)
+
+    if hasattr(env_cfg, "target_block"):
+        target_block = args_cli.target_block
+        if target_block is None:
+            target_block = task_config.get("target_block", None)
+        if target_block is not None:
+            env_cfg.target_block = str(target_block)
+            task_config["target_block"] = env_cfg.target_block
+    if hasattr(env_cfg, "block_base_pose_indices"):
+        pose_indices = args_cli.block_base_pose_indices
+        if pose_indices is None:
+            pose_indices = task_config.get("block_base_pose_indices", None)
+        pose_indices = parse_int_tuple(pose_indices, "block_base_pose_indices")
+        if pose_indices is not None:
+            env_cfg.block_base_pose_indices = pose_indices
+            task_config["block_base_pose_indices"] = list(pose_indices)
+    for key in ("target_cup", "reference_cup", "placement_side", "target_area", "frame_order"):
+        if hasattr(env_cfg, key):
+            value = getattr(args_cli, key)
+            if value is None:
+                value = task_config.get(key, None)
+            if value is not None:
+                setattr(env_cfg, key, str(value))
+                task_config[key] = str(value)
+    if hasattr(env_cfg, "cup_base_pose_indices"):
+        pose_indices = args_cli.cup_base_pose_indices
+        if pose_indices is None:
+            pose_indices = task_config.get("cup_base_pose_indices", None)
+        pose_indices = parse_int_tuple(pose_indices, "cup_base_pose_indices")
+        if pose_indices is not None:
+            env_cfg.cup_base_pose_indices = pose_indices
+            task_config["cup_base_pose_indices"] = list(pose_indices)
+
+    tactile_sensor_type = tactile_sensor_type_from_override(args_cli.tactile_sensor)
+    if tactile_sensor_type is None:
+        tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
+    env_cfg.tactile_sensor_type = tactile_sensor_type
+    task_config["sensor_type"] = tactile_sensor_type
     env_cfg.dense_gelpad = bool(task_config.get('dense_gelpad', getattr(env_cfg, 'dense_gelpad', False)))
     env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
     env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
@@ -236,11 +473,18 @@ def main():
     env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
     if "reset_time_limit" in task_config:
         env_cfg.reset_time_limit = float(task_config["reset_time_limit"])
+    if args_cli.eval_step_timeout_seconds is not None:
+        env_cfg.eval_step_timeout_seconds = float(args_cli.eval_step_timeout_seconds)
+    elif "eval_step_timeout_seconds" in task_config:
+        env_cfg.eval_step_timeout_seconds = float(task_config["eval_step_timeout_seconds"])
+    elif "eval_step_timeout_seconds" in deploy_config:
+        env_cfg.eval_step_timeout_seconds = float(deploy_config["eval_step_timeout_seconds"])
     if "video_size" in task_config:
         env_cfg.video_size = tuple(task_config["video_size"])
     env_cfg.random_texture = task_config.get("random_texture", False)
     env_cfg.save_pre_move = task_config.get("save_pre_move", getattr(env_cfg, "save_pre_move", False))
-    env_cfg.skip_pre_move = bool(task_config.get("skip_pre_move", getattr(env_cfg, "skip_pre_move", False)))
+    default_skip_pre_move = policy_name == "openpi"
+    env_cfg.skip_pre_move = bool(task_config.get("skip_pre_move", default_skip_pre_move))
     default_eval_start_delay_steps = 0 if env_cfg.skip_pre_move else getattr(env_cfg, "eval_start_delay_steps", 20)
     env_cfg.eval_start_delay_steps = int(
         task_config.get("eval_start_delay_steps", default_eval_start_delay_steps)

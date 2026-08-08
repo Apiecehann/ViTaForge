@@ -42,6 +42,7 @@ class RobotManager:
         self.gripper_max_qpos = 0.039
         self.last_arm_velocity = None
         self.last_gripper_velocity = None
+        self._ik_controller = None
 
         if self.robot_type == 'franka_panda':
             self.hand_name = 'panda_hand'
@@ -124,6 +125,96 @@ class RobotManager:
             cfg=planner_cfg,
             robot_origin_pose=self.root_pose,
         )
+        self._setup_ik_controller()
+
+    def _setup_ik_controller(self):
+        """Initialize Differential IK controller for single-step EEF servo."""
+
+        ik_controller_cfg = DifferentialIKControllerCfg(
+            command_type="pose",
+            use_relative_mode=False,
+            ik_method="svd",
+        )
+        self._ik_controller = DifferentialIKController(
+            cfg=ik_controller_cfg,
+            num_envs=self.task.num_envs,
+            device=self.device,
+        )
+
+    @property
+    def jacobian_w(self) -> torch.Tensor:
+        """Geometric Jacobian of the hand body in world frame."""
+
+        return self.robot.root_physx_view.get_jacobians()[:, self._jacobi_body_idx, :, :]
+
+    @property
+    def jacobian_b(self) -> torch.Tensor:
+        """Geometric Jacobian of the hand body in robot base frame."""
+
+        jacobian = self.jacobian_w.clone()
+        base_rot = self.robot.data.root_link_quat_w
+        base_rot_matrix = math_utils.matrix_from_quat(math_utils.quat_inv(base_rot))
+        jacobian[:, :3, :] = torch.bmm(base_rot_matrix, jacobian[:, :3, :])
+        jacobian[:, 3:, :] = torch.bmm(base_rot_matrix, jacobian[:, 3:, :])
+        return jacobian
+
+    def get_ee_pose_tensor(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return current hand frame pose in robot base frame."""
+
+        ee_pos_w = self.robot.data.body_link_pos_w[:, self._body_idx]
+        ee_quat_w = self.robot.data.body_link_quat_w[:, self._body_idx]
+        root_pos_w = self.robot.data.root_link_pos_w
+        root_quat_w = self.robot.data.root_link_quat_w
+        return math_utils.subtract_frame_transforms(
+            root_pos_w,
+            root_quat_w,
+            ee_pos_w,
+            ee_quat_w,
+        )
+
+    def servo_delta_ee_rotvec(self, action: torch.Tensor, force: bool = True):
+        """Execute one OpenPI EEF delta action through Differential IK.
+
+        Action semantics: [delta_xyz(3), delta_rotvec(3), delta_gripper_qpos(1)].
+        The rotvec is base-frame and satisfies R_target = exp(rotvec) * R_current.
+        """
+
+        if self._ik_controller is None:
+            self._setup_ik_controller()
+
+        action = action.to(device=self.device, dtype=torch.float32).reshape(1, -1)
+        if action.shape[-1] != 7:
+            raise ValueError(f"delta_ee_rotvec_ik action must be 7D, got shape={tuple(action.shape)}")
+
+        ee_pos_b, ee_quat_b = self.get_ee_pose_tensor()
+        delta_rotvec = action[:, 3:6]
+        delta_angle = torch.linalg.vector_norm(delta_rotvec, dim=1, keepdim=True)
+        delta_axis = delta_rotvec / torch.clamp(delta_angle, min=1.0e-6)
+        delta_quat = math_utils.quat_from_angle_axis(delta_angle.squeeze(-1), delta_axis)
+        identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.task.num_envs, 1)
+        delta_quat = torch.where(delta_angle > 1.0e-6, delta_quat, identity_quat)
+
+        target_pos_b = ee_pos_b + action[:, :3]
+        target_quat_b = math_utils.quat_mul(delta_quat, ee_quat_b)
+        ik_command = torch.cat([target_pos_b, target_quat_b], dim=-1)
+        self._ik_controller.set_command(ik_command)
+
+        jacobian = self.jacobian_b[:, :, self._arm_ids]
+        joint_pos = self.robot.data.joint_pos[:, self._arm_ids]
+        joint_pos_des = self._ik_controller.compute(
+            ee_pos_b,
+            ee_quat_b,
+            jacobian,
+            joint_pos,
+        )
+
+        target_gripper_qpos = self.robot.data.joint_pos[:, self._gripper_ids][0, 0] + action[0, 6]
+        target_gripper_qpos = torch.clamp(target_gripper_qpos, 0.0, self.gripper_max_qpos)
+        target_gripper = target_gripper_qpos.repeat(len(self._gripper_ids))
+
+        self.set_arm(joint_pos_des[0], force=force)
+        self.set_gripper(target_gripper, force=force)
+        return True
     
     def ee_to_gripper_center(self, ee_pose:Pose) -> Pose:
         """将夹爪中心位姿转换为末端执行器目标位姿"""
@@ -273,6 +364,8 @@ class RobotManager:
         joint_vel = torch.zeros_like(joint_pos)
         
         self.planner.reset()
+        if self._ik_controller is not None:
+            self._ik_controller.reset()
         self.robot.set_joint_position_target(joint_pos)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel)
         self.robot._physics_sim_view.update_articulations_kinematic()

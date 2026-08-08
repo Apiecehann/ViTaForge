@@ -42,6 +42,20 @@ def split_devices(cuda_visible_devices: str, workers: int):
     return assignment
 
 
+def tactile_sensor_type_from_override(value: str | None) -> str | None:
+    if value is None:
+        return None
+    mapping = {
+        "gelsight": "gsmini",
+        "xense": "xensews",
+        "neote": "neote",
+        "neote_force_field": "neote",
+        "gsmini": "gsmini",
+        "xensews": "xensews",
+    }
+    return mapping[value]
+
+
 def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
                instructions, base_save_dir: Path, seed_q: Queue, progress, stop_event: Event,
                log_file: Path, device_list, status_dict, result_q: Queue):
@@ -78,7 +92,14 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
         worker_id = current_process().name.split('-')[-1]  # e.g., Process-1 -> '1'
         worker_save_dir = base_save_dir / worker_id
         env_cfg.save_dir = worker_save_dir
-        env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
+        eval_case_name = task_config.get("eval_case_name", None)
+        if eval_case_name:
+            env_cfg.save_dir = env_cfg.save_dir / str(eval_case_name)
+        tactile_sensor_type = tactile_sensor_type_from_override(getattr(args, "tactile_sensor", None))
+        if tactile_sensor_type is None:
+            tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
+        env_cfg.tactile_sensor_type = tactile_sensor_type
+        task_config["sensor_type"] = tactile_sensor_type
         env_cfg.dense_gelpad = bool(task_config.get('dense_gelpad', getattr(env_cfg, 'dense_gelpad', False)))
         env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
         env_cfg.decimation = task_config.get("decimation", env_cfg.decimation)
@@ -88,11 +109,18 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
         env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
         if "reset_time_limit" in task_config:
             env_cfg.reset_time_limit = float(task_config["reset_time_limit"])
+        if getattr(args, "eval_step_timeout_seconds", None) is not None:
+            env_cfg.eval_step_timeout_seconds = float(args.eval_step_timeout_seconds)
+        elif "eval_step_timeout_seconds" in task_config:
+            env_cfg.eval_step_timeout_seconds = float(task_config["eval_step_timeout_seconds"])
+        elif "eval_step_timeout_seconds" in deploy_config:
+            env_cfg.eval_step_timeout_seconds = float(deploy_config["eval_step_timeout_seconds"])
         if "video_size" in task_config:
             env_cfg.video_size = tuple(task_config["video_size"])
         env_cfg.random_texture = task_config.get("random_texture", False)
         env_cfg.save_pre_move = task_config.get("save_pre_move", getattr(env_cfg, "save_pre_move", False))
-        env_cfg.skip_pre_move = bool(task_config.get("skip_pre_move", getattr(env_cfg, "skip_pre_move", False)))
+        default_skip_pre_move = policy_name == "openpi"
+        env_cfg.skip_pre_move = bool(task_config.get("skip_pre_move", default_skip_pre_move))
         default_eval_start_delay_steps = 0 if env_cfg.skip_pre_move else getattr(env_cfg, "eval_start_delay_steps", 20)
         env_cfg.eval_start_delay_steps = int(
             task_config.get("eval_start_delay_steps", default_eval_start_delay_steps)
@@ -242,12 +270,24 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
             eval_start = time.perf_counter()
             task.mode = 'eval'
             try:
-                task.reset(seed=seed, instructions=instructions[deploy_config.get("instruction_type", "seen")])
+                if instructions is None:
+                    task.reset(seed=seed)
+                else:
+                    task.reset(seed=seed, instructions=instructions[deploy_config.get("instruction_type", "seen")])
                 task.mean_steps = task.cfg.step_lim
                 policy.reset()
                 while task.take_action_cnt < task.cfg.step_lim:
+                    step_start = time.perf_counter()
                     observation = task._get_observations()
                     policy.eval(task, observation)
+                    step_cost = time.perf_counter() - step_start
+                    timeout = float(getattr(env_cfg, "eval_step_timeout_seconds", 0.0) or 0.0)
+                    if timeout > 0.0 and step_cost > timeout:
+                        print(
+                            f"[Worker {worker_id}] Seed {seed} step timeout: "
+                            f"{step_cost:.2f}s > {timeout:.2f}s"
+                        )
+                        break
                     if task.eval_success:
                         succ = True
                         break
@@ -323,6 +363,15 @@ def main():
     parser.add_argument("--total_num", type=int, default=100, help="Total tests across all workers")
     parser.add_argument("--gpu", type=str, default=os.environ.get('CUDA_VISIBLE_DEVICES', ''),
                         help="CUDA_VISIBLE_DEVICES list to split among workers")
+    parser.add_argument("--eval_step_timeout_seconds", type=float, default=None)
+    parser.add_argument("--openpi_host", type=str, default=None)
+    parser.add_argument("--openpi_port", type=int, default=None)
+    parser.add_argument(
+        "--tactile_sensor",
+        type=str,
+        default=None,
+        choices=("gelsight", "xense", "neote", "neote_force_field", "gsmini", "xensews"),
+    )
     args = parser.parse_args()
     
     train_config = os.environ.get('TRAIN_CONFIG', 'Unknown')
@@ -334,19 +383,35 @@ def main():
     deploy_config, deploy_config_file = get_config(
         args.deploy_config, default_root=Path(__file__).parent.parent / 'policy', type='yaml'
     )
+    if args.openpi_host is not None or args.openpi_port is not None:
+        openpi_config = deploy_config.setdefault("openpi", {})
+        if args.openpi_host is not None:
+            openpi_config["host"] = args.openpi_host
+        if args.openpi_port is not None:
+            openpi_config["port"] = args.openpi_port
+    if "openpi_debug_dump_first_n_obs" in task_config:
+        deploy_config.setdefault("openpi", {})["debug_dump_first_n_obs"] = int(
+            task_config["openpi_debug_dump_first_n_obs"]
+        )
     policy_name = deploy_config['policy_name']
     deploy_config['task_name'] = args.task_name
     deploy_config['task_config'] = task_config_file.stem
-    deploy_config['instruction_file'] = deploy_config.get('instruction_file', args.task_name)
-    try:
-        instructions, _ = get_config(
-            deploy_config['instruction_file'], default_root=Path(__file__).parent.parent / 'instructions', type='json'
-        )
-        # Fallback if instructions missing keys
-        if not isinstance(instructions, dict) or 'seen' not in instructions or 'unseen' not in instructions:
+    deploy_config['instruction_file'] = deploy_config.get(
+        'instruction_file',
+        deploy_config.get('instuction_file', args.task_name),
+    )
+    if deploy_config['instruction_file'] is not None:
+        try:
+            instructions, _ = get_config(
+                deploy_config['instruction_file'], default_root=Path(__file__).parent.parent / 'instructions', type='json'
+            )
+            # Fallback if instructions missing keys
+            if not isinstance(instructions, dict) or 'seen' not in instructions or 'unseen' not in instructions:
+                instructions = {'seen': ['Empty'], 'unseen': ['Empty']}
+        except Exception:
             instructions = {'seen': ['Empty'], 'unseen': ['Empty']}
-    except Exception:
-        instructions = {'seen': ['Empty'], 'unseen': ['Empty']}
+    else:
+        instructions = None
 
     # Base save dir with unified date
     curr_time = time.strftime(r'%Y-%m-%d_%H:%M:%S')
