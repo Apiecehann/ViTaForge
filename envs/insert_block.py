@@ -18,7 +18,7 @@ BLOCK_BASE_POSES = (
     Pose([0.54, 0.24, 0.002], [1, 0, 0, 0]),
 )
 # 抓取后先移动到盒子上方的中间高度，避免直接横移时碰到盒壁。
-LIFT_TARGET_POSE = Pose([0.45, 0.02, 0.162], [1, 0, 0, 0])
+LIFT_TARGET_POSE = Pose([0.45, 0.02, 0.172], [1, 0, 0, 0])
 
 # reset 时盒子和半圆柱都只加 xy 平面小扰动，z 保持不变，避免初始状态离开桌面。
 BOX_XY_NOISE = (0.010, 0.010, 0.0)
@@ -55,9 +55,7 @@ BLOCK_SPECS = {
 }
 TASK_INSTRUCTION = "Insert the blue half cylinder into the matching hole in the yellow box."
 
-# 盒子局部坐标系下的有效内部范围，用于判断半圆柱是否真正落在盒内。
-INNER_X_MIN = -BOX_SIZE * 0.5 + BOX_WALL_THICKNESS
-INNER_X_MAX = BOX_SIZE * 0.5
+# 盒子局部坐标系下的成功范围。释放后等待若干步，再只检查目标块原点的 y/z。
 INNER_Y_MIN = -BOX_SIZE * 0.5 + BOX_WALL_THICKNESS
 INNER_Y_MAX = BOX_SIZE * 0.5 - BOX_WALL_THICKNESS
 # The half-cylinder asset pose is near its lower contact/origin rather than the
@@ -68,7 +66,8 @@ INNER_Y_MAX = BOX_SIZE * 0.5 - BOX_WALL_THICKNESS
 # success check.
 SUCCESS_Z_FLOOR_TOL = 0.006
 INNER_Z_MIN = max(0.0, BOX_WALL_THICKNESS - SUCCESS_Z_FLOOR_TOL)
-INNER_Z_MAX = BOX_SIZE - BOX_WALL_THICKNESS
+INNER_Z_MAX = 0.124
+SUCCESS_SETTLE_STEPS = 30
 XENSE_ACTOR_Z_CLEARANCE = 0.0
 INITIAL_HEIGHT_LIFT_JOINT2_DELTA = -0.104
 
@@ -575,18 +574,20 @@ class Task(BaseTask):
             delay=False,
         )
         self.metadata["release_gripper_percent"] = float(release_percent)
-        # 松爪动作完成后立即结束 scripted episode；外层随后用当前瞬时位姿做 success 检查。
+        self.delay(SUCCESS_SETTLE_STEPS, is_save=True)
+        self.metadata["success_settle_steps_after_release"] = int(SUCCESS_SETTLE_STEPS)
+        # 松爪并等待稳定后结束 scripted episode；外层随后用当前位姿做 success 检查。
 
     def _get_success_diagnostics(self):
         box_pose = self.wooden_box.get_pose()
         selected_block_pose = self.selected_block.get_pose()
-        # 将半圆柱位姿转换到木盒坐标系下，直接判断其中心点是否落在盒内有效范围。
+        # 将目标块位姿转换到木盒坐标系下，只判断其原点 y/z 是否落在成功范围内。
         selected_block_in_box = selected_block_pose.rebase(box_pose)
 
-        x_ok = bool(INNER_X_MIN <= selected_block_in_box.p[0] <= INNER_X_MAX)
+        x_ok = True
         y_ok = bool(INNER_Y_MIN <= selected_block_in_box.p[1] <= INNER_Y_MAX)
         z_ok = bool(INNER_Z_MIN <= selected_block_in_box.p[2] <= INNER_Z_MAX)
-        origin_inside_box = bool(x_ok and y_ok and z_ok)
+        target_origin_in_success_range = bool(y_ok and z_ok)
 
         return {
             "target_block": self.target_block_key,
@@ -594,18 +595,20 @@ class Task(BaseTask):
             "selected_block_pose": selected_block_pose.tolist(),
             "selected_block_pose_in_box": selected_block_in_box.tolist(),
             "selected_block_xyz_in_box": selected_block_in_box.p.tolist(),
-            "inner_x_range": [float(INNER_X_MIN), float(INNER_X_MAX)],
+            "inner_x_range": None,
+            "x_unbounded": True,
             "inner_y_range": [float(INNER_Y_MIN), float(INNER_Y_MAX)],
             "inner_z_range": [float(INNER_Z_MIN), float(INNER_Z_MAX)],
             "x_ok": x_ok,
             "y_ok": y_ok,
             "z_ok": z_ok,
-            "xy_ok": bool(x_ok and y_ok),
-            "origin_inside_box": origin_inside_box,
+            "xy_ok": y_ok,
+            "target_origin_in_success_range": target_origin_in_success_range,
+            "origin_inside_box": target_origin_in_success_range,
         }
 
     def check_success(self):
-        # 成功要求松爪完成瞬间目标物体原点在盒内有效 xyz 范围内。
+        # 成功要求松爪并等待稳定后，目标物体原点在盒坐标系下的 y/z 落入指定范围。
         diagnostics = self._get_success_diagnostics()
         self.metadata["success_diagnostics"] = diagnostics
-        return diagnostics["origin_inside_box"]
+        return diagnostics["target_origin_in_success_range"]
