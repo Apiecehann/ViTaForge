@@ -20,6 +20,8 @@ GRASP_ROTATE_NOISE = np.deg2rad(10.0)
 GRASP_HEIGHT = CUBE_SIZE * 0.5
 GRASP_HEIGHT_NOISE = 0.003
 LIFT_HEIGHT = 0.0300
+SUCCESS_CUBE_MAX_Z = 0.004
+SUCCESS_GRIPPER_OPEN_RATIO = 0.4
 TARGET_AREA_COLORS = ("yellow", "blue")
 FRAME_ORDERS = ("yellow_left", "blue_left")
 TASK_INSTRUCTION = "Place the red cube on the yellow area."
@@ -290,6 +292,8 @@ class Task(BaseTask):
     def _get_success_diagnostics(self):
         area_pose = self.target_area.get_pose()
         cube_pose = self.wooden_cube.get_pose()
+        gripper_qpos = float(self._robot_manager.get_gripper_qpos())
+        gripper_open_percentage = float(self._robot_manager.get_gripper_percentage())
         # 将方块位姿转到黄色区域坐标系下，后续 xy 判断就可以直接和方框内半径比较。
         cube_in_area = cube_pose.rebase(area_pose)
         inner_half_size = FRAME_INNER_SIZE * 0.5
@@ -299,6 +303,8 @@ class Task(BaseTask):
         center_y_ok = bool(abs(cube_in_area.p[1]) <= inner_half_size)
         footprint_x_ok = bool(abs(cube_in_area.p[0]) + cube_half_size <= inner_half_size)
         footprint_y_ok = bool(abs(cube_in_area.p[1]) + cube_half_size <= inner_half_size)
+        cube_z_ok = bool(cube_in_area.p[2] <= SUCCESS_CUBE_MAX_Z)
+        gripper_open_ok = bool(gripper_open_percentage > SUCCESS_GRIPPER_OPEN_RATIO)
         return {
             "target_area_color": self.target_area_color,
             "target_area_pose": area_pose.tolist(),
@@ -307,6 +313,7 @@ class Task(BaseTask):
             "wooden_cube_pose": cube_pose.tolist(),
             "cube_pose_in_area": cube_in_area.tolist(),
             "cube_xy_in_area": cube_in_area.p[:2].tolist(),
+            "cube_z_in_area": float(cube_in_area.p[2]),
             "frame_outer_half_size": float(FRAME_OUTER_SIZE * 0.5),
             "frame_inner_half_size": float(inner_half_size),
             "cube_half_size": float(cube_half_size),
@@ -314,11 +321,21 @@ class Task(BaseTask):
             "center_y_ok": center_y_ok,
             "footprint_x_ok": footprint_x_ok,
             "footprint_y_ok": footprint_y_ok,
+            "cube_z_ok": cube_z_ok,
+            "cube_max_z_threshold": float(SUCCESS_CUBE_MAX_Z),
+            "gripper_open_ok": gripper_open_ok,
+            "gripper_open_percentage": gripper_open_percentage,
+            "gripper_open_ratio_threshold": float(SUCCESS_GRIPPER_OPEN_RATIO),
+            "gripper_qpos": gripper_qpos,
             "xy_ok": bool(footprint_x_ok and footprint_y_ok),
         }
 
     def check_success(self):
-        # 成功判定只依赖 xy footprint 是否完全位于黄色方框内；完整诊断写入 metadata 便于离线排查。
+        # 成功判定要求方块 footprint 位于目标框内、贴近区域平面，且夹爪最终处于张开状态。
         diagnostics = self._get_success_diagnostics()
         self.metadata["success_diagnostics"] = diagnostics
-        return diagnostics["xy_ok"]
+        return bool(
+            diagnostics["xy_ok"]
+            and diagnostics["cube_z_ok"]
+            and diagnostics["gripper_open_ok"]
+        )
