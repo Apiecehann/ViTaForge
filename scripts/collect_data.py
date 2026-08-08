@@ -99,6 +99,25 @@ parser.add_argument(
     default=None,
     help="Override env_cfg.frame_order when the selected task supports it.",
 )
+parser.add_argument(
+    "--rough_block_side",
+    type=str,
+    default=None,
+    help="Override env_cfg.rough_block_side when the selected task supports it.",
+)
+parser.add_argument(
+    "--initial_grasp_side",
+    type=str,
+    default=None,
+    help="Override env_cfg.initial_grasp_side when the selected task supports it.",
+)
+parser.add_argument(
+    "--weight_label",
+    type=str,
+    default=None,
+    choices=("random", "light", "heavy"),
+    help="Override env_cfg.weight_label when the selected task supports it.",
+)
 
 args_cli = parser.parse_args()
 if args_cli.gpu is not None:
@@ -269,7 +288,16 @@ def main():
         if pose_indices is not None:
             env_cfg.block_base_pose_indices = pose_indices
             task_config["block_base_pose_indices"] = list(pose_indices)
-    for key in ("target_cup", "reference_cup", "placement_side", "target_area", "frame_order"):
+    for key in (
+        "target_cup",
+        "reference_cup",
+        "placement_side",
+        "target_area",
+        "frame_order",
+        "rough_block_side",
+        "initial_grasp_side",
+        "weight_label",
+    ):
         if hasattr(env_cfg, key):
             value = getattr(args_cli, key)
             if value is None:

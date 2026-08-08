@@ -53,5 +53,11 @@ def create_task(
         env_config.block_base_pose_indices = tuple(
             int(index) for index in source["block_base_pose_indices"]
         )
+    for key in (
+        "rough_block_side",
+        "initial_grasp_side",
+    ):
+        if hasattr(env_config, key) and key in source:
+            setattr(env_config, key, str(source[key]))
     env_config.scene.num_envs = 1
     return task_module.Task(env_config, mode=mode)

@@ -102,6 +102,12 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
             env_cfg.use_adaptive_grasp = bool(task_config["use_adaptive_grasp"])
         if "adaptive_grasp_depth_threshold" in task_config:
             env_cfg.adaptive_grasp_depth_threshold = float(task_config["adaptive_grasp_depth_threshold"])
+        for key in (
+            "rough_block_side",
+            "initial_grasp_side",
+        ):
+            if hasattr(env_cfg, key) and key in task_config:
+                setattr(env_cfg, key, str(task_config[key]))
         xense_tuning_types = {
             "xense_usb_close_percent": float,
             "xense_half_cylinder_close_percent": float,

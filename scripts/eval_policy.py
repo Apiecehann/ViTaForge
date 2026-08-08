@@ -58,6 +58,13 @@ parser.add_argument(
     "--print_only",
     action='store_true',
 )
+parser.add_argument(
+    "--weight_label",
+    type=str,
+    default=None,
+    choices=("random", "light", "heavy"),
+    help="Override env_cfg.weight_label when the selected task supports it.",
+)
 AppLauncher.add_app_launcher_args(parser)
 
 # parse the arguments
@@ -243,6 +250,17 @@ def main():
         env_cfg.use_adaptive_grasp = bool(task_config["use_adaptive_grasp"])
     if "adaptive_grasp_depth_threshold" in task_config:
         env_cfg.adaptive_grasp_depth_threshold = float(task_config["adaptive_grasp_depth_threshold"])
+    for key in (
+        "rough_block_side",
+        "initial_grasp_side",
+        "weight_label",
+    ):
+        if hasattr(env_cfg, key):
+            value = getattr(args_cli, key, None)
+            if value is None:
+                value = task_config.get(key, None)
+            if value is not None:
+                setattr(env_cfg, key, str(value))
     xense_tuning_types = {
         "xense_usb_close_percent": float,
         "xense_half_cylinder_close_percent": float,
