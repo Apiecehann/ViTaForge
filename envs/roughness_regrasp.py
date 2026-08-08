@@ -10,7 +10,7 @@ LIFT_HEIGHT = 0.05
 LIFT_HEIGHT_NOISE = 0.01
 TARGET_XY_NOISE = 0.01
 GRASP_PRE_DISTANCE = 0.04
-WRONG_BLOCK_HOLD_DELAY_STEPS = 30
+WRONG_BLOCK_HOLD_DELAY_STEPS = 20
 
 LEFT_BLOCK_POSE = Pose([0.40, 0.05, 0.002], [1, 0, 0, 0])
 RIGHT_BLOCK_POSE = Pose([0.40, -0.05, 0.002], [1, 0, 0, 0])
@@ -196,7 +196,7 @@ class Task(BaseTask):
 
     def _release_wrong_block(self, label, return_pose):
         self.metadata["wrong_block_hold_delay_steps"] = int(WRONG_BLOCK_HOLD_DELAY_STEPS)
-        self.delay(WRONG_BLOCK_HOLD_DELAY_STEPS)
+        self.delay(WRONG_BLOCK_HOLD_DELAY_STEPS, is_save=True)
         self.move(self.atom.open_gripper(0.5), tag=f"release_{label}_block")
         self.move(
             self.atom.move_to_pose(return_pose),
