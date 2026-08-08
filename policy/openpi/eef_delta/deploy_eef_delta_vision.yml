@@ -6,6 +6,10 @@ eval_from_start: true
 eval_step_timeout_seconds: 1
 
 openpi:
+  # For TI-ONE/public-network access, first run:
+  #   ssh -fN -L 8000:127.0.0.1:8000 tencent-1
+  # Then evaluate with:
+  #   --openpi_host 127.0.0.1 --openpi_port 8000
   host: "10.176.42.49"
   port: 8000
   api_key:

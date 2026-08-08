@@ -150,6 +150,20 @@ parser.add_argument(
     choices=("random", "light", "heavy"),
     help="Override env_cfg.weight_label when the selected task supports it.",
 )
+parser.add_argument(
+    "--roughness_label",
+    type=str,
+    default=None,
+    choices=("random", "smooth", "rough"),
+    help="Override env_cfg.roughness_label when the selected task supports it.",
+)
+parser.add_argument(
+    "--hardness_label",
+    type=str,
+    default=None,
+    choices=("random", "soft", "hard"),
+    help="Override env_cfg.hardness_label when the selected task supports it.",
+)
 AppLauncher.add_app_launcher_args(parser)
 
 # parse the arguments
@@ -498,6 +512,8 @@ def main():
         "rough_block_side",
         "initial_grasp_side",
         "weight_label",
+        "roughness_label",
+        "hardness_label",
     ):
         if hasattr(env_cfg, key):
             value = getattr(args_cli, key, None)
