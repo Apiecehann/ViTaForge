@@ -2,196 +2,326 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import cv2
 import h5py
 import numpy as np
 import torch
+from numpy.typing import ArrayLike
 from torch.utils.data import Dataset
+
+from .action import ARM_ACTION_DIM, target_qpos_to_action
 
 
 @dataclass(frozen=True)
-class DatasetLayout:
-    camera_paths: dict[str, str]
-    tactile_paths: dict[str, str]
+class EpisodeLayout:
+    path: Path
+    left_tactile_path: str
+    right_tactile_path: str
 
 
-def _find_layout(path: Path, camera_keys, tactile_keys):
-    with h5py.File(path, "r") as hdf5_file:
-        camera_paths = {}
-        camera_mapping = {"cam_high": "head", "cam_wrist": "wrist"}
-        for key in camera_keys:
-            source = camera_mapping[key]
-            hdf5_path = f"observation/{source}/rgb"
-            if hdf5_path not in hdf5_file:
-                raise KeyError(f"Missing {hdf5_path} in {path}")
-            camera_paths[key] = hdf5_path
-        tactile_paths = {}
-        side_mapping = {"tac_left": "left", "tac_right": "right"}
-        for key in tactile_keys:
-            side = side_mapping[key]
-            candidates = (
-                f"tactile/{side}_tactile/rgb_marker",
-                f"tactile/{side}_gsmini/rgb_marker",
-            )
-            tactile_paths[key] = next(
-                (candidate for candidate in candidates if candidate in hdf5_file),
-                None,
-            )
-            if tactile_paths[key] is None:
-                raise KeyError(f"Missing rgb_marker for {side} tactile in {path}")
-    return DatasetLayout(camera_paths, tactile_paths)
-
-
-def _decode_image(encoded, image_size):
-    encoded_array = np.frombuffer(bytes(encoded), dtype=np.uint8)
+def _decode_image(
+    encoded_image,
+    image_size: int,
+) -> torch.Tensor:
+    encoded_array = np.frombuffer(
+        bytes(encoded_image),
+        dtype=np.uint8,
+    )
     image = cv2.imdecode(encoded_array, cv2.IMREAD_COLOR)
+
     if image is None:
         raise ValueError("Could not decode JPEG observation")
-    image = cv2.resize(image, (image_size, image_size), interpolation=cv2.INTER_AREA)
-    return torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1)))
+
+    image = cv2.resize(
+        image,
+        (image_size, image_size),
+        interpolation=cv2.INTER_AREA,
+    )
+    chw_image = np.ascontiguousarray(
+        image.transpose(2, 0, 1),
+        dtype=np.uint8,
+    )
+    return torch.from_numpy(chw_image)
 
 
-def _policy_steps(hdf5_file, pair_indices, stride):
-    if "phase/policy_step" in hdf5_file:
-        recorded = hdf5_file["phase/policy_step"][pair_indices].astype(np.float32)
-        if len(recorded) > 1 and np.ptp(recorded) > 0:
-            return recorded
-    return np.arange(len(pair_indices), dtype=np.float32) * float(stride)
+def _resolve_tactile_path(
+    hdf5_file: h5py.File,
+    side: str,
+) -> str:
+    candidates = (
+        f"tactile/{side}_tactile/rgb_marker",
+        f"tactile/{side}_gsmini/rgb_marker",
+    )
+
+    for candidate in candidates:
+        if candidate in hdf5_file:
+            return candidate
+
+    raise KeyError(
+        f"Could not find rgb_marker observation for {side} tactile sensor"
+    )
 
 
-class ActionPhaseDataset(Dataset):
+def _validate_action_scale(
+    action_scale: ArrayLike,
+) -> np.ndarray:
+    scale = np.asarray(action_scale, dtype=np.float32)
+
+    if scale.shape != (ARM_ACTION_DIM,):
+        raise ValueError(
+            f"action_scale must have shape ({ARM_ACTION_DIM},), "
+            f"got {scale.shape}"
+        )
+
+    if not np.all(np.isfinite(scale)):
+        raise ValueError("action_scale contains NaN or infinite values")
+
+    if np.any(scale <= 0.0):
+        raise ValueError("action_scale must contain only positive values")
+
+    return scale.copy()
+
+
+class InsertUSBBCDataset(Dataset):
+    """
+    Single-step BC samples from the scripted USB insertion stage.
+    """
+
     def __init__(
         self,
-        hdf5_paths,
-        image_size=224,
-        camera_keys=("cam_high", "cam_wrist"),
-        tactile_keys=("tac_left", "tac_right"),
-        require_phase=True,
-        policy_step_stride=2,
+        hdf5_paths: Sequence[str | Path],
+        action_scale: ArrayLike,
+        image_size: int = 224,
+        insertion_tag: str = "insert_usb_into_slot",
+        require_policy_phase: bool = True,
+        action_horizon: int = 1,
+        zero_qpos: bool = False,
     ):
         self.paths = [Path(path) for path in hdf5_paths]
+
         if not self.paths:
             raise ValueError("No HDF5 episodes were provided")
+
+        self.action_scale = _validate_action_scale(action_scale)
         self.image_size = int(image_size)
-        self.camera_keys = list(camera_keys)
-        self.tactile_keys = list(tactile_keys)
-        self.policy_step_stride = int(policy_step_stride)
-        self.layout = _find_layout(self.paths[0], self.camera_keys, self.tactile_keys)
-        self.records = []
-        for episode_index, path in enumerate(self.paths):
+        self.action_horizon = int(action_horizon)
+        self.zero_qpos = bool(zero_qpos)
+
+        if self.image_size <= 0:
+            raise ValueError("image_size must be positive")
+        if (
+            isinstance(action_horizon, bool)
+            or self.action_horizon < 1
+        ):
+            raise ValueError("action_horizon must be a positive integer")
+
+        normalized_insertion_tags = tuple(
+            dict.fromkeys(
+                tag.strip().lower()
+                for tag in insertion_tag.split(",")
+                if tag.strip()
+            )
+        )
+        if not normalized_insertion_tags:
+            raise ValueError("insertion_tag must contain at least one tag")
+        self.episodes: list[EpisodeLayout] = []
+        self.records: list[tuple[int, int]] = []
+        self.target_indices: list[int] = []
+
+        for path in self.paths:
+            if not path.is_file():
+                raise FileNotFoundError(f"HDF5 episode does not exist: {path}")
+
             with h5py.File(path, "r") as hdf5_file:
-                frame_count = len(hdf5_file["embodiment/joint"])
-                pair_indices = np.arange(frame_count - 1)
+                required_paths = (
+                    "embodiment/joint",
+                    "atom/tag",
+                    "observation/head/rgb",
+                    "observation/wrist/rgb",
+                )
+                for required_path in required_paths:
+                    if required_path not in hdf5_file:
+                        raise KeyError(
+                            f"Missing {required_path} in {path}"
+                        )
+
+                left_tactile_path = _resolve_tactile_path(
+                    hdf5_file,
+                    "left",
+                )
+                right_tactile_path = _resolve_tactile_path(
+                    hdf5_file,
+                    "right",
+                )
+
+                joints = hdf5_file["embodiment/joint"]
+                frame_count = len(joints)
+
+                if frame_count <= self.action_horizon:
+                    continue
+
+                if joints.shape[-1] < ARM_ACTION_DIM:
+                    raise ValueError(
+                        f"Expected at least {ARM_ACTION_DIM} joints in {path}, "
+                        f"got shape {joints.shape}"
+                    )
+
+                tags = hdf5_file["atom/tag"][()].astype("U")
+
+                if len(tags) != frame_count:
+                    raise ValueError(
+                        f"atom/tag and embodiment/joint lengths differ in {path}"
+                    )
+
+                pair_count = frame_count - self.action_horizon
+                pair_mask = np.ones(pair_count, dtype=bool)
+
                 if "phase/id" in hdf5_file:
                     phase_ids = hdf5_file["phase/id"][()]
-                    pair_indices = pair_indices[
-                        (phase_ids[:-1] == 1) & (phase_ids[1:] == 1)
-                    ]
-                elif require_phase:
+
+                    if len(phase_ids) != frame_count:
+                        raise ValueError(
+                            f"phase/id and embodiment/joint lengths differ in {path}"
+                        )
+
+                    policy_id = int(
+                        hdf5_file["phase"].attrs.get("policy_id", 1)
+                    )
+                    for offset in range(self.action_horizon + 1):
+                        pair_mask &= (
+                            phase_ids[offset : offset + pair_count]
+                            == policy_id
+                        )
+                elif require_policy_phase:
                     raise KeyError(f"Missing phase/id in {path}")
-                policy_steps = _policy_steps(
-                    hdf5_file,
-                    pair_indices,
-                    self.policy_step_stride,
-                )
-                self.records.extend(
-                    (episode_index, int(frame_index), float(policy_step))
-                    for frame_index, policy_step in zip(pair_indices, policy_steps)
+
+                # Every destination frame in qpos[t] -> qpos[t+H] must remain
+                # inside the selected policy suffix.
+                for offset in range(1, self.action_horizon + 1):
+                    destination_tags = np.char.lower(
+                        tags[offset : offset + pair_count]
+                    )
+                    pair_mask &= np.isin(
+                        destination_tags,
+                        normalized_insertion_tags,
+                    )
+
+                episode_index = len(self.episodes)
+                self.episodes.append(
+                    EpisodeLayout(
+                        path=path,
+                        left_tactile_path=left_tactile_path,
+                        right_tactile_path=right_tactile_path,
+                    )
                 )
 
-    def __len__(self):
+                frame_indices = np.flatnonzero(pair_mask)
+                self.records.extend(
+                    (episode_index, int(frame_index))
+                    for frame_index in frame_indices
+                )
+                self.target_indices.extend(
+                    int(frame_index + self.action_horizon)
+                    for frame_index in frame_indices
+                )
+
+        if not self.records:
+            raise ValueError(
+                f"No transitions matched insertion tag(s) "
+                f"{insertion_tag!r}"
+            )
+
+    def __len__(self) -> int:
         return len(self.records)
 
-    def __getitem__(self, index):
-        episode_index, frame_index, policy_step = self.records[index]
-        path = self.paths[episode_index]
-        with h5py.File(path, "r") as hdf5_file:
+    def __getitem__(
+        self,
+        index: int,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        episode_index, frame_index = self.records[index]
+        target_frame_index = self.target_indices[index]
+        layout = self.episodes[episode_index]
+
+        with h5py.File(layout.path, "r") as hdf5_file:
+            joints = hdf5_file["embodiment/joint"]
+
+            current_qpos = np.asarray(
+                joints[frame_index, :ARM_ACTION_DIM],
+                dtype=np.float32,
+            )
+            target_qpos = np.asarray(
+                joints[target_frame_index, :ARM_ACTION_DIM],
+                dtype=np.float32,
+            )
+
             observation = {
                 "qpos": torch.from_numpy(
-                    hdf5_file["embodiment/joint"][frame_index, :8].astype(np.float32)
+                    np.zeros_like(current_qpos)
+                    if self.zero_qpos
+                    else current_qpos.copy()
                 ),
-                "policy_step": torch.tensor(
-                    [policy_step],
-                    dtype=torch.float32,
+                "tac_left": _decode_image(
+                    hdf5_file[layout.left_tactile_path][frame_index],
+                    self.image_size,
+                ),
+                "tac_right": _decode_image(
+                    hdf5_file[layout.right_tactile_path][frame_index],
+                    self.image_size,
                 ),
             }
-            for key, hdf5_path in self.layout.camera_paths.items():
-                observation[key] = _decode_image(
-                    hdf5_file[hdf5_path][frame_index],
+            if not getattr(self, "_skip_camera_decode", False):
+                observation["cam_high"] = _decode_image(
+                    hdf5_file["observation/head/rgb"][frame_index],
                     self.image_size,
                 )
-            for key, hdf5_path in self.layout.tactile_paths.items():
-                observation[key] = _decode_image(
-                    hdf5_file[hdf5_path][frame_index],
+                observation["cam_wrist"] = _decode_image(
+                    hdf5_file["observation/wrist/rgb"][frame_index],
                     self.image_size,
                 )
-            action = torch.from_numpy(
-                hdf5_file["embodiment/joint"][frame_index + 1, :8].astype(np.float32)
-            )
+
+        normalized_action = target_qpos_to_action(
+            current_qpos=current_qpos,
+            target_qpos=target_qpos,
+            action_scale=self.action_scale,
+        )
+        action = torch.from_numpy(normalized_action)
+
         return observation, action
 
 
-def split_episode_paths(dataset_root, validation_fraction=0.1, seed=0):
-    paths = sorted(
-        Path(dataset_root).glob("*.hdf5"),
-        key=lambda path: int(path.stem),
-    )
-    if not paths:
-        paths = sorted(
-            Path(dataset_root).joinpath("hdf5").glob("*.hdf5"),
-            key=lambda path: int(path.stem),
-        )
-    if not paths:
-        raise FileNotFoundError(f"No HDF5 episodes found under {dataset_root}")
-    generator = np.random.default_rng(seed)
-    shuffled = list(paths)
-    generator.shuffle(shuffled)
-    validation_count = max(1, round(len(shuffled) * validation_fraction))
-    if len(shuffled) == 1:
-        return shuffled, shuffled
-    validation_count = min(validation_count, len(shuffled) - 1)
-    return shuffled[validation_count:], shuffled[:validation_count]
+class DINOv3PatchTokenCachedDataset(Dataset):
+    """Replace camera JPEGs with cached frozen DINOv3 patch tokens."""
 
+    def __init__(
+        self,
+        base_dataset: Dataset,
+        patch_tokens: dict[str, torch.Tensor],
+    ):
+        self.base_dataset = base_dataset
+        self.patch_tokens = dict(patch_tokens)
+        if not self.patch_tokens:
+            raise ValueError("patch_tokens must not be empty")
+        expected_count = len(base_dataset)
+        for key, tokens in self.patch_tokens.items():
+            if tokens.ndim != 3 or tokens.shape[0] != expected_count:
+                raise ValueError(
+                    f"cached patch tokens for {key!r} must have shape "
+                    f"(len(dataset), patches, hidden), got "
+                    f"{tuple(tokens.shape)}"
+                )
+        dataset = base_dataset
+        while hasattr(dataset, "dataset"):
+            dataset = dataset.dataset
+        if isinstance(dataset, InsertUSBBCDataset):
+            dataset._skip_camera_decode = True
 
-def compute_joint_statistics(paths, policy_step_stride=2):
-    qpos_values = []
-    action_values = []
-    policy_steps = []
-    for path in paths:
-        with h5py.File(path, "r") as hdf5_file:
-            joints = hdf5_file["embodiment/joint"][:, :8].astype(np.float32)
-            pair_indices = np.arange(len(joints) - 1)
-            if "phase/id" in hdf5_file:
-                phases = hdf5_file["phase/id"][()]
-                pair_indices = pair_indices[
-                    (phases[:-1] == 1) & (phases[1:] == 1)
-                ]
-            qpos_values.append(joints[pair_indices])
-            action_values.append(joints[pair_indices + 1])
-            policy_steps.append(
-                _policy_steps(hdf5_file, pair_indices, policy_step_stride)
-            )
-    qpos = np.concatenate(qpos_values)
-    action = np.concatenate(action_values)
-    delta = action - qpos
-    delta_mean = delta.mean(axis=0)
-    delta_std = np.maximum(delta.std(axis=0), 1e-5)
-    action_scale = np.maximum(
-        np.abs(delta - delta_mean).max(axis=0) * 1.05,
-        delta_std,
-    )
-    policy_step = np.concatenate(policy_steps).astype(np.float32)
-    return {
-        "qpos_mean": qpos.mean(axis=0),
-        "qpos_std": np.maximum(qpos.std(axis=0), 1e-4),
-        "delta_mean": delta_mean,
-        "delta_std": delta_std,
-        "action_scale": np.maximum(action_scale, 1e-5),
-        "joint_min": action.min(axis=0),
-        "joint_max": action.max(axis=0),
-        "policy_step_scale": np.array(
-            [max(float(policy_step.max()), 1.0)],
-            dtype=np.float32,
-        ),
-    }
+    def __len__(self) -> int:
+        return len(self.base_dataset)
+
+    def __getitem__(self, index: int):
+        observation, action = self.base_dataset[index]
+        for key, tokens in self.patch_tokens.items():
+            observation[key] = tokens[index]
+        return observation, action

@@ -143,11 +143,15 @@ class ACT:
                 print(f"Warning: Could not find stats file at {stats_path}")
                 self.stats = None
 
-            # Load policy weights
-            ckpt_path = os.path.join(ckpt_dir, "policy_last.ckpt")
+            # Load policy weights. Deployment keeps the historical last-checkpoint
+            # default, while evaluations can explicitly select the best checkpoint.
+            checkpoint_name = args_override.get("checkpoint_name", "policy_last.ckpt")
+            ckpt_path = os.path.join(ckpt_dir, checkpoint_name)
             print("current pwd:", os.getcwd())
             if os.path.exists(ckpt_path):
-                loading_status = self.policy.load_state_dict(torch.load(ckpt_path))
+                loading_status = self.policy.load_state_dict(
+                    torch.load(ckpt_path, map_location="cpu")
+                )
                 print(f"Loaded policy weights from {ckpt_path}")
                 print(f"Loading status: {loading_status}")
             else:

@@ -1604,6 +1604,7 @@ class BaseTask(UipcRLEnv):
         action_type: Literal['qpos', 'ee', 'delta_ee'] = 'qpos',
         force: bool = True,
         action_repeat: int = 1,
+        joint_velocity=None,
     ):
         if self.phase_id == self.PHASE_TERMINAL:
             raise RuntimeError('env_step() called after the episode reached TERMINAL')
@@ -1611,6 +1612,10 @@ class BaseTask(UipcRLEnv):
             raise RuntimeError('env_step() is only valid after the POLICY handoff')
         if action_repeat < 1:
             raise ValueError('action_repeat must be at least 1')
+        if joint_velocity is not None:
+            joint_velocity = torch.as_tensor(
+                joint_velocity, dtype=torch.float32, device=self.device
+            )
         previous_metrics = self.get_rl_metrics()
         action_tensor = torch.as_tensor(action, dtype=torch.float32, device=self.device)
         first_action = action_tensor
@@ -1622,13 +1627,18 @@ class BaseTask(UipcRLEnv):
             first_action,
             action_type=action_type,
             force=force,
+            joint_velocity=joint_velocity,
         )
         for repeat_index in range(1, action_repeat):
             if not exec_success or success or action_type != 'qpos':
                 break
             interpolation = (repeat_index + 1) / action_repeat
             repeated_action = initial_qpos + (action_tensor - initial_qpos) * interpolation
-            self._robot_manager.set_arm(repeated_action[:-1], force=force)
+            self._robot_manager.set_arm(
+                repeated_action[:-1],
+                vel=joint_velocity,
+                force=force,
+            )
             self._robot_manager.set_gripper(repeated_action[-1], force=force)
             self._step()
             if self.check_success():
@@ -1681,6 +1691,7 @@ class BaseTask(UipcRLEnv):
         action: torch.Tensor,
         action_type: Literal['qpos', 'ee', 'delta_ee', 'delta_ee_rotvec', 'delta_ee_rotvec_ik'] = 'qpos',
         force: bool = True,
+        joint_velocity=None,
     ):
         '''
             qpos     : actions is Tensor([8]), qpos (7 DOFS + gripper)
@@ -1730,7 +1741,9 @@ class BaseTask(UipcRLEnv):
             exec_success = self._robot_manager.servo_delta_ee_rotvec(action, force=force)
             self._step()
         else:
-            self._robot_manager.set_arm(action[:-1], force=force)
+            self._robot_manager.set_arm(
+                action[:-1], vel=joint_velocity, force=force
+            )
             self._robot_manager.set_gripper(action[-1], force=force)
             self._step()
         

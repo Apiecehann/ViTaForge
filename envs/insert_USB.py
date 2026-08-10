@@ -98,6 +98,7 @@ class TaskCfg(BaseTaskCfg):
         )
     ]
     step_lim = 400
+    fixed_target_slot = False
 
 
 class Task(BaseTask):
@@ -176,7 +177,12 @@ class Task(BaseTask):
     def _reset_actors(self):
         # Pose.create_noise 会修改输入向量，因此每次传入新的 list，避免跨 episode 污染随机范围。
         start_offset = self.create_noise(list(SLOT_XY_NOISE))
-        target_offset = self.create_noise(list(SLOT_XY_NOISE))
+        sampled_target_offset = self.create_noise(list(SLOT_XY_NOISE))
+        target_offset = (
+            Pose()
+            if bool(getattr(self.cfg, "fixed_target_slot", False))
+            else sampled_target_offset
+        )
         start_slot_pose = Pose([0.4, 0.0, self.start_slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(start_offset)
         target_slot_pose = Pose([0.52, 0.0, self.slot.get_pose()[2]], [1, 0, 0, 0]).add_offset(target_offset)
 
@@ -187,6 +193,12 @@ class Task(BaseTask):
         # 保存 reset 后的实际槽位，方便离线复现或诊断插入失败样本。
         self.metadata['start_slot_pose'] = start_slot_pose.tolist()
         self.metadata['target_slot_pose'] = target_slot_pose.tolist()
+        self.metadata['fixed_target_slot'] = bool(
+            getattr(self.cfg, "fixed_target_slot", False)
+        )
+        self.metadata['sampled_target_slot_offset'] = (
+            sampled_target_offset.tolist()
+        )
         self.metadata['usb_slot_contact_clearance'] = float(
             XENSE_USB_SLOT_CONTACT_CLEARANCE if self._is_xense() else 0.0
         )

@@ -78,6 +78,9 @@ textures.zip
 /exports/
 /visualizations/
 /policy/RL/runs/
+/outputs/
+/artifacts/
+/Sim Task 触觉.pdf
 *.bak_*
 *.before.*
 *.pre_*

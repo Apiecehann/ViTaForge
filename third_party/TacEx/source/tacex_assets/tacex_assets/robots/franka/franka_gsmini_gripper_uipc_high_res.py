@@ -29,7 +29,7 @@ from tacex_assets import TACEX_ASSETS_DATA_DIR
 # -> currently, we need to look into the asset to figure out the prim name (in this case its /gelsight_mini_case)
 FRANKA_PANDA_ARM_GSMINI_GRIPPER_UIPC_HIGH_RES_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{TACEX_ASSETS_DATA_DIR}/Robots/Franka/GelSight_Mini/Gripper/uipc_gelpads_high_res_wrist.usd",
+        usd_path=f"{TACEX_ASSETS_DATA_DIR}/Robots/Franka/GelSight_Mini/Gripper/uipc_gelpads_high_res_wrist_attached.usda",
         activate_contact_sensors=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,

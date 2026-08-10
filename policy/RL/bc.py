@@ -1,103 +1,113 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import math
 import torch
-from torch import nn
+import torch.nn.functional as F
 
-from .encoders import MultiModalEncoder
+from policy.RL.actor import GaussianActor
 
 
-class MultiModalBC(nn.Module):
-    def __init__(self, model_config, statistics):
-        super().__init__()
-        self.model_config = dict(model_config)
-        self.encoder = MultiModalEncoder(**self.model_config)
-        feature_dim = int(self.model_config["feature_dim"])
-        action_dim = int(self.model_config.get("qpos_dim", 8))
-        self.action_head = nn.Sequential(
-            nn.Linear(feature_dim, 256),
-            nn.GELU(),
-            nn.Linear(256, 256),
-            nn.GELU(),
-            nn.Linear(256, action_dim),
+@dataclass(frozen=True)
+class BCLossOutput:
+    loss: torch.Tensor
+    action_mae: torch.Tensor
+    per_joint_mae: torch.Tensor
+
+
+@dataclass(frozen=True)
+class BCUpdateOutput:
+    loss: torch.Tensor
+    action_mae: torch.Tensor
+    per_joint_mae: torch.Tensor
+    grad_norm: torch.Tensor
+
+def compute_bc_loss(
+    actor: GaussianActor,
+    observation: dict[str, torch.Tensor],
+    target_action: torch.Tensor,
+) -> BCLossOutput:
+    predicted_action = actor.deterministic_action(
+        observation
+    )
+
+    if predicted_action.shape != target_action.shape:
+        raise ValueError(
+            "predicted_action and target_action must have "
+            f"the same shape, got {tuple(predicted_action.shape)} "
+            f"and {tuple(target_action.shape)}"
         )
-        for name, value in statistics.items():
-            self.register_buffer(name, torch.as_tensor(value, dtype=torch.float32))
 
-    def normalized_observation(self, observation):
-        normalized = dict(observation)
-        normalized["qpos"] = (
-            observation["qpos"].float() - self.qpos_mean
-        ) / self.qpos_std
-        if "policy_step" in observation:
-            normalized["policy_step"] = torch.clamp(
-                observation["policy_step"].float() / self.policy_step_scale,
-                min=0.0,
-                max=1.5,
-            )
-        return normalized
+    if not torch.is_floating_point(target_action):
+        raise TypeError("target_action must be floating point")
 
-    def forward_normalized(self, observation):
-        features = self.encoder(self.normalized_observation(observation))
-        return self.action_head(features)
+    if not torch.isfinite(target_action).all():
+        raise ValueError(
+            "target_action contains NaN or infinite values"
+        )
 
-    def forward_policy_action(self, observation):
-        raw_action = self.forward_normalized(observation)
-        if hasattr(self, "action_scale"):
-            return torch.tanh(raw_action)
-        return raw_action
-
-    def forward(self, observation):
-        policy_action = self.forward_policy_action(observation)
-        if hasattr(self, "action_scale"):
-            delta = policy_action * self.action_scale + self.delta_mean
-        else:
-            delta = policy_action * self.delta_std + self.delta_mean
-        return observation["qpos"].float() + delta
-
-    def checkpoint(self, metadata=None):
-        statistic_names = [
-            "qpos_mean",
-            "qpos_std",
-            "delta_mean",
-            "delta_std",
-            "joint_min",
-            "joint_max",
-            "policy_step_scale",
-        ]
-        if hasattr(self, "action_scale"):
-            statistic_names.append("action_scale")
-        statistics = {
-            name: getattr(self, name).detach().cpu().numpy()
-            for name in statistic_names
-        }
-        return {
-            "model_config": self.model_config,
-            "action_representation": (
-                "bounded_delta_qpos_v2"
-                if hasattr(self, "action_scale")
-                else "delta_qpos_v1"
-            ),
-            "statistics": statistics,
-            "model_state": self.state_dict(),
-            "metadata": metadata or {},
-        }
-
-
-def load_bc_checkpoint(checkpoint_path, device="cpu"):
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    load_config = dict(checkpoint["model_config"])
-    load_config.update(
-        visual_pretrained=False,
-        tactile_pretrained=False,
-        visual_checkpoint=None,
-        tactile_checkpoint=None,
+    action_error = predicted_action - target_action
+    loss = F.mse_loss(
+        predicted_action,
+        target_action,
     )
-    model = MultiModalBC(
-        load_config,
-        checkpoint["statistics"],
+
+    absolute_error = action_error.detach().abs()
+
+    return BCLossOutput(
+        loss=loss,
+        action_mae=absolute_error.mean(),
+        per_joint_mae=absolute_error.mean(dim=0),
     )
-    model.model_config = dict(checkpoint["model_config"])
-    model.load_state_dict(checkpoint["model_state"])
-    model.to(device)
-    model.eval()
-    return model, checkpoint
+
+def bc_update(
+    actor: GaussianActor,
+    optimizer: torch.optim.Optimizer,
+    observation: dict[str, torch.Tensor],
+    target_action: torch.Tensor,
+    max_grad_norm: float = 1.0,
+) -> BCUpdateOutput:
+    max_grad_norm = float(max_grad_norm)
+
+    if (
+        not math.isfinite(max_grad_norm)
+        or max_grad_norm <= 0.0
+    ):
+        raise ValueError(
+            "max_grad_norm must be finite and positive"
+        )
+
+    actor.train()
+    optimizer.zero_grad(set_to_none=True)
+
+    loss_output = compute_bc_loss(
+        actor=actor,
+        observation=observation,
+        target_action=target_action,
+    )
+
+    if not torch.isfinite(loss_output.loss):
+        raise FloatingPointError("BC loss is not finite")
+
+    loss_output.loss.backward()
+
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        actor.parameters(),
+        max_norm=max_grad_norm,
+    )
+
+    if not torch.isfinite(grad_norm):
+        optimizer.zero_grad(set_to_none=True)
+        raise FloatingPointError(
+            "BC gradient norm is not finite"
+        )
+
+    optimizer.step()
+
+    return BCUpdateOutput(
+        loss=loss_output.loss.detach(),
+        action_mae=loss_output.action_mae,
+        per_joint_mae=loss_output.per_joint_mae,
+        grad_norm=grad_norm.detach(),
+    )

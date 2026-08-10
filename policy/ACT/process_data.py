@@ -61,6 +61,9 @@ def _valid_pair_indices(h5_file, downsample_factor):
         pair_indices = pair_indices[
             (phase_ids[:-1] == 1) & (phase_ids[1:] == 1)
         ]
+    if 'phase/is_boundary' in h5_file:
+        boundary = h5_file['phase/is_boundary'][()]
+        pair_indices = pair_indices[boundary[pair_indices + 1] == 0]
     return pair_indices[::downsample_factor]
 
 

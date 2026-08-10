@@ -206,50 +206,6 @@ the learned-policy phase. The HDF5 field `phase/id` identifies these phases;
 the current ACT preprocessor trains on action-phase transitions only. See
 [`docs/Collection.md`](docs/Collection.md) for the data schema.
 
-### Online RL collection
-
-The RL path is implemented as an experimental BC/SFT-initialized online
-interaction pipeline. It does not use the scripted planner to generate every
-action. Instead, it uses planner demonstrations to train a behavior-cloning
-model, then gathers new transitions while SAC or PPO interacts with the task.
-
-1. Collect randomized expert demonstrations with the motion-planning pipeline.
-2. Train the multimodal BC/SFT initialization:
-
-```bash
-python scripts/train_bc.py \
-  <dataset_root>/hdf5 <run_root>/bc \
-  --visual-pretrained --tactile-pretrained
-```
-
-3. Start online SAC collection and training:
-
-```bash
-python scripts/train_rl.py \
-  <task_name> <task_config> \
-  <run_root>/bc/bc_best.pt <run_root> \
-  --algorithm sac \
-  --bc-dataset-root <dataset_root> \
-  --control-gripper \
-  --save-replay-buffer
-```
-
-PPO is also available experimentally; exact SFT actor initialization is
-currently SAC-only, so PPO must use `--no-initialize-actor`.
-
-```bash
-python scripts/train_rl.py \
-  <task_name> <task_config> \
-  <run_root>/bc/bc_best.pt <run_root> \
-  --algorithm ppo --no-initialize-actor
-```
-
-`--save-replay-buffer` preserves the online transition buffer. Without it, RL
-still collects transitions during training, but they are not exported as a
-standalone HDF5 demonstration dataset. The current RL workflow has been
-developed primarily around the half-cylinder grasp task; broader task coverage,
-multi-sensor RL validation, and a unified RL dataset exporter are TODO.
-
 ## Task Config Hyperparameters
 
 Active sensor configurations are stored in `task_config/`:
@@ -365,10 +321,9 @@ Supported or partially supported study axes include:
 
 - **Input modality:** vision-only, tactile-only, or vision-tactile fusion;
   head-camera versus head-and-wrist-camera inputs.
-- **Visual encoder:** ResNet-18 is the current default. ResNet variants are
-  available in the ACT backbone code, and the experimental RL encoder accepts
-  `timm:` backbones. A unified interface for ViT/CLIP/DINO and VLA visual
-  encoders is TODO.
+- **Visual encoder:** ResNet-18 is the current default, with additional ResNet
+  variants available in the ACT backbone code. A unified interface for
+  ViT/CLIP/DINO and VLA visual encoders is TODO.
 - **Tactile encoder:** the current UniVTAC tactile ResNet encoder is integrated
   and can be frozen, fine-tuned, or trained from scratch. ViTAL-style
   contrastive visual-tactile encoder code is also included as an integrated
@@ -435,29 +390,6 @@ success-rate logging, HDF5/video outputs, and serial or multiprocessing
 evaluation. To add a new baseline, implement `Policy.encode_obs`,
 `Policy.eval`, and `Policy.reset` against `policy._base_policy.BasePolicy`, then
 provide a deployment YAML. See [`docs/Deploy.md`](docs/Deploy.md).
-
-### RL rollout
-
-Evaluate SFT/BC directly:
-
-```bash
-python scripts/eval_rl.py \
-  <task_name> <task_config> <bc_checkpoint> <output_dir> \
-  --algorithm sft --episodes 20 --save-traces
-```
-
-Evaluate a trained SAC or PPO policy:
-
-```bash
-python scripts/eval_rl.py \
-  <task_name> <task_config> <bc_checkpoint> <output_dir> \
-  --algorithm sac --model-path <sac_model.zip> \
-  --episodes 20 --save-traces
-```
-
-The RL evaluator reports success rate, reward, task metrics, and optional
-per-action traces. Multi-task and multi-sensor RL benchmark scripts remain
-TODO.
 
 ## License
 
