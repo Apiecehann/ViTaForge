@@ -16,6 +16,7 @@
 /policy/**/outputs*/**
 /policy/**/checkpoints*/**
 /dump
+/debug/
 **/__pycache__
 
 /.env_isaaclab

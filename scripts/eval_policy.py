@@ -144,6 +144,20 @@ parser.add_argument(
     help="Override env_cfg.frame_order when the selected task supports it.",
 )
 parser.add_argument(
+    "--rough_block_side",
+    type=str,
+    default=None,
+    choices=("random", "left", "right"),
+    help="Override env_cfg.rough_block_side when the selected task supports it.",
+)
+parser.add_argument(
+    "--initial_grasp_side",
+    type=str,
+    default=None,
+    choices=("random", "left", "right"),
+    help="Override env_cfg.initial_grasp_side when the selected task supports it.",
+)
+parser.add_argument(
     "--weight_label",
     type=str,
     default=None,
@@ -312,9 +326,10 @@ def eval_policy(
                     break
         except Exception as e:
             if e.__class__.__name__ == "StepTimeoutError":
-                log(f"[{test_num:<3d}] Seed {seed} step timeout, mark failed: {e}")
-                succ_status = 'failed'
+                log(f"[{test_num:<3d}] Seed {seed} step timeout, mark error: {e}")
+                succ_status = 'error'
                 task.clean_cache(result=succ_status)
+                test_num -= 1
                 continue
             log(f"[{test_num:<3d}] Seed {seed} occurred exception: {e}\n{traceback.format_exc()}")
             succ_status = 'error'

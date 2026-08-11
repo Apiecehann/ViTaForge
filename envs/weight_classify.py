@@ -18,7 +18,7 @@ HEAVY_STANDBY_POSE = Pose([0.38, -1.0, 0.002], [1, 0, 0, 0])
 
 @configclass
 class TaskCfg(BaseTaskCfg):
-    weight_label: Literal["random", "light", "heavy"] = "random"
+    weight_label: Literal["random", "light", "heavy"] = "heavy"
     cameras = [
         CameraCfg(
             name="head",
@@ -100,6 +100,11 @@ class Task(BaseTask):
             self.target = self.yellow_plate
             self.other_target = self.blue_plate
         self.block.set_pose(start_pose)
+        self.target_pose = self.target.get_pose().add_bias([
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            0.01
+        ])
         self.metadata["weight_label"] = self.choice
         self.metadata["weight_label_cfg"] = self.cfg.weight_label
         self.metadata["block_density"] = float(
@@ -107,6 +112,7 @@ class Task(BaseTask):
         )
         self.metadata["target_plate"] = self.target.cfg.name
         self.metadata["start_pose"] = start_pose.tolist()
+        self.metadata["target_pose"] = self.target_pose.tolist()
 
     def _release_reset_constraints(self):
         self._actor_manager.remove_animate(force=True)
@@ -139,12 +145,6 @@ class Task(BaseTask):
         self.move(self.atom.close_gripper(gripper_qpos))
         lift_height = LIFT_HEIGHT + self.rng.uniform(-LIFT_HEIGHT_NOISE, LIFT_HEIGHT_NOISE)
         self.move(self.atom.move_by_displacement(z=lift_height))
-
-        self.target_pose = self.target.get_pose().add_bias([
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            0.01
-        ])
 
         self.move(self.atom.place_actor(
             self.block,
