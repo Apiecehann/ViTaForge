@@ -70,5 +70,9 @@
     "turn_gear_pair": {
         "camera_type": "all",
         "downsample": 1
+    },
+    "thread_routing": {
+        "camera_type": "all",
+        "downsample": 1
     }
 }

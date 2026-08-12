@@ -344,6 +344,8 @@ class Actor(UipcObject):
 
     @property
     def vertices(self):
+        if getattr(self, "_is_line_mesh", False):
+            return self.vertex_positions
         all_trimesh_points = self._uipc_sim.sio.simplicial_surface(2).positions().view().reshape(-1, 3)
         if hasattr(self, "_surf_vertex_offset_start"):
             start = self._surf_vertex_offset_start

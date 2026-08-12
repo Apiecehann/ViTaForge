@@ -212,6 +212,7 @@ class UipcSim:
 
         self._fabric_meshes = []
         self._fabric_mesh_offsets = []
+        self._line_renderers = []
         self.uipc_objects: list[UipcObject] = []
 
         self.stage = usdrt.Usd.Stage.Attach(omni.usd.get_context().get_stage_id())
@@ -328,6 +329,8 @@ class UipcSim:
 
             fabric_mesh_points = fabric_prim.GetAttribute("points")
             fabric_mesh_points.Set(usdrt.Vt.Vec3fArray(trimesh_points))
+        for line_renderer in self._line_renderers:
+            line_renderer.update_line_render_mesh()
         # NOTE: Currently there is a 1 frame delay between the points we set and what's rendered in Isaac
         # NOTE: if you draw the points and let it render, you see that the mesh is lagging behind the points
         # draw.clear_points()

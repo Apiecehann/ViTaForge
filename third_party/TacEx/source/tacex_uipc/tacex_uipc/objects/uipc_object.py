@@ -35,10 +35,12 @@ from uipc.constitution import (
     AffineBodyConstitution,
     DiscreteShellBending,
     ElasticModuli,
+    HookeanSpring,
+    KirchhoffRodBending,
     NeoHookeanShell,
     StableNeoHookean,
 )
-from uipc.geometry import extract_surface, flip_inward_triangles, label_surface, label_triangle_orient, tetmesh, trimesh
+from uipc.geometry import extract_surface, flip_inward_triangles, label_surface, label_triangle_orient, linemesh, tetmesh, trimesh
 from uipc.unit import MPa
 
 import isaaclab.utils.string as string_utils
@@ -121,7 +123,30 @@ class UipcObjectCfg(AssetBaseCfg):
         render_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
         """Visual-only offset applied when writing simulated cloth vertices to Isaac/Fabric."""
 
-    constitution_cfg: AffineBodyConstitutionCfg | StableNeoHookeanCfg | NeoHookeanShellCfg = None
+    @configclass
+    class HookeanSpringCfg:
+        kappa: float = 4.0e4
+        """Axial spring stiffness for 1D thread/cable elements."""
+
+        thickness: float = 0.006
+        """Collision thickness/radius for codimensional line contact in [m]."""
+
+        enable_bending: bool = True
+        """Apply KirchhoffRodBending in addition to the stretch spring constitution."""
+
+        bending_stiffness: float = 1.0e5
+        """Bending stiffness passed to KirchhoffRodBending."""
+
+        render_radius: float = 0.004
+        """Radius of the Isaac render tube used to visualize the 1D line mesh."""
+
+        render_sides: int = 8
+        """Number of sides used by the render tube cross-section."""
+
+        render_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        """Visual-only offset applied when writing simulated thread vertices to Isaac/Fabric."""
+
+    constitution_cfg: AffineBodyConstitutionCfg | StableNeoHookeanCfg | NeoHookeanShellCfg | HookeanSpringCfg = None
 
     attachment_cfg: UipcIsaacAttachmentsCfg = None
 
@@ -168,6 +193,8 @@ class UipcObject(AssetBase):
 
         self.uipc_scene_objects = []
         self.geo_slot_list = []
+        self._is_line_mesh = isinstance(self.cfg.constitution_cfg, UipcObjectCfg.HookeanSpringCfg)
+        self._line_render_fabric_prim = None
 
         def find_mesh(prim):
             if prim.GetTypeName() == "Mesh":
@@ -193,6 +220,9 @@ class UipcObject(AssetBase):
 
             if isinstance(self.cfg.constitution_cfg, UipcObjectCfg.NeoHookeanShellCfg):
                 mesh, tet_surf_points_world, tet_surf_tri = self._create_cloth_mesh_from_usd(usd_mesh)
+                replace_color = False
+            elif self._is_line_mesh:
+                mesh, tet_surf_points_world, tet_surf_tri = self._create_line_mesh_from_usd(usd_mesh)
                 replace_color = False
             else:
                 mesh, tet_surf_points_world, tet_surf_tri, replace_color = self._create_tet_mesh_from_usd(usd_mesh)
@@ -233,15 +263,19 @@ class UipcObject(AssetBase):
 
             self.fabric_prim = fabric_prim
 
-            # add fabric meshes to uipc sim class for updating the render meshes
-            self._uipc_sim._fabric_meshes.append(fabric_prim)
-            self._uipc_sim._fabric_mesh_offsets.append(render_offset)
+            if self._is_line_mesh:
+                self._line_render_fabric_prim = fabric_prim
+                self._uipc_sim._line_renderers.append(self)
+            else:
+                # add fabric meshes to uipc sim class for updating the render meshes
+                self._uipc_sim._fabric_meshes.append(fabric_prim)
+                self._uipc_sim._fabric_mesh_offsets.append(render_offset)
 
-            # save surface offsets for finding corresponding surface points of the meshes for rendering
-            num_surf_points = tet_surf_points_world.shape[0]  # np.unique(tet_surf_indices)
-            self._surf_vertex_offset_start = self._uipc_sim._surf_vertex_offsets[-1]
-            self._surf_vertex_offset_end = self._surf_vertex_offset_start + num_surf_points
-            self._uipc_sim._surf_vertex_offsets.append(self._surf_vertex_offset_end)
+                # save surface offsets for finding corresponding surface points of the meshes for rendering
+                num_surf_points = tet_surf_points_world.shape[0]  # np.unique(tet_surf_indices)
+                self._surf_vertex_offset_start = self._uipc_sim._surf_vertex_offsets[-1]
+                self._surf_vertex_offset_end = self._surf_vertex_offset_start + num_surf_points
+                self._uipc_sim._surf_vertex_offsets.append(self._surf_vertex_offset_end)
 
             # required for writing vertex positions to sim
             num_vertex_points = mesh.positions().view().shape[0]
@@ -387,9 +421,78 @@ class UipcObject(AssetBase):
                 self._system_name,
             )
 
+    @property
+    def vertex_positions(self) -> np.ndarray:
+        """Current UIPC vertex positions for volume, shell, or line meshes."""
+        if len(self.geo_slot_list) == 0:
+            return np.zeros((0, 3), dtype=np.float64)
+        geo_slot = self.geo_slot_list[0]
+        return np.asarray(geo_slot.geometry().positions().view()).reshape(-1, 3)
+
     """
     Internal helper.
     """
+
+    @staticmethod
+    def _make_tube_mesh(centerline: np.ndarray, radius: float, sides: int):
+        centerline = np.asarray(centerline, dtype=np.float64).reshape(-1, 3)
+        sides = max(3, int(sides))
+        if centerline.shape[0] == 0:
+            return centerline, []
+
+        tangents = np.zeros_like(centerline)
+        if centerline.shape[0] == 1:
+            tangents[:] = np.array([1.0, 0.0, 0.0])
+        else:
+            tangents[0] = centerline[1] - centerline[0]
+            tangents[-1] = centerline[-1] - centerline[-2]
+            if centerline.shape[0] > 2:
+                tangents[1:-1] = centerline[2:] - centerline[:-2]
+
+        points = []
+        last_normal = None
+        for tangent in tangents:
+            norm = np.linalg.norm(tangent)
+            if norm < 1e-9:
+                tangent = np.array([1.0, 0.0, 0.0])
+            else:
+                tangent = tangent / norm
+
+            if last_normal is None:
+                ref = np.array([0.0, 0.0, 1.0])
+                if abs(float(np.dot(ref, tangent))) > 0.95:
+                    ref = np.array([0.0, 1.0, 0.0])
+                normal = ref - np.dot(ref, tangent) * tangent
+            else:
+                normal = last_normal - np.dot(last_normal, tangent) * tangent
+                if np.linalg.norm(normal) < 1e-9:
+                    normal = np.cross(tangent, np.array([0.0, 0.0, 1.0]))
+            normal_norm = np.linalg.norm(normal)
+            if normal_norm < 1e-9:
+                normal = np.array([0.0, 1.0, 0.0])
+            else:
+                normal = normal / normal_norm
+            binormal = np.cross(tangent, normal)
+            binormal /= max(np.linalg.norm(binormal), 1e-9)
+            last_normal = normal
+
+            for side in range(sides):
+                angle = 2.0 * np.pi * side / sides
+                points.append(radius * (np.cos(angle) * normal + np.sin(angle) * binormal))
+
+        tube_points = np.repeat(centerline, sides, axis=0) + np.asarray(points)
+        triangles: list[int] = []
+        for i in range(centerline.shape[0] - 1):
+            ring_a = i * sides
+            ring_b = (i + 1) * sides
+            for side in range(sides):
+                a0 = ring_a + side
+                a1 = ring_a + ((side + 1) % sides)
+                b0 = ring_b + side
+                b1 = ring_b + ((side + 1) % sides)
+                triangles.extend([a0, b0, a1, a1, b0, b1])
+
+        return tube_points, triangles
 
     def _create_tet_mesh_from_usd(self, usd_mesh: UsdGeom.Mesh):
         # Load precomputed mesh data from USD prim.
@@ -438,6 +541,58 @@ class UipcObject(AssetBase):
         surf_tri = surf.triangles().topo().view().reshape(-1).tolist()
 
         return mesh, surf_points_world, surf_tri, replace_color
+
+    def _create_line_mesh_from_usd(self, usd_mesh: UsdGeom.Mesh):
+        mesh_prim = usd_mesh.GetPrim()
+        thread_points_attr = mesh_prim.GetAttribute("thread_points")
+        if thread_points_attr.IsValid() and thread_points_attr.Get() is not None:
+            local_points = np.array(thread_points_attr.Get(), dtype=np.float64)
+        else:
+            local_points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float64)
+
+        if local_points.ndim != 2 or local_points.shape[1] != 3 or local_points.shape[0] < 2:
+            raise ValueError(f"Thread mesh {usd_mesh.GetPath()} needs at least two 3D points.")
+
+        thread_edges_attr = mesh_prim.GetAttribute("thread_edges")
+        if thread_edges_attr.IsValid() and thread_edges_attr.Get() is not None:
+            edges = np.array(thread_edges_attr.Get(), dtype=np.int32).reshape(-1, 2)
+        else:
+            edges = np.column_stack(
+                [
+                    np.arange(local_points.shape[0] - 1, dtype=np.int32),
+                    np.arange(1, local_points.shape[0], dtype=np.int32),
+                ]
+            )
+
+        tf_world = omni.usd.get_world_transform_matrix(usd_mesh)
+        points_world = np.array(tf_world).T @ np.vstack((local_points.T, np.ones(local_points.shape[0])))
+        points_world = points_world[:-1].T
+
+        self.init_world_transform = torch.tensor(np.array(tf_world).T.copy(), device=self.uipc_sim.cfg.device)
+        self._line_edges = edges.copy()
+
+        mesh = linemesh(points_world.copy(), edges.copy())
+        label_surface(mesh)
+
+        tube_points, tube_tri = self._make_tube_mesh(
+            points_world,
+            radius=self.cfg.constitution_cfg.render_radius,
+            sides=self.cfg.constitution_cfg.render_sides,
+        )
+        return mesh, tube_points, tube_tri
+
+    def update_line_render_mesh(self):
+        if self._line_render_fabric_prim is None or len(self.geo_slot_list) == 0:
+            return
+        points = self.vertex_positions
+        render_offset = np.array(getattr(self.cfg.constitution_cfg, "render_offset", (0.0, 0.0, 0.0)))
+        tube_points, _ = self._make_tube_mesh(
+            points + render_offset,
+            radius=self.cfg.constitution_cfg.render_radius,
+            sides=self.cfg.constitution_cfg.render_sides,
+        )
+        fabric_mesh_points_attr = self._line_render_fabric_prim.GetAttribute("points")
+        fabric_mesh_points_attr.Set(usdrt.Vt.Vec3fArray(tube_points))
 
     def _create_cloth_mesh_from_usd(self, usd_mesh: UsdGeom.Mesh):
         local_points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float64)
@@ -506,6 +661,8 @@ class UipcObject(AssetBase):
             self._data = UipcObjectRigidData(self._uipc_sim, self, self.device)
         elif type(self.constitution) is NeoHookeanShell:
             self._data = UipcObjectDeformableData(self._uipc_sim, self, self.device)
+        elif type(self.constitution) is HookeanSpring:
+            self._data = UipcObjectDeformableData(self._uipc_sim, self, self.device)
 
         self._create_buffers()
         # process configuration
@@ -548,6 +705,7 @@ class UipcObject(AssetBase):
             UipcObjectCfg.AffineBodyConstitutionCfg: AffineBodyConstitution,
             UipcObjectCfg.StableNeoHookeanCfg: StableNeoHookean,
             UipcObjectCfg.NeoHookeanShellCfg: NeoHookeanShell,
+            UipcObjectCfg.HookeanSpringCfg: HookeanSpring,
         }
         self.constitution = constitution_types[type(self.cfg.constitution_cfg)]()
 
@@ -580,6 +738,17 @@ class UipcObject(AssetBase):
             )
             if self.cfg.constitution_cfg.enable_bending:
                 self.bending_constitution = DiscreteShellBending()
+                self.bending_constitution.apply_to(mesh, E=self.cfg.constitution_cfg.bending_stiffness)
+            self._system_name = "uipc::backend::cuda::FiniteElementMethod"
+        elif type(self.constitution) is HookeanSpring:
+            self.constitution.apply_to(
+                mesh,
+                self.cfg.constitution_cfg.kappa,
+                mass_density=self.cfg.mass_density,
+                thickness=self.cfg.constitution_cfg.thickness,
+            )
+            if self.cfg.constitution_cfg.enable_bending:
+                self.bending_constitution = KirchhoffRodBending()
                 self.bending_constitution.apply_to(mesh, E=self.cfg.constitution_cfg.bending_stiffness)
             self._system_name = "uipc::backend::cuda::FiniteElementMethod"
 
