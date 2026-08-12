@@ -40,7 +40,7 @@
       "cam_high",
       "cam_wrist"
     ],
-    "pretrained_path": "/root/gpufree-data/models/dinov3-vitb16-pretrain-lvd1689m",
+    "pretrained_path": "models/dinov3-vitb16-pretrain-lvd1689m",
     "freeze_backbone": true
   },
   "tactile": {

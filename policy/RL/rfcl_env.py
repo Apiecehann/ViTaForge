@@ -1,4 +1,4 @@
-"""Privileged-state RFCL environment for InsertUSB.
+"""Adapter-driven privileged-state RFCL environment.
 
 The environment is intentionally independent of the RGB/tactile BC actor.
 It restores a complete simulator snapshot, exposes a 46-dimensional state,
@@ -28,11 +28,7 @@ from policy.RL.action import (
     action_to_target_qpos_velocity,
     clip_action,
 )
-from policy.RL.rfcl import (
-    PRIVILEGED_STATE_LAYOUT,
-    ReverseCurriculum,
-    build_live_privileged_state,
-)
+from policy.RL.rfcl import ReverseCurriculum
 from policy.RL.rfcl_snapshot import (
     RFCLSnapshotDataset,
     prepare_snapshot_for_policy,
@@ -80,6 +76,7 @@ class RFCLPrivilegedEnv(gym.Env):
             )
         self.task = task
         self.dataset = RFCLSnapshotDataset(snapshot_root)
+        self.adapter = self.dataset.adapter
         self.action_mode = str(
             self.dataset.manifest.get("action_mode", "qpos_delta")
             if action_mode is None
@@ -136,7 +133,7 @@ class RFCLPrivilegedEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(PRIVILEGED_STATE_LAYOUT.dim,),
+            shape=(self.adapter.state_dim,),
             dtype=np.float32,
         )
         self.action_space = spaces.Box(
@@ -161,14 +158,9 @@ class RFCLPrivilegedEnv(gym.Env):
 
     def _live_state(self) -> np.ndarray:
         physics_state = read_robot_physics_state(self.task)
-        usb_pose = np.asarray(self.task.prism.get_pose().tolist(), dtype=np.float64)
-        slot_pose = np.asarray(self.task.slot.get_pose().tolist(), dtype=np.float64)
-        return build_live_privileged_state(
-            joint=physics_state["joint_pos"],
-            joint_velocity=physics_state["joint_vel"],
-            ee_pose=physics_state["ee"],
-            usb_pose=usb_pose,
-            slot_pose=slot_pose,
+        return self.adapter.build_privileged_state(
+            physics_state=physics_state,
+            entities=self.adapter.capture_entities(self.task),
         )
 
     def _stage_snapshot_actor_poses(self, snapshot) -> dict[str, np.ndarray]:
@@ -177,23 +169,25 @@ class RFCLPrivilegedEnv(gym.Env):
         ``world.recover`` restores the UIPC frame, but affine actors expose the
         recovered transform only after their animator callback runs.  Staging
         the saved pose for the synchronization step makes that callback use the
-        checkpoint pose; the USB constraint is released immediately afterwards
-        so RFCL still controls it through the gripper attachment.
+        checkpoint pose; held-object constraints configured by the adapter are
+        released immediately afterwards so RFCL retains physical control.
         """
         saved_strengths: dict[str, np.ndarray] = {}
-        for actor_name, pose_name in (("slot", "slot"), ("prism", "usb")):
+        for binding in self.adapter.snapshot_actor_bindings():
+            actor_name = binding.actor_name
+            pose_name = binding.pose_key
             actor = self.task._actor_manager.actors.get(actor_name)
             pose = snapshot.poses.get(pose_name)
             if actor is None or pose is None:
                 continue
             actor.set_pose(Pose.from_list(np.asarray(pose, dtype=np.float64).tolist()))
-            if actor_name == "prism":
+            if binding.release_after_sync:
                 strength = actor.uipc_meshes[0].instances().find(
                     "strength_ratio"
                 )
                 if strength is None:
                     raise RuntimeError(
-                        "RFCL prism is missing SoftTransformConstraint strength_ratio"
+                        f"RFCL actor {actor_name!r} is missing constraint strength_ratio"
                     )
                 strength_values = view(strength)
                 saved_strengths[actor_name] = np.asarray(
@@ -234,13 +228,13 @@ class RFCLPrivilegedEnv(gym.Env):
         else:
             self._demo_index, self._state_index = self.curriculum.sample_checkpoint()
         # A persistent UIPC snapshot cannot serialize PhysX contact history
-        # between the gripper and the held USB.  Diagnostic/training callers
+        # between the gripper and a held object. Diagnostic/training callers
         # may bootstrap the grasp in the current process, then recover only
         # the requested suffix while preserving that contact manifold.
         if not bool(options.pop("skip_task_reset", False)):
             self._reset_task_for_snapshot(self._demo_index)
         snapshot = self.dataset.snapshot(self._demo_index, self._state_index)
-        prepare_snapshot_for_policy(self.task, snapshot)
+        prepare_snapshot_for_policy(self.task, self.adapter, snapshot)
         saved_strengths = {}
         if self.snapshot_sync_steps:
             saved_strengths = self._stage_snapshot_actor_poses(snapshot)
@@ -258,11 +252,16 @@ class RFCLPrivilegedEnv(gym.Env):
                 # attachment callbacks but perturbs contact-rich UIPC states.
                 # Recover once more so the policy still observes the exact
                 # checkpoint with those external callbacks now warm.
-                prepare_snapshot_for_policy(self.task, snapshot)
+                prepare_snapshot_for_policy(self.task, self.adapter, snapshot)
             else:
-                prism = self.task._actor_manager.actors.get("prism")
-                if prism is not None:
-                    prism.remove_animate(force=True)
+                for binding in self.adapter.snapshot_actor_bindings():
+                    if not binding.release_after_sync:
+                        continue
+                    actor = self.task._actor_manager.actors.get(
+                        binding.actor_name
+                    )
+                    if actor is not None:
+                        actor.remove_animate(force=True)
         self._state = self._live_state()
         self._episode_horizon = self.curriculum.episode_horizon(
             self._demo_index, self._state_index
@@ -347,11 +346,14 @@ class RFCLPrivilegedEnv(gym.Env):
         self._policy_steps += 1
         next_state = self._live_state()
         success = bool(task_info.get("success", False))
+        irrecoverable_failure = (
+            None if success else self.adapter.irrecoverable_failure(self.task)
+        )
         reward = 1.0 if success else 0.0
         truncated = bool(task_truncated)
         if not success and self._policy_steps >= self._episode_horizon:
             truncated = True
-        terminated = bool(task_terminated or success)
+        terminated = bool(task_terminated or success or irrecoverable_failure)
         self._done = bool(terminated or truncated)
         if self._done:
             self.curriculum.record_result(
@@ -372,6 +374,8 @@ class RFCLPrivilegedEnv(gym.Env):
             {
                 "success": success,
                 "reward_definition": "success ? 1 : 0",
+                "irrecoverable_failure": irrecoverable_failure,
+                "replay_eligible": irrecoverable_failure is None,
                 "demo_index": int(self._demo_index),
                 "state_index": int(self._state_index),
                 "raw_state_index": int(
@@ -409,7 +413,7 @@ class RFCLPrivilegedEnv(gym.Env):
 
         task.take_action_cnt += 1
         task._step(is_save=False)
-        success = bool(task.check_success())
+        success = self.adapter.check_success(task)
         if success:
             task.eval_success = True
 

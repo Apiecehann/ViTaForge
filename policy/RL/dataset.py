@@ -178,6 +178,21 @@ class InsertUSBBCDataset(Dataset):
                 pair_count = frame_count - self.action_horizon
                 pair_mask = np.ones(pair_count, dtype=bool)
 
+                if "provenance/transition_valid" in hdf5_file:
+                    transition_valid = np.asarray(
+                        hdf5_file["provenance/transition_valid"],
+                        dtype=bool,
+                    )
+                    if len(transition_valid) != frame_count:
+                        raise ValueError(
+                            "provenance/transition_valid and embodiment/joint "
+                            f"lengths differ in {path}"
+                        )
+                    for offset in range(1, self.action_horizon + 1):
+                        pair_mask &= transition_valid[
+                            offset : offset + pair_count
+                        ]
+
                 if "phase/id" in hdf5_file:
                     phase_ids = hdf5_file["phase/id"][()]
 

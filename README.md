@@ -190,6 +190,17 @@ Choose the worker count according to available GPU memory. UIPC tactile scenes
 are substantially heavier than ordinary rigid-body simulation, so more workers
 do not always improve throughput.
 
+### RFCL diversity collection
+
+RFCL learns from successful Motion Plan suffixes with a binary reward, then
+generates alternative successful interaction trajectories. Motion Plan supplies
+the stable task prefix; selected RL suffixes are re-recorded with RGB and tactile
+observations and joined to their corresponding prefixes. The current reference
+implementation is `Insert_USB`.
+
+See [`RL-based Data Collection`](docs/RLDataCollection.md) for the complete
+workflow and distributed commands.
+
 The output layout is:
 
 ```text
@@ -324,7 +335,7 @@ Supported or partially supported study axes include:
 - **Visual encoder:** ResNet-18 is the current default, with additional ResNet
   variants available in the ACT backbone code. A unified interface for
   ViT/CLIP/DINO and VLA visual encoders is TODO.
-- **Tactile encoder:** the current UniVTAC tactile ResNet encoder is integrated
+- **Tactile encoder:** the current ViTaForge tactile ResNet encoder is integrated
   and can be frozen, fine-tuned, or trained from scratch. ViTAL-style
   contrastive visual-tactile encoder code is also included as an integrated
   encoder option. Additional sensor-specific encoders for GelSight, Xense, and

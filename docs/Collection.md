@@ -1,6 +1,6 @@
 # Data Collection
 
-UniVTAC's data synthesizer enables fully automated data collection by executing scripted manipulation policies (defined in the `envs/` directory) in combination with the cuRobo motion planner. Data collection is configured through task-shared configuration files in `task_config/`, which define parameters such as the target tactile sensor type, observation modalities, texture randomization, and the number of episodes to collect.
+ViTaForge's data synthesizer enables fully automated data collection by executing scripted manipulation policies (defined in the `envs/` directory) in combination with the cuRobo motion planner. Data collection is configured through task-shared configuration files in `task_config/`, which define parameters such as the target tactile sensor type, observation modalities, texture randomization, and the number of episodes to collect.
 
 The pipeline iterates over random seeds, executing the scripted policy for each seed and saving observation data on success. Failed seeds are skipped automatically, and progress is tracked in `suc_map.txt` to support resuming from interruptions. The entire process is fully automated — just run a single command to get started.
 

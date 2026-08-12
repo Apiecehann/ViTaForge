@@ -2,12 +2,11 @@
 (
     defaultPrim = "franka_robotiq_xensews_lift11p15_univtac_import_padonly"
     metersPerUnit = 1
-    subLayers = [
-        @robot_base.usd@
-    ]
 )
 
-over "franka_robotiq_xensews_lift11p15_univtac_import_padonly"
+def Xform "franka_robotiq_xensews_lift11p15_univtac_import_padonly" (
+    prepend references = @robot_base.usd@</franka_robotiq_xensews_lift11p15_univtac_import_padonly>
+)
 {
     over "root_joint"
     {

@@ -80,6 +80,7 @@ textures.zip
 /policy/RL/runs/
 /outputs/
 /artifacts/
+/models/
 /Sim Task 触觉.pdf
 *.bak_*
 *.before.*

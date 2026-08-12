@@ -19,6 +19,28 @@ def _set_if_present(target: object, name: str, value: Any) -> None:
         setattr(target, name, value)
 
 
+def _resolve_task_type(task_name: str, task_module, task_variant: str | None):
+    task_type = task_module.Task
+    if task_variant is None:
+        return task_type
+    if task_variant not in {"rl", "rfcl"}:
+        raise ValueError(f"Unknown task variant: {task_variant!r}")
+    if task_name != "insert_USB":
+        raise ValueError(f"RL task variant is not implemented for {task_name!r}")
+
+    from policy.RL.tasks.insert_usb import (
+        build_insert_usb_rfcl_task_type,
+        build_insert_usb_rl_task_type,
+    )
+
+    builder = (
+        build_insert_usb_rfcl_task_type
+        if task_variant == "rfcl"
+        else build_insert_usb_rl_task_type
+    )
+    return builder(task_type, task_module)
+
+
 def create_task(
     task_name: str,
     task_config: str | Path,
@@ -29,6 +51,7 @@ def create_task(
     mode: str = "eval",
     save_pre_move: bool | None = None,
     insert_usb_fixed_target_slot: bool = False,
+    task_variant: str | None = None,
     device: str | None = None,
 ):
     config_path = _task_config_path(task_config)
@@ -54,11 +77,11 @@ def create_task(
     env_config.step_lim = int(step_limit)
     env_config.scene.num_envs = 1
     env_config.eval_start_delay_steps = 0
-    _set_if_present(
-        env_config,
-        "fixed_target_slot",
-        bool(insert_usb_fixed_target_slot),
-    )
+    effective_task_variant = task_variant
+    if insert_usb_fixed_target_slot and effective_task_variant is None:
+        effective_task_variant = "rl"
+    if insert_usb_fixed_target_slot and task_name != "insert_USB":
+        raise ValueError("Fixed target slot is only supported for insert_USB")
 
     if device is not None:
         _set_if_present(env_config.sim, "device", str(device))
@@ -90,4 +113,8 @@ def create_task(
         if name in source and hasattr(env_config, name):
             setattr(env_config, name, str(source[name]))
 
-    return task_module.Task(env_config, mode=mode)
+    task_type = _resolve_task_type(task_name, task_module, effective_task_variant)
+    task_kwargs = {}
+    if effective_task_variant in {"rl", "rfcl"}:
+        task_kwargs["fixed_target_slot"] = bool(insert_usb_fixed_target_slot)
+    return task_type(env_config, mode=mode, **task_kwargs)

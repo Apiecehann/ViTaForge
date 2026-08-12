@@ -2,11 +2,11 @@
 
 ## Installation all-in-one Script
 
-Clone the repository and run the installation script `scripts/install.sh` to set up the environment and install dependencies all at once. The script will create a conda environment named `UniVTAC` and install Isaac Sim, Isaac Lab, TacEx, cuRobo, and other necessary packages.
+Clone ViTaForge and run `scripts/install.sh` to set up the environment and install Isaac Sim, Isaac Lab, TacEx, cuRobo, and the other required packages. The current installer retains the legacy `UniVTAC` Conda environment name for compatibility.
 
 ```bash
-git clone https://github.com/univtac/UniVTAC.git
-cd UniVTAC
+git clone https://github.com/Apiecehann/ViTaForge.git
+cd ViTaForge
 bash scripts/install.sh
 ```
 
@@ -25,8 +25,8 @@ bash scripts/install.sh
 #### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/univtac/UniVTAC.git
-cd UniVTAC
+git clone https://github.com/Apiecehann/ViTaForge.git
+cd ViTaForge
 ```
 
 #### Step 2: Create a Conda Environment
@@ -42,7 +42,7 @@ cuRobo is used for GPU-accelerated collision-aware motion planning. Follow the o
 
 #### Step 4: Install TacEx (Modified Source)
 
-> **Important:** Do **not** install TacEx from the public repository. UniVTAC requires a modified version of TacEx that is bundled in `third_party/TacEx`. Some internal APIs have been adapted for UniVTAC's tactile sensor pipeline.
+> **Important:** Do **not** install TacEx from the public repository. ViTaForge requires the modified version bundled in `third_party/TacEx`. Some internal APIs have been adapted for ViTaForge's tactile sensor pipeline.
 
 ``` bash
 cd third_party/TacEx

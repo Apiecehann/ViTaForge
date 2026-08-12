@@ -25,15 +25,14 @@ from policy.RL.action import (
     target_qpos_velocity_force_to_action,
     target_qpos_velocity_to_action,
 )
-from policy.RL.rfcl import (
-    DEFAULT_GRIPPER_OFFSET,
-    DemoTrajectory,
-    build_live_privileged_state,
-    handoff_xy_error,
+from policy.RL.rfcl import DemoTrajectory
+from policy.RL.rfcl_task_adapter import (
+    RFCLTaskAdapter,
+    create_rfcl_task_adapter,
 )
 
 
-SNAPSHOT_DATASET_SCHEMA = "rfcl_snapshot_dataset_v1"
+SNAPSHOT_DATASET_SCHEMA = "rfcl_snapshot_dataset_v2"
 SNAPSHOT_MANIFEST_NAME = "rfcl_manifest.json"
 
 
@@ -139,12 +138,14 @@ def read_robot_physics_state(task: Any) -> dict[str, np.ndarray]:
     }
 
 
-def _pose_snapshot(task: Any) -> dict[str, np.ndarray]:
+def _pose_snapshot(
+    task: Any,
+    adapter: RFCLTaskAdapter,
+) -> dict[str, np.ndarray]:
     physics_state = read_robot_physics_state(task)
     return {
         **physics_state,
-        "usb": np.asarray(task.prism.get_pose().tolist(), dtype=np.float64),
-        "slot": np.asarray(task.slot.get_pose().tolist(), dtype=np.float64),
+        **adapter.capture_entities(task),
     }
 
 
@@ -169,6 +170,7 @@ class RFCLSnapshot:
 
 def capture_snapshot(
     task: Any,
+    adapter: RFCLTaskAdapter,
     *,
     snapshot_id: str,
     demo_id: str,
@@ -183,7 +185,7 @@ def capture_snapshot(
     # before this refresh can return one atom's qpos for dozens of simulator
     # steps.  Snapshot actions are derived from consecutive joint positions;
     # keep those values coherent with the EE pose captured in the same frame.
-    poses = _pose_snapshot(task)
+    poses = _pose_snapshot(task, adapter)
     world = task.uipc_sim.world
     if not bool(world.dump()):
         raise RuntimeError(f"UIPC world.dump() failed for {snapshot_id!r}")
@@ -219,12 +221,13 @@ def capture_snapshot(
             ),
         }
 
-    privileged_state = build_live_privileged_state(
-        joint=poses["joint_pos"],
-        joint_velocity=poses["joint_vel"],
-        ee_pose=poses["ee"],
-        usb_pose=poses["usb"],
-        slot_pose=poses["slot"],
+    privileged_state = adapter.build_privileged_state(
+        physics_state={
+            "joint_pos": poses["joint_pos"],
+            "joint_vel": poses["joint_vel"],
+            "ee": poses["ee"],
+        },
+        entities=poses,
     )
     task_state = {
         "step_count": int(task.step_count),
@@ -411,7 +414,11 @@ def _write_robot_state(task: Any, state: Mapping[str, np.ndarray]) -> None:
     robot._physics_sim_view.update_articulations_kinematic()
 
 
-def restore_snapshot(task: Any, snapshot: RFCLSnapshot) -> None:
+def restore_snapshot(
+    task: Any,
+    adapter: RFCLTaskAdapter,
+    snapshot: RFCLSnapshot,
+) -> None:
     """Restore UIPC, articulation, actor-controller, and gelpad state."""
 
     world = task.uipc_sim.world
@@ -462,14 +469,17 @@ def restore_snapshot(task: Any, snapshot: RFCLSnapshot) -> None:
     task._actor_manager.update(dt=0.0)
     task.uipc_sim.update_render_meshes()
     task._actor_manager.sync_visuals()
-    if hasattr(task, "_update_insert_reference_poses"):
-        task._update_insert_reference_poses()
+    adapter.after_restore(task)
 
 
-def prepare_snapshot_for_policy(task: Any, snapshot: RFCLSnapshot) -> None:
+def prepare_snapshot_for_policy(
+    task: Any,
+    adapter: RFCLTaskAdapter,
+    snapshot: RFCLSnapshot,
+) -> None:
     """Restore a snapshot and reset episode-local counters for RFCL control."""
 
-    restore_snapshot(task, snapshot)
+    restore_snapshot(task, adapter, snapshot)
     task.take_action_cnt = 0
     task.policy_step_count = 0
     task.eval_success = False
@@ -487,6 +497,7 @@ def prepare_snapshot_for_policy(task: Any, snapshot: RFCLSnapshot) -> None:
 
 def runtime_snapshot_diagnostics(
     task: Any,
+    adapter: RFCLTaskAdapter,
     snapshot: RFCLSnapshot | None = None,
 ) -> dict[str, Any]:
     """Collect the simulator-side quantities relevant to checkpoint fidelity.
@@ -506,10 +517,7 @@ def runtime_snapshot_diagnostics(
     gripper_pose = np.asarray(
         manager.get_gripper_center_pose().tolist(), dtype=np.float64
     )
-    usb_pose = np.asarray(task.prism.get_pose().tolist(), dtype=np.float64)
-    slot_pose = np.asarray(task.slot.get_pose().tolist(), dtype=np.float64)
-    target_pose = task._usb_pose_in_slot(task.slot.get_pose())
-    target_pose_array = np.asarray(target_pose.tolist(), dtype=np.float64)
+    entities = adapter.capture_entities(task)
 
     def pose_list(value: Any) -> list[float]:
         if hasattr(value, "tolist"):
@@ -532,11 +540,7 @@ def runtime_snapshot_diagnostics(
         "poses": {
             "ee": pose_list(ee_pose),
             "gripper_center": pose_list(gripper_pose),
-            "usb": pose_list(usb_pose),
-            "slot": pose_list(slot_pose),
-            "usb_in_gripper": pose_list(task.prism.get_pose().rebase(manager.get_gripper_center_pose())),
-            "usb_in_slot": pose_list(task.prism.get_pose().rebase(target_pose)),
-            "target_pose": pose_list(target_pose_array),
+            **{name: pose_list(value) for name, value in entities.items()},
         },
         "robot": {
             "joint_pos": joint_pos.tolist(),
@@ -571,7 +575,7 @@ def runtime_snapshot_diagnostics(
                 np.asarray(diagnostics["poses"][name], dtype=np.float64),
                 snapshot.poses[name],
             )
-            for name in ("ee", "usb", "slot")
+            for name in ("ee", *entities.keys())
             if name in snapshot.poses
         }
         diagnostics["expected_joint_pos_max_abs"] = float(
@@ -591,9 +595,6 @@ class RFCLSnapshotDataset:
     def __init__(
         self,
         root: str | Path,
-        *,
-        handoff_xy_tolerance: float | None = None,
-        gripper_offset: float | None = None,
     ) -> None:
         self.root = Path(root)
         self.manifest_path = self.root / SNAPSHOT_MANIFEST_NAME
@@ -603,6 +604,18 @@ class RFCLSnapshotDataset:
             raise ValueError(
                 f"Unsupported snapshot schema {self.manifest.get('schema')!r}"
             )
+        adapter_metadata = self.manifest.get("adapter")
+        if not isinstance(adapter_metadata, dict):
+            raise ValueError("Snapshot manifest is missing adapter metadata")
+        self.adapter = create_rfcl_task_adapter(
+            adapter_id=adapter_metadata.get("adapter_id"),
+            task_name=self.manifest.get("task"),
+        )
+        if int(adapter_metadata.get("state_dim", -1)) != self.adapter.state_dim:
+            raise ValueError("Snapshot adapter state dimension mismatch")
+        expected_adapter_metadata = self.adapter.manifest_metadata()
+        if adapter_metadata != expected_adapter_metadata:
+            raise ValueError("Snapshot adapter metadata does not match the registered adapter")
         self.demos = tuple(self.manifest.get("demos", ()))
         self.snapshot_metadata = dict(self.manifest.get("snapshots", {}))
         if not self.demos:
@@ -619,25 +632,6 @@ class RFCLSnapshotDataset:
                 )
             frame_owners[frame] = str(snapshot_id)
         self._cache: dict[str, RFCLSnapshot] = {}
-        configured_tolerance = self.manifest.get("handoff_xy_tolerance", 0.01)
-        self.handoff_xy_tolerance = float(
-            configured_tolerance
-            if handoff_xy_tolerance is None
-            else handoff_xy_tolerance
-        )
-        configured_offset = self.manifest.get(
-            "gripper_offset", DEFAULT_GRIPPER_OFFSET
-        )
-        self.gripper_offset = float(
-            configured_offset if gripper_offset is None else gripper_offset
-        )
-        if (
-            not np.isfinite(self.handoff_xy_tolerance)
-            or self.handoff_xy_tolerance <= 0.0
-        ):
-            raise ValueError("handoff_xy_tolerance must be finite and positive")
-        if not np.isfinite(self.gripper_offset) or self.gripper_offset <= 0.0:
-            raise ValueError("gripper_offset must be finite and positive")
         self._policy_starts: list[int] = []
         for demo in self.demos:
             snapshot_ids = demo.get("snapshot_ids", ())
@@ -654,14 +648,9 @@ class RFCLSnapshotDataset:
                     )
             configured_start = demo.get("policy_start_state_index")
             if configured_start is None:
-                try:
-                    configured_start = self._infer_policy_start_state_index(
-                        len(snapshot_ids), demo_index=len(self._policy_starts)
-                    )
-                except ValueError:
-                    # Older exports and small synthetic manifests may not have
-                    # a gripper-centre-compatible pose. Keep their old suffix.
-                    configured_start = 0
+                raise ValueError(
+                    f"Demo {demo.get('demo_id')} is missing policy_start_state_index"
+                )
             configured_start = int(configured_start)
             if not 0 <= configured_start < len(snapshot_ids) - 1:
                 raise ValueError(
@@ -687,21 +676,10 @@ class RFCLSnapshotDataset:
             )
         return self._cache[snapshot_id]
 
-    def _infer_policy_start_state_index(
-        self, state_count: int, *, demo_index: int
-    ) -> int:
-        for raw_index in range(int(state_count)):
-            snapshot = self._raw_snapshot(demo_index, raw_index)
-            if handoff_xy_error(
-                snapshot.poses["ee"],
-                snapshot.poses["usb"],
-                gripper_offset=self.gripper_offset,
-            ) <= self.handoff_xy_tolerance:
-                return raw_index
-        raise ValueError(
-            f"No handoff state within {self.handoff_xy_tolerance:g} m for "
-            f"demo {self.demos[demo_index].get('demo_id')}"
-        )
+    def raw_snapshot(self, demo_index: int, state_index: int) -> RFCLSnapshot:
+        """Read a snapshot using its original Motion Plan state index."""
+
+        return self._raw_snapshot(demo_index, state_index)
 
     def policy_start_state_index(self, demo_index: int) -> int:
         """Return the raw snapshot index used as local state zero."""
@@ -739,12 +717,8 @@ class RFCLSnapshotDataset:
         snapshot = self._raw_snapshot(demo_index, raw_index)
         return {
             "policy_start_state_index": raw_index,
-            "handoff_xy_error_m": handoff_xy_error(
-                snapshot.poses["ee"],
-                snapshot.poses["usb"],
-                gripper_offset=self.gripper_offset,
-            ),
-            "handoff_xy_tolerance_m": self.handoff_xy_tolerance,
+            "handoff_error_m": self.adapter.handoff_error(snapshot.poses),
+            "handoff_tolerance_m": self.adapter.handoff_tolerance_m,
         }
 
     def infer_action_scale(

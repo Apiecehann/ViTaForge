@@ -1,6 +1,6 @@
 # Deploy Your Policy
 
-To deploy and evaluate your own policy in UniVTAC, you need to create three files under `policy/YourPolicy/`:
+To deploy and evaluate your own policy in ViTaForge, you need to create three files under `policy/YourPolicy/`:
 
 **1. `deploy_policy.py`** — Implements the policy interface. The following components must be defined:
 

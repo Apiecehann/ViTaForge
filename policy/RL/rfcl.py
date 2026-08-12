@@ -8,8 +8,8 @@ underlying off-policy learner:
 * a per-demonstration reverse curriculum frontier;
 * a replay buffer with an explicit demo/online sampling ratio.
 
-The online environment adapter will be added after the state-replay probe has
-verified that arbitrary demo checkpoints can be reproduced in the simulator.
+The Isaac/UIPC environment adapter and persistent snapshot implementation live
+in :mod:`policy.RL.rfcl_env` and :mod:`policy.RL.rfcl_snapshot`.
 """
 
 from __future__ import annotations
@@ -48,9 +48,9 @@ class PrivilegedStateLayout:
     joint: slice
     joint_delta: slice
     ee_pose: slice
-    usb_pose: slice
-    slot_pose: slice
-    usb_in_slot: slice
+    controlled_pose: slice
+    target_pose: slice
+    controlled_in_target: slice
     dim: int
 
 
@@ -62,9 +62,9 @@ PRIVILEGED_STATE_LAYOUT = PrivilegedStateLayout(
     joint=_slice(0, 9),
     joint_delta=_slice(9, 9),
     ee_pose=_slice(18, 7),
-    usb_pose=_slice(25, 7),
-    slot_pose=_slice(32, 7),
-    usb_in_slot=_slice(39, 7),
+    controlled_pose=_slice(25, 7),
+    target_pose=_slice(32, 7),
+    controlled_in_target=_slice(39, 7),
     dim=46,
 )
 
@@ -244,13 +244,13 @@ def build_privileged_states(
     ).astype(np.float32)
 
 
-def build_live_privileged_state(
+def build_pair_privileged_state(
     *,
     joint: np.ndarray,
     joint_velocity: np.ndarray,
     ee_pose: np.ndarray,
-    usb_pose: np.ndarray,
-    slot_pose: np.ndarray,
+    controlled_pose: np.ndarray,
+    target_pose: np.ndarray,
 ) -> np.ndarray:
     """Build one online RFCL observation using the simulator's true qvel."""
 
@@ -259,8 +259,8 @@ def build_live_privileged_state(
         ("joint", joint, 9),
         ("joint_velocity", joint_velocity, 9),
         ("ee_pose", ee_pose, 7),
-        ("usb_pose", usb_pose, 7),
-        ("slot_pose", slot_pose, 7),
+        ("controlled_pose", controlled_pose, 7),
+        ("target_pose", target_pose, 7),
     ):
         array = np.asarray(value, dtype=np.float32).reshape(-1)
         if array.shape[0] < width:
@@ -270,18 +270,18 @@ def build_live_privileged_state(
             raise ValueError(f"{name} contains NaN or infinite values")
         values[name] = array
 
-    usb_in_slot = relative_pose(
-        values["usb_pose"][None, :],
-        values["slot_pose"][None, :],
+    controlled_in_target = relative_pose(
+        values["controlled_pose"][None, :],
+        values["target_pose"][None, :],
     )[0]
     state = np.concatenate(
         (
             values["joint"],
             values["joint_velocity"],
             values["ee_pose"],
-            values["usb_pose"],
-            values["slot_pose"],
-            usb_in_slot,
+            values["controlled_pose"],
+            values["target_pose"],
+            controlled_in_target,
         )
     ).astype(np.float32)
     if state.shape != (PRIVILEGED_STATE_LAYOUT.dim,):
@@ -596,6 +596,52 @@ class ReverseCurriculum:
         return self.minimum_episode_horizon + int(
             remaining_demo_states // self.demo_horizon_to_max_steps_ratio
         )
+
+    def progress(self) -> np.ndarray:
+        """Return normalized reverse-curriculum progress for every demo.
+
+        A value of zero is the terminal demonstration state where RFCL starts;
+        one means that the frontier has reached state zero.
+        """
+
+        final_states = np.asarray(
+            [demo.states.shape[0] - 1 for demo in self.demos],
+            dtype=np.float64,
+        )
+        progress = np.ones(len(self.demos), dtype=np.float64)
+        nonempty = final_states > 0
+        progress[nonempty] = 1.0 - (
+            self.frontiers[nonempty].astype(np.float64) / final_states[nonempty]
+        )
+        return np.clip(progress, 0.0, 1.0)
+
+    def progress_status(
+        self,
+        *,
+        target_progress: float,
+        target_demo_fraction: float = 1.0,
+    ) -> dict[str, object]:
+        """Summarize whether enough demos reached a requested progress level."""
+
+        target_progress = float(target_progress)
+        target_demo_fraction = float(target_demo_fraction)
+        if not 0.0 <= target_progress <= 1.0:
+            raise ValueError("target_progress must be in [0, 1]")
+        if not 0.0 < target_demo_fraction <= 1.0:
+            raise ValueError("target_demo_fraction must be in (0, 1]")
+        progress = self.progress()
+        reached = progress >= target_progress
+        required_demos = int(np.ceil(len(self.demos) * target_demo_fraction))
+        reached_demos = int(reached.sum())
+        return {
+            "target_progress": target_progress,
+            "target_demo_fraction": target_demo_fraction,
+            "required_demos": required_demos,
+            "reached_demos": reached_demos,
+            "reached": reached.copy(),
+            "progress": progress.copy(),
+            "complete": reached_demos >= required_demos,
+        }
 
     def record_result(
         self,
