@@ -16,6 +16,7 @@ ROUGH_STANDBY_POSE = Pose([0.38, -1.0, 0.002], [1, 0, 0, 0])
 
 @configclass
 class TaskCfg(BaseTaskCfg):
+    roughness_label: Literal["random", "smooth", "rough"] = "random"
     cameras = [
         CameraCfg(
             name="head",
@@ -43,7 +44,10 @@ class TaskCfg(BaseTaskCfg):
 
 
 class Task(BaseTask):
-    def __init__(self, cfg: BaseTaskCfg, mode: Literal['collect', 'eval'] = 'collect', render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: TaskCfg, mode: Literal['collect', 'eval'] = 'collect', render_mode: str | None = None, **kwargs):
+        if cfg.roughness_label not in ("random", "smooth", "rough"):
+            raise ValueError("roughness_label must be 'random', 'smooth', or 'rough'")
+
         cfg.sim.physics_material.dynamic_friction = 2.5
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
@@ -73,7 +77,7 @@ class Task(BaseTask):
         )
 
     def _reset_actors(self):
-        self.choice = self.rng.choice(['smooth', 'rough'])
+        self.choice = self._resolve_roughness_label(self.cfg.roughness_label)
         start_pose = START_POSE.add_offset(Pose([
             self.rng.uniform(-BLOCK_RESET_XY_NOISE, BLOCK_RESET_XY_NOISE),
             self.rng.uniform(-BLOCK_RESET_XY_NOISE, BLOCK_RESET_XY_NOISE),
@@ -92,12 +96,24 @@ class Task(BaseTask):
             self.target = self.yellow_plate
             self.other_target = self.blue_plate
         self.block.set_pose(start_pose)
+        self.target_pose = self.target.get_pose().add_bias([
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            0.01
+        ])
         self.metadata["roughness_label"] = self.choice
+        self.metadata["roughness_label_cfg"] = self.cfg.roughness_label
         self.metadata["target_plate"] = self.target.cfg.name
         self.metadata["start_pose"] = start_pose.tolist()
+        self.metadata["target_pose"] = self.target_pose.tolist()
 
     def _release_reset_constraints(self):
         self._actor_manager.remove_animate(force=True)
+
+    def _resolve_roughness_label(self, roughness_label):
+        if roughness_label == "random":
+            return str(self.rng.choice(['smooth', 'rough']))
+        return str(roughness_label)
 
     def pre_move(self):
         self.delay(10)
@@ -122,12 +138,6 @@ class Task(BaseTask):
         self.move(self.atom.close_gripper(gripper_qpos))
         lift_height = LIFT_HEIGHT + self.rng.uniform(-LIFT_HEIGHT_NOISE, LIFT_HEIGHT_NOISE)
         self.move(self.atom.move_by_displacement(z=lift_height))
-
-        self.target_pose = self.target.get_pose().add_bias([
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            0.01
-        ])
 
         self.move(self.atom.place_actor(
             self.block,

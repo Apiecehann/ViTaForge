@@ -6,6 +6,7 @@ import torch
 import pickle
 import torchvision
 import h5py
+import transforms3d as t3d
 
 from envs.utils.data import HDF5Handler, VideoHandler
 from warp import Function
@@ -72,6 +73,31 @@ from .robot.robot import RobotManager
 from .robot.robot_cfg import *
 from .sensors.camera import CameraManager, CameraCfg
 from .sensors.tactile import TactileManager, TactileCfg, create_tactile_cfg
+
+
+def _action_to_numpy(action):
+    """Convert policy action tensors to a flat CPU numpy array."""
+
+    if isinstance(action, torch.Tensor):
+        return action.detach().cpu().numpy().reshape(-1)
+    return np.asarray(action).reshape(-1)
+
+
+def _apply_world_rotvec_delta(pose: Pose, delta_xyz, delta_rotvec):
+    """Apply a world/base-frame xyz + rotation-vector delta to an EEF pose."""
+
+    delta_xyz = np.asarray(delta_xyz, dtype=np.float64).reshape(3)
+    delta_rotvec = np.asarray(delta_rotvec, dtype=np.float64).reshape(3)
+    angle = float(np.linalg.norm(delta_rotvec))
+    if angle < 1e-12:
+        delta_q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    else:
+        delta_q = t3d.quaternions.axangle2quat(delta_rotvec / angle, angle)
+
+    target_p = pose.p + delta_xyz
+    target_q = t3d.quaternions.qmult(delta_q, pose.q)
+    target_q = target_q / np.linalg.norm(target_q)
+    return Pose(target_p, target_q)
 
 
 XENSE_WRIST_Y_ALIGNMENT_OFFSET = -np.pi / 4
@@ -144,6 +170,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
     reset_after_actor_steps: int | None = None
     reset_final_steps: int | None = None
     reset_render_warmup_steps: int = 32
+    eval_step_timeout_seconds: float = 0.0
     xense_marker_reference_max_settle_steps = 180
     xense_marker_reference_stable_steps = 8
     eval_start_delay_steps = 20
@@ -1649,11 +1676,18 @@ class BaseTask(UipcRLEnv):
         }
         return observation, float(reward), terminated, truncated, info
 
-    def take_action(self, action:torch.Tensor, action_type:Literal['qpos', 'ee', 'delta_ee']='qpos', force:bool=True):
+    def take_action(
+        self,
+        action: torch.Tensor,
+        action_type: Literal['qpos', 'ee', 'delta_ee', 'delta_ee_rotvec', 'delta_ee_rotvec_ik'] = 'qpos',
+        force: bool = True,
+    ):
         '''
             qpos     : actions is Tensor([8]), qpos (7 DOFS + gripper)
             ee       : actions is Tensor([7]), position (3), orientation (4)
             delta_ee : actions is Tensor([6]), delta_position (3), delta_orientation (3)
+            delta_ee_rotvec : actions is Tensor([7]), delta_position (3), delta_rotvec (3), delta_gripper (1)
+            delta_ee_rotvec_ik : actions is Tensor([7]), Differential IK single-step servo, no planner
         '''
         if self.take_action_cnt >= self.cfg.step_lim or self.eval_success:
             return True, self.eval_success
@@ -1663,20 +1697,38 @@ class BaseTask(UipcRLEnv):
         self.logger.info(f"step: {self.take_action_cnt} / {self.cfg.step_lim}")
 
         if action_type == 'ee':
-            target_pose = Pose(p=action[:3], q=action[3:7])
-            target_gripper_pos = action[7:]
+            action_np = _action_to_numpy(action)
+            target_pose = Pose(p=action_np[:3], q=action_np[3:7])
+            target_gripper_pos = float(action_np[7])
             exec_success = self.move([
                 Action(action='all', target_pose=target_pose, target_gripper_pos=target_gripper_pos)
             ], delay=False)
         elif action_type == 'delta_ee':
+            action_np = _action_to_numpy(action)
             ee_pose = self._robot_manager.get_ee_pose()
-            ee_next_pose = ee_pose.add_bias(action[:3], coord='world')\
-                .add_rotation(euler=action[3:6].tolist(), coord='world')
+            ee_next_pose = ee_pose.add_bias(action_np[:3], coord='world')\
+                .add_rotation(euler=action_np[3:6].tolist(), coord='world')
             gripper_pos = self._robot_manager.get_gripper_qpos()
-            gripper_next_pos = gripper_pos + action[6]
+            gripper_next_pos = float(gripper_pos + action_np[6])
             exec_success = self.move([
                 Action(action='all', target_pose=ee_next_pose, target_gripper_pos=gripper_next_pos)
             ], delay=False)
+        elif action_type == 'delta_ee_rotvec':
+            action_np = _action_to_numpy(action)
+            ee_pose = self._robot_manager.get_ee_pose()
+            ee_next_pose = _apply_world_rotvec_delta(
+                ee_pose,
+                delta_xyz=action_np[:3],
+                delta_rotvec=action_np[3:6],
+            )
+            gripper_pos = self._robot_manager.get_gripper_qpos()
+            gripper_next_pos = float(gripper_pos + action_np[6])
+            exec_success = self.move([
+                Action(action='all', target_pose=ee_next_pose, target_gripper_pos=gripper_next_pos)
+            ], delay=False)
+        elif action_type == 'delta_ee_rotvec_ik':
+            exec_success = self._robot_manager.servo_delta_ee_rotvec(action, force=force)
+            self._step()
         else:
             self._robot_manager.set_arm(action[:-1], force=force)
             self._robot_manager.set_gripper(action[-1], force=force)

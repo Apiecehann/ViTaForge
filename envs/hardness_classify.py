@@ -18,6 +18,7 @@ SOFT_STANDBY_POSE = Pose([0.38, -1.0, 0.002], [1, 0, 0, 0])
 
 @configclass
 class TaskCfg(BaseTaskCfg):
+    hardness_label: Literal["random", "soft", "hard"] = "random"
     cameras = [
         CameraCfg(
             name="head",
@@ -45,7 +46,10 @@ class TaskCfg(BaseTaskCfg):
 
 
 class Task(BaseTask):
-    def __init__(self, cfg: BaseTaskCfg, mode: Literal['collect', 'eval'] = 'collect', render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: TaskCfg, mode: Literal['collect', 'eval'] = 'collect', render_mode: str | None = None, **kwargs):
+        if cfg.hardness_label not in ("random", "soft", "hard"):
+            raise ValueError("hardness_label must be 'random', 'soft', or 'hard'")
+
         cfg.sim.physics_material.dynamic_friction = 2.5
         cfg.sim.physics_material.static_friction = 2.5
         cfg.uipc_sim.contact.default_friction_ratio = 2.5
@@ -81,7 +85,7 @@ class Task(BaseTask):
         )
 
     def _reset_actors(self):
-        self.choice = self.rng.choice(['soft', 'hard'])
+        self.choice = self._resolve_hardness_label(self.cfg.hardness_label)
         start_pose = START_POSE.add_offset(Pose([
             self.rng.uniform(-BLOCK_RESET_XY_NOISE, BLOCK_RESET_XY_NOISE),
             self.rng.uniform(-BLOCK_RESET_XY_NOISE, BLOCK_RESET_XY_NOISE),
@@ -101,12 +105,24 @@ class Task(BaseTask):
             self.other_target = self.blue_plate
 
         self.block.set_pose(start_pose)
+        self.target_pose = self.target.get_pose().add_bias([
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            0.01
+        ])
         self.metadata["hardness_label"] = self.choice
+        self.metadata["hardness_label_cfg"] = self.cfg.hardness_label
         self.metadata["target_plate"] = self.target.cfg.name
         self.metadata["start_pose"] = start_pose.tolist()
+        self.metadata["target_pose"] = self.target_pose.tolist()
 
     def _release_reset_constraints(self):
         self._actor_manager.remove_animate(force=True)
+
+    def _resolve_hardness_label(self, hardness_label):
+        if hardness_label == "random":
+            return str(self.rng.choice(['soft', 'hard']))
+        return str(hardness_label)
 
     def pre_move(self):
         self.delay(10)
@@ -136,12 +152,6 @@ class Task(BaseTask):
         self.move(self.atom.close_gripper(gripper_qpos), tag=f"close_{self.choice}_block")
         lift_height = LIFT_HEIGHT + self.rng.uniform(-LIFT_HEIGHT_NOISE, LIFT_HEIGHT_NOISE)
         self.move(self.atom.move_by_displacement(z=lift_height), tag=f"lift_{self.choice}_block")
-
-        self.target_pose = self.target.get_pose().add_bias([
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            0.01
-        ])
 
         self.metadata["grasp_rotate_rad"] = float(grasp_rotate)
         self.metadata["grasp_rotate_deg"] = float(np.rad2deg(grasp_rotate))

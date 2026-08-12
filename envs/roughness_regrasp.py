@@ -127,7 +127,11 @@ class Task(BaseTask):
         self.target_block = self.rough_block
         self.target = self.yellow_plate
         self.other_target = self.blue_plate
-        self.target_pose = None
+        self.target_pose = self.yellow_plate.get_pose().add_bias([
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
+            0.01,
+        ])
 
         self.metadata["rough_block_side"] = self.rough_block_side
         self.metadata["smooth_block_side"] = self.smooth_block_side
@@ -137,6 +141,7 @@ class Task(BaseTask):
         self.metadata["smooth_block_pose"] = self.block_base_poses[self.smooth_block_side].tolist()
         self.metadata["target_block"] = "rough"
         self.metadata["target_plate"] = self.yellow_plate.cfg.name
+        self.metadata["target_pose"] = self.target_pose.tolist()
         self.metadata["block_plate_mapping"] = {
             "rough": self.yellow_plate.cfg.name,
             "smooth": self.blue_plate.cfg.name,
@@ -208,13 +213,7 @@ class Task(BaseTask):
         lift_height = LIFT_HEIGHT + self.rng.uniform(-LIFT_HEIGHT_NOISE, LIFT_HEIGHT_NOISE)
         self.move(self.atom.move_by_displacement(z=lift_height), tag="lift_rough_block")
 
-        self.target_pose = self.yellow_plate.get_pose().add_bias([
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            self.rng.uniform(-TARGET_XY_NOISE, TARGET_XY_NOISE),
-            0.01,
-        ])
         self.metadata["lift_height"] = float(lift_height)
-        self.metadata["target_pose"] = self.target_pose.tolist()
 
         self.move(self.atom.place_actor(
             self.rough_block,
