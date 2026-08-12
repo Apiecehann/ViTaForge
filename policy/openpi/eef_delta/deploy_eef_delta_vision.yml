@@ -3,7 +3,7 @@ seed: 0
 instruction_type: seen
 instuction_file: null
 eval_from_start: true
-eval_step_timeout_seconds: 1
+eval_step_timeout_seconds: 5
 
 openpi:
   # For TI-ONE access, keep this config on the direct OpenPI serve address,

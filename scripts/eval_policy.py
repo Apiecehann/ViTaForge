@@ -180,10 +180,123 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 
+ENV_CFG_OVERRIDE_KEYS = (
+    "target_block",
+    "block_base_pose_indices",
+    "target_cup",
+    "reference_cup",
+    "placement_side",
+    "cup_base_pose_indices",
+    "target_area",
+    "frame_order",
+    "rough_block_side",
+    "initial_grasp_side",
+    "weight_label",
+    "roughness_label",
+    "hardness_label",
+)
+INT_TUPLE_ENV_CFG_KEYS = {
+    "block_base_pose_indices",
+    "cup_base_pose_indices",
+}
+
+
+def parse_extra_cli_overrides(tokens: list[str]) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("--"):
+            raise ValueError(f"Unexpected extra argument {token!r}; expected --name value.")
+        key_value = token[2:]
+        if not key_value:
+            raise ValueError("Unexpected bare '--' in extra arguments.")
+        if "=" in key_value:
+            key, raw_value = key_value.split("=", 1)
+            index += 1
+        elif index + 1 < len(tokens) and not tokens[index + 1].startswith("--"):
+            key = key_value
+            raw_value = tokens[index + 1]
+            index += 2
+        else:
+            key = key_value
+            raw_value = "true"
+            index += 1
+        key = key.replace("-", "_")
+        overrides[key] = parse_cli_value(raw_value)
+    return overrides
+
+
+def parse_cli_value(value: str):
+    try:
+        return yaml.safe_load(value)
+    except yaml.YAMLError:
+        return value
+
+
+def collect_env_cfg_overrides(task_config: dict, extra_cli_overrides: dict[str, object]) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    for key in ENV_CFG_OVERRIDE_KEYS:
+        value = getattr(args_cli, key, None)
+        if value is None:
+            value = task_config.get(key, None)
+        if value is not None:
+            overrides[key] = value
+    overrides.update(extra_cli_overrides)
+    return overrides
+
+
+def coerce_env_cfg_override_value(key: str, value, current_value):
+    if key in INT_TUPLE_ENV_CFG_KEYS:
+        return parse_int_tuple(value, key)
+    if isinstance(current_value, bool):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "y", "on")
+        return bool(value)
+    if isinstance(current_value, int) and not isinstance(current_value, bool):
+        return int(value)
+    if isinstance(current_value, float):
+        return float(value)
+    if isinstance(current_value, tuple):
+        if isinstance(value, str):
+            value = parse_cli_value(value)
+            if isinstance(value, str):
+                value = value.replace(",", " ").split()
+        return tuple(value)
+    if isinstance(current_value, list):
+        if isinstance(value, str):
+            value = parse_cli_value(value)
+            if isinstance(value, str):
+                value = value.replace(",", " ").split()
+        return list(value)
+    if isinstance(current_value, str):
+        return str(value)
+    return value
+
+
+def apply_env_cfg_overrides(env_cfg, task_config: dict, overrides: dict[str, object]) -> dict[str, object]:
+    ignored: dict[str, object] = {}
+    for key, value in overrides.items():
+        if not hasattr(env_cfg, key):
+            ignored[key] = value
+            continue
+        coerced_value = coerce_env_cfg_override_value(key, value, getattr(env_cfg, key))
+        if coerced_value is None:
+            continue
+        setattr(env_cfg, key, coerced_value)
+        task_config[key] = list(coerced_value) if isinstance(coerced_value, tuple) else coerced_value
+    return ignored
+
+
 # parse the arguments
-args_cli = parser.parse_args()
+args_cli, extra_cli_args = parser.parse_known_args()
+extra_cli_overrides = parse_extra_cli_overrides(extra_cli_args)
 args_cli.enable_cameras = True
-args_cli.livestream = 2
+livestream_override = os.environ.get("VITAFORGE_LIVESTREAM")
+if livestream_override is not None:
+    args_cli.livestream = int(livestream_override)
+elif args_cli.livestream is None or args_cli.livestream < 0:
+    args_cli.livestream = 2
 args_cli.num_envs = 1
 
 # launch omniverse app, must done before importing anything from omni.isaac
@@ -456,37 +569,15 @@ def main():
     if eval_case_name:
         env_cfg.save_dir = env_cfg.save_dir / str(eval_case_name)
 
-    if hasattr(env_cfg, "target_block"):
-        target_block = args_cli.target_block
-        if target_block is None:
-            target_block = task_config.get("target_block", None)
-        if target_block is not None:
-            env_cfg.target_block = str(target_block)
-            task_config["target_block"] = env_cfg.target_block
-    if hasattr(env_cfg, "block_base_pose_indices"):
-        pose_indices = args_cli.block_base_pose_indices
-        if pose_indices is None:
-            pose_indices = task_config.get("block_base_pose_indices", None)
-        pose_indices = parse_int_tuple(pose_indices, "block_base_pose_indices")
-        if pose_indices is not None:
-            env_cfg.block_base_pose_indices = pose_indices
-            task_config["block_base_pose_indices"] = list(pose_indices)
-    for key in ("target_cup", "reference_cup", "placement_side", "target_area", "frame_order"):
-        if hasattr(env_cfg, key):
-            value = getattr(args_cli, key)
-            if value is None:
-                value = task_config.get(key, None)
-            if value is not None:
-                setattr(env_cfg, key, str(value))
-                task_config[key] = str(value)
-    if hasattr(env_cfg, "cup_base_pose_indices"):
-        pose_indices = args_cli.cup_base_pose_indices
-        if pose_indices is None:
-            pose_indices = task_config.get("cup_base_pose_indices", None)
-        pose_indices = parse_int_tuple(pose_indices, "cup_base_pose_indices")
-        if pose_indices is not None:
-            env_cfg.cup_base_pose_indices = pose_indices
-            task_config["cup_base_pose_indices"] = list(pose_indices)
+    ignored_env_cfg_overrides = apply_env_cfg_overrides(
+        env_cfg,
+        task_config,
+        collect_env_cfg_overrides(task_config, extra_cli_overrides),
+    )
+    if extra_cli_overrides:
+        deploy_config["extra_cli_overrides"] = extra_cli_overrides
+    if ignored_env_cfg_overrides:
+        deploy_config["ignored_env_cfg_overrides"] = ignored_env_cfg_overrides
 
     tactile_sensor_type = tactile_sensor_type_from_override(args_cli.tactile_sensor)
     if tactile_sensor_type is None:
@@ -523,19 +614,6 @@ def main():
         env_cfg.use_adaptive_grasp = bool(task_config["use_adaptive_grasp"])
     if "adaptive_grasp_depth_threshold" in task_config:
         env_cfg.adaptive_grasp_depth_threshold = float(task_config["adaptive_grasp_depth_threshold"])
-    for key in (
-        "rough_block_side",
-        "initial_grasp_side",
-        "weight_label",
-        "roughness_label",
-        "hardness_label",
-    ):
-        if hasattr(env_cfg, key):
-            value = getattr(args_cli, key, None)
-            if value is None:
-                value = task_config.get(key, None)
-            if value is not None:
-                setattr(env_cfg, key, str(value))
     xense_tuning_types = {
         "xense_usb_close_percent": float,
         "xense_half_cylinder_close_percent": float,
