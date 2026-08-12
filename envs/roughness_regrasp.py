@@ -20,7 +20,7 @@ BLOCK_SIDES = ("left", "right")
 @configclass
 class TaskCfg(BaseTaskCfg):
     rough_block_side: Literal["random", "left", "right"] = "right"
-    initial_grasp_side: Literal["random", "left", "right"] = "left"
+    initial_grasp_side: Literal["random", "left", "right"] = "right"
     cameras = [
         CameraCfg(
             name="head",
