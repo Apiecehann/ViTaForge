@@ -10,6 +10,11 @@ TABLE_TOP_Z = 0.0025
 TOWEL_POSE = Pose([0.42, 0.0, TABLE_TOP_Z + 0.006], [1, 0, 0, 0])
 GRASP_CORNER_SIGN = np.array([1.0, -1.0])
 TOWEL_SHELL_THICKNESS = 0.0015
+TOWEL_YOUNGS_MODULUS = 0.12
+TOWEL_POISSON_RATE = 0.35
+TOWEL_BENDING_STIFFNESS = 3.0
+TOWEL_DENSITY = 180
+TOWEL_FRICTION_RATIO = 1.4
 INIT_LIFT_HEIGHT = 0.070
 INIT_CORNER_LIFT_RADIUS = 0.060
 INIT_CORNER_HOLD_RADIUS = 0.032
@@ -28,6 +33,7 @@ FOLD_TARGET_INSET = GRASP_CORNER_INSET
 PRE_RELEASE_PRESS_DELAY = 12
 POST_RELEASE_RETRACT_HEIGHT = 0.040
 SETTLE_DELAY = 40
+FLATNESS_HEIGHT_ABOVE_TABLE_THRESHOLD = 0.035
 
 TASK_INITIAL_JOINT_POS = {
     "panda_joint1": -0.010809095,
@@ -82,9 +88,9 @@ class Task(BaseTask):
     def __init__(self, cfg: TaskCfg, mode: Literal["collect", "eval"] = "collect", render_mode: str | None = None, **kwargs):
         cfg.use_adaptive_grasp = False
         cfg.adaptive_grasp_depth_threshold = None
-        cfg.sim.physics_material.dynamic_friction = 2.5
-        cfg.sim.physics_material.static_friction = 2.5
-        cfg.uipc_sim.contact.default_friction_ratio = 2.5
+        cfg.sim.physics_material.dynamic_friction = TOWEL_FRICTION_RATIO
+        cfg.sim.physics_material.static_friction = TOWEL_FRICTION_RATIO
+        cfg.uipc_sim.contact.default_friction_ratio = TOWEL_FRICTION_RATIO
         cfg.uipc_sim.contact.d_hat = 0.0005
         cfg.uipc_sim.ground_height = TABLE_TOP_Z
         cfg.uipc_sim.newton.max_iter = 1024
@@ -101,15 +107,23 @@ class Task(BaseTask):
             asset_path="cloth_task/patterned_towel.usda",
             pose=TOWEL_POSE,
             constitution_cfg=UipcObjectCfg.NeoHookeanShellCfg(
-                youngs_modulus=0.01,
-                poisson_rate=0.499,
+                youngs_modulus=TOWEL_YOUNGS_MODULUS,
+                poisson_rate=TOWEL_POISSON_RATE,
                 thickness=TOWEL_SHELL_THICKNESS,
                 enable_bending=True,
-                bending_stiffness=10.0,
+                bending_stiffness=TOWEL_BENDING_STIFFNESS,
                 render_offset=(0.0, 0.0, 0.0),
             ),
-            density=200,
+            density=TOWEL_DENSITY,
         )
+        self.metadata["towel_material"] = {
+            "youngs_modulus": TOWEL_YOUNGS_MODULUS,
+            "poisson_rate": TOWEL_POISSON_RATE,
+            "bending_stiffness": TOWEL_BENDING_STIFFNESS,
+            "density": TOWEL_DENSITY,
+            "friction_ratio": TOWEL_FRICTION_RATIO,
+            "thickness": TOWEL_SHELL_THICKNESS,
+        }
 
     def _reset_actors(self):
         self.towel.remove_animate()
@@ -289,6 +303,11 @@ class Task(BaseTask):
         width_ratio = current_width / initial_width if initial_width > 1e-6 else 1.0
         depth_ratio = current_depth / initial_depth if initial_depth > 1e-6 else 1.0
         area_ratio = width_ratio * depth_ratio
+        height_above_table = np.maximum(vertices[:, 2] - TABLE_TOP_Z, 0.0)
+        height_p90 = float(np.percentile(height_above_table, 90))
+        height_p95 = float(np.percentile(height_above_table, 95))
+        height_p99 = float(np.percentile(height_above_table, 99))
+        flat_vertex_ratio = float(np.mean(height_above_table < FLATNESS_HEIGHT_ABOVE_TABLE_THRESHOLD))
         if self._raised_vertex_mask is not None and self._fold_target_point is not None:
             folded_corner = vertices[self._raised_vertex_mask].mean(axis=0)
             corner_to_target_distance = float(
@@ -315,6 +334,12 @@ class Task(BaseTask):
             "target_corner": self._fold_target_point.tolist() if self._fold_target_point is not None else None,
             "corner_to_target_distance": corner_to_target_distance,
             "max_height": float(vertices[:, 2].max()),
+            "height_p90_above_table": height_p90,
+            "height_p95_above_table": height_p95,
+            "height_p99_above_table": height_p99,
+            "flat_vertex_ratio": flat_vertex_ratio,
+            "flatness_height_threshold": FLATNESS_HEIGHT_ABOVE_TABLE_THRESHOLD,
+            "flatness_ok": bool(height_p95 < FLATNESS_HEIGHT_ABOVE_TABLE_THRESHOLD),
         }
 
     def check_success(self):
