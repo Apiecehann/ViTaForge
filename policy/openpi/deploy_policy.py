@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import torch
 
 from .._base_policy import BasePolicy
 from .client import OpenPiClientRuntime, OpenPiServerConfig
@@ -94,27 +95,30 @@ class Policy(BasePolicy):
         # EEF OpenPI 默认和 abs_joint 一样直接写入 IK 求得的 joint position。
         self.eef_servo_force = bool(openpi_cfg.get("eef_servo_force", True))
 
-        self.chunk_smoothing_enabled = bool(
+        self.temporal_ensemble = bool(openpi_cfg.get("temporal_ensemble", False))
+        self.temporal_ensemble_k = float(
             openpi_cfg.get(
-                "chunk_smoothing_enabled",
-                openpi_cfg.get("temporal_ensemble_enabled", False),
+                "temporal_ensemble_k",
+                openpi_cfg.get("ensemble_K", 0.01),
             )
         )
-        self.chunk_smoothing_k = float(
-            openpi_cfg.get(
-                "chunk_smoothing_k",
-                openpi_cfg.get("temporal_ensemble_k", 0.01),
-            )
-        )
-        self.chunk_smoothing_max_history = max(
+        self.temporal_ensemble_horizon = max(
             1,
             int(
                 openpi_cfg.get(
-                    "chunk_smoothing_max_history",
-                    openpi_cfg.get("temporal_ensemble_max_history", self.open_loop_horizon),
+                    "temporal_ensemble_horizon",
+                    openpi_cfg.get("chunk_first_n", self.open_loop_horizon),
                 )
             ),
         )
+        self.temporal_ensemble_space = str(openpi_cfg.get("temporal_ensemble_space", "action")).lower()
+        if self.temporal_ensemble_space not in ("action", "delta_eef_qpos_rollout"):
+            raise ValueError(
+                "openpi.temporal_ensemble_space 只支持 'action' 或 'delta_eef_qpos_rollout'，"
+                f"实际为 {self.temporal_ensemble_space!r}"
+            )
+        if self.temporal_ensemble_space == "delta_eef_qpos_rollout" and self.control_mode != "delta_eef":
+            raise ValueError("temporal_ensemble_space='delta_eef_qpos_rollout' 只能用于 delta_eef 模式。")
 
         self.client = OpenPiClientRuntime(
             OpenPiServerConfig(
@@ -142,7 +146,10 @@ class Policy(BasePolicy):
             f"action_dim={self.action_dim}, image_size={self.image_size}, "
             f"send_tactile={self.send_tactile}, image_color_order={self.image_color_order}, "
             f"open_loop_horizon={self.open_loop_horizon}, "
-            f"chunk_smoothing_enabled={self.chunk_smoothing_enabled}"
+            f"temporal_ensemble={self.temporal_ensemble}, "
+            f"temporal_ensemble_horizon={self.temporal_ensemble_horizon}, "
+            f"ensemble_K={self.temporal_ensemble_k}, "
+            f"temporal_ensemble_space={self.temporal_ensemble_space}"
         )
 
     def eval(self, task, observation):
@@ -174,8 +181,8 @@ class Policy(BasePolicy):
             )
             print(f"OpenPI debug obs dump step={self._policy_step_index}: {saved_paths}")
 
-        if self.chunk_smoothing_enabled:
-            action = self._chunk_smoothing_action(obs)
+        if self.temporal_ensemble:
+            action = self._temporal_ensemble_action(obs, task)
         else:
             action = self._open_loop_action(obs)
 
@@ -186,17 +193,25 @@ class Policy(BasePolicy):
                 action_type="qpos",
             )
         elif self.control_mode == "delta_eef":
-            torch_action = sanitize_delta_eef_action(
-                action,
-                task,
-                max_position_delta=self.max_position_delta,
-                max_rotation_delta=self.max_rotation_delta,
-            )
-            result = task.take_action(
-                torch_action,
-                action_type=self.eef_action_type,
-                force=self.eef_servo_force,
-            )
+            if self.temporal_ensemble and self.temporal_ensemble_space == "delta_eef_qpos_rollout":
+                torch_action = sanitize_abs_joint_action(action, task)
+                result = task.take_action(
+                    torch_action,
+                    action_type="qpos",
+                    force=self.eef_servo_force,
+                )
+            else:
+                torch_action = sanitize_delta_eef_action(
+                    action,
+                    task,
+                    max_position_delta=self.max_position_delta,
+                    max_rotation_delta=self.max_rotation_delta,
+                )
+                result = task.take_action(
+                    torch_action,
+                    action_type=self.eef_action_type,
+                    force=self.eef_servo_force,
+                )
         else:
             raise RuntimeError(f"不支持的 control_mode: {self.control_mode!r}")
         self._policy_step_index += 1
@@ -255,7 +270,7 @@ class Policy(BasePolicy):
         self._chunk_step += 1
         return action
 
-    def _chunk_smoothing_action(self, obs: dict) -> np.ndarray:
+    def _temporal_ensemble_action(self, obs: dict, task) -> np.ndarray:
         """模仿 ACT temporal aggregation，对重叠 action chunks 做指数加权平滑。
 
         输入:
@@ -272,8 +287,10 @@ class Policy(BasePolicy):
         """
 
         chunk = self.client.infer(obs)
+        if self.temporal_ensemble_space == "delta_eef_qpos_rollout":
+            chunk = self._delta_eef_chunk_to_qpos_chunk(chunk, task)
         current_step = self._policy_step_index
-        for offset, action in enumerate(chunk):
+        for offset, action in enumerate(chunk[: self.temporal_ensemble_horizon]):
             target_step = current_step + offset
             self._action_predictions.setdefault(target_step, []).append(
                 (current_step, np.asarray(action, dtype=np.float64))
@@ -283,22 +300,74 @@ class Policy(BasePolicy):
         predictions = [
             (query_step, action)
             for query_step, action in predictions
-            if 0 <= current_step - query_step < self.chunk_smoothing_max_history
+            if 0 <= current_step - query_step < self.temporal_ensemble_horizon
         ]
         if not predictions:
-            raise RuntimeError("chunk smoothing 没有当前 step 可用预测。")
+            raise RuntimeError("temporal ensemble 没有当前 step 可用预测。")
 
         predictions = sorted(predictions, key=lambda item: item[0])
-        weights = np.exp(-self.chunk_smoothing_k * np.arange(len(predictions), dtype=np.float64))
+        weights = np.exp(-self.temporal_ensemble_k * np.arange(len(predictions), dtype=np.float64))
         weights = weights / np.sum(weights)
         actions = np.asarray([action for _, action in predictions], dtype=np.float64)
         action = np.sum(actions * weights[:, None], axis=0)
+        if not np.all(np.isfinite(action)):
+            raise ValueError("OpenPI temporal ensemble 产生了 NaN 或 Inf。")
 
-        stale_before = current_step - self.chunk_smoothing_max_history
+        stale_before = current_step - self.temporal_ensemble_horizon
         for step in list(self._action_predictions):
             if step <= stale_before or step < current_step:
                 self._action_predictions.pop(step, None)
+        if current_step == 0:
+            print(
+                "OpenPI temporal ensemble: "
+                f"chunk_shape={chunk.shape}, "
+                f"temporal_ensemble_horizon={self.temporal_ensemble_horizon}, "
+                f"candidates={len(predictions)}",
+                flush=True,
+            )
         return action
+
+    def _delta_eef_chunk_to_qpos_chunk(self, chunk: np.ndarray, task) -> np.ndarray:
+        """Roll out a delta EEF chunk into absolute qpos8 targets before ensembling."""
+
+        if self.control_mode != "delta_eef":
+            raise RuntimeError("delta_eef_qpos_rollout 只能用于 delta_eef control_mode。")
+
+        robot = task._robot_manager
+        ee_pos_b, ee_quat_b = robot.get_ee_pose_tensor()
+        joint_pos = robot.robot.data.joint_pos[:, robot._arm_ids]
+        gripper_qpos = torch.as_tensor(robot.get_gripper_qpos(), dtype=torch.float32, device=task.device)
+
+        qpos_actions = []
+        rollout_len = min(int(chunk.shape[0]), self.temporal_ensemble_horizon)
+        gripper_max_qpos = float(getattr(robot, "gripper_max_qpos", 0.039))
+        for raw_action in np.asarray(chunk[:rollout_len], dtype=np.float64):
+            action_np = raw_action.reshape(-1).astype(np.float32)
+            if action_np.shape[0] != 7:
+                raise ValueError(f"delta_eef action 必须是 7D，实际 shape={action_np.shape}")
+            if not np.all(np.isfinite(action_np)):
+                raise ValueError(f"delta_eef action 中包含 NaN 或 Inf: {action_np}")
+            if self.max_position_delta is not None:
+                action_np[:3] = np.clip(action_np[:3], -self.max_position_delta, self.max_position_delta)
+            if self.max_rotation_delta is not None:
+                action_np[3:6] = np.clip(action_np[3:6], -self.max_rotation_delta, self.max_rotation_delta)
+
+            target_gripper_abs = float(np.clip(action_np[6], 0.0, gripper_max_qpos))
+            action_np[6] = target_gripper_abs - float(gripper_qpos.detach().cpu().item())
+            action_tensor = torch.as_tensor(action_np, dtype=torch.float32, device=task.device)
+            joint_pos, gripper_qpos, ee_pos_b, ee_quat_b = robot.compute_delta_ee_rotvec_qpos_target(
+                action_tensor,
+                ee_pos_b=ee_pos_b,
+                ee_quat_b=ee_quat_b,
+                joint_pos=joint_pos,
+                gripper_qpos=gripper_qpos,
+            )
+            qpos_action = torch.cat([joint_pos[0], gripper_qpos.reshape(1)], dim=0)
+            qpos_actions.append(qpos_action.detach().cpu().numpy())
+
+        if not qpos_actions:
+            raise ValueError("OpenPI delta EEF chunk 为空，无法 rollout 成 qpos。")
+        return np.ascontiguousarray(np.stack(qpos_actions, axis=0), dtype=np.float64)
 
     def _clear_action_state(self) -> None:
         self._action_chunk = None

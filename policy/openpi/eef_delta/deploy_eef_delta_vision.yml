@@ -30,6 +30,3 @@ openpi:
   debug_dump_dir: "debug/openpi_obs_eef_delta_vision"
   debug_dump_bgr_interpretation: true
   open_loop_horizon: 20
-  chunk_smoothing_enabled: false
-  chunk_smoothing_k: 0.01
-  chunk_smoothing_max_history: 10

@@ -1,9 +1,12 @@
 from ._base_task import *
 import numpy as np
+import torch
 
 
 TASK_INSTRUCTION = "Find the rough block by touch and place it on the yellow plate."
 
+FILTER_DARK_CAMERA_PIXELS = True
+DARK_CAMERA_PIXEL_THRESHOLD = 10
 GRIPPER_CLOSE_QPOS_RANGE = (0.0035, 0.004)
 BLOCK_RESET_XY_NOISE = 0.01
 LIFT_HEIGHT = 0.05
@@ -15,6 +18,30 @@ WRONG_BLOCK_HOLD_DELAY_STEPS = 20
 LEFT_BLOCK_POSE = Pose([0.40, 0.05, 0.002], [1, 0, 0, 0])
 RIGHT_BLOCK_POSE = Pose([0.40, -0.05, 0.002], [1, 0, 0, 0])
 BLOCK_SIDES = ("left", "right")
+
+
+def _zero_dark_camera_pixels(obs):
+    if not FILTER_DARK_CAMERA_PIXELS:
+        return obs
+
+    for camera_data in obs.get("observation", {}).values():
+        image = camera_data.get("rgb")
+        if image is None or image.ndim != 3 or image.shape[-1] < 3:
+            continue
+        if isinstance(image, np.ndarray):
+            filtered = image.copy()
+            rgb = filtered[..., :3]
+            mask = np.max(rgb, axis=-1) <= DARK_CAMERA_PIXEL_THRESHOLD
+            rgb[mask] = 0
+        elif torch.is_tensor(image):
+            filtered = image.clone()
+            rgb = filtered[..., :3]
+            mask = torch.amax(rgb, dim=-1) <= DARK_CAMERA_PIXEL_THRESHOLD
+            filtered[..., :3] = torch.where(mask[..., None], torch.zeros_like(rgb), rgb)
+        else:
+            continue
+        camera_data["rgb"] = filtered
+    return obs
 
 
 @configclass
@@ -159,6 +186,9 @@ class Task(BaseTask):
     def _other_side(side):
         return "right" if side == "left" else "left"
 
+    def _get_observations(self):
+        return _zero_dark_camera_pixels(super()._get_observations())
+
     def build_instruction(self) -> str:
         return "Find the rough block by touch and place it on the yellow plate."
 
@@ -272,7 +302,7 @@ class Task(BaseTask):
             return False
 
         block_pose = self.rough_block.get_pose().rebase(self.target_pose)
-        xy_threshold = 0.035
+        xy_threshold = 0.04
         z_threshold = 0.01
         upright_score = np.dot(
             block_pose.to_transformation_matrix()[:3, 2],

@@ -215,6 +215,68 @@ class RobotManager:
         self.set_arm(joint_pos_des[0], force=force)
         self.set_gripper(target_gripper, force=force)
         return True
+
+    def compute_delta_ee_rotvec_qpos_target(
+        self,
+        action: torch.Tensor,
+        ee_pos_b: torch.Tensor | None = None,
+        ee_quat_b: torch.Tensor | None = None,
+        joint_pos: torch.Tensor | None = None,
+        gripper_qpos: torch.Tensor | float | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute one delta EEF IK target without writing it to the simulator.
+
+        This mirrors ``servo_delta_ee_rotvec`` but returns the virtual next
+        arm qpos, gripper qpos, EEF position, and EEF quaternion.  It is used
+        to roll out a predicted delta-EFF chunk into absolute qpos targets
+        before temporal ensembling.
+        """
+
+        if self._ik_controller is None:
+            self._setup_ik_controller()
+
+        action = action.to(device=self.device, dtype=torch.float32).reshape(1, -1)
+        if action.shape[-1] != 7:
+            raise ValueError(f"delta_ee_rotvec_ik action must be 7D, got shape={tuple(action.shape)}")
+
+        if ee_pos_b is None or ee_quat_b is None:
+            ee_pos_b, ee_quat_b = self.get_ee_pose_tensor()
+        else:
+            ee_pos_b = ee_pos_b.to(device=self.device, dtype=torch.float32).reshape(self.task.num_envs, 3)
+            ee_quat_b = ee_quat_b.to(device=self.device, dtype=torch.float32).reshape(self.task.num_envs, 4)
+
+        if joint_pos is None:
+            joint_pos = self.robot.data.joint_pos[:, self._arm_ids]
+        else:
+            joint_pos = joint_pos.to(device=self.device, dtype=torch.float32).reshape(self.task.num_envs, -1)
+            if joint_pos.shape[-1] != len(self._arm_ids):
+                raise ValueError(f"joint_pos must have {len(self._arm_ids)} arm dims, got shape={tuple(joint_pos.shape)}")
+
+        delta_rotvec = action[:, 3:6]
+        delta_angle = torch.linalg.vector_norm(delta_rotvec, dim=1, keepdim=True)
+        delta_axis = delta_rotvec / torch.clamp(delta_angle, min=1.0e-6)
+        delta_quat = math_utils.quat_from_angle_axis(delta_angle.squeeze(-1), delta_axis)
+        identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.task.num_envs, 1)
+        delta_quat = torch.where(delta_angle > 1.0e-6, delta_quat, identity_quat)
+
+        target_pos_b = ee_pos_b + action[:, :3]
+        target_quat_b = math_utils.quat_mul(delta_quat, ee_quat_b)
+        self._ik_controller.set_command(torch.cat([target_pos_b, target_quat_b], dim=-1))
+
+        jacobian = self.jacobian_b[:, :, self._arm_ids]
+        joint_pos_des = self._ik_controller.compute(
+            ee_pos_b,
+            ee_quat_b,
+            jacobian,
+            joint_pos,
+        )
+
+        if gripper_qpos is None:
+            current_gripper = self.robot.data.joint_pos[:, self._gripper_ids][0, 0]
+        else:
+            current_gripper = torch.as_tensor(gripper_qpos, dtype=torch.float32, device=self.device).reshape(-1)[0]
+        target_gripper_qpos = torch.clamp(current_gripper + action[0, 6], 0.0, self.gripper_max_qpos)
+        return joint_pos_des, target_gripper_qpos.reshape(1), target_pos_b, target_quat_b
     
     def ee_to_gripper_center(self, ee_pose:Pose) -> Pose:
         """将夹爪中心位姿转换为末端执行器目标位姿"""

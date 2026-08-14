@@ -4,7 +4,6 @@ instruction_type: seen
 instuction_file: null
 eval_from_start: true
 eval_step_timeout_seconds: 5
-eval_action_repeat: 1
 
 openpi:
   host: "10.176.42.49"
@@ -16,11 +15,20 @@ openpi:
   websocket_close_timeout: 10
   prompt: "pick and insert the USB"
   prompt_from_task_instruction: true
-  action_dim: 8
+  control_mode: "delta_eef"
+  eef_state_mode: "quat_xyzw_8"
+  eef_action_type: "delta_ee_rotvec_ik"
+  eef_servo_force: true
+  state_dim: 8
+  action_dim: 7
   image_size: 224
-  send_tactile: false
+  send_tactile: true
   image_color_order: "rgb"
   debug_dump_first_n_obs: 1
-  debug_dump_dir: "debug/openpi_obs_vision"
+  debug_dump_dir: "debug/openpi_obs_eef_delta_vision_tactile_step_smooth_qpos_rollout"
   debug_dump_bgr_interpretation: true
-  open_loop_horizon: 20
+  open_loop_horizon: 1
+  temporal_ensemble: true
+  temporal_ensemble_space: "delta_eef_qpos_rollout"
+  chunk_first_n: 20
+  ensemble_K: 0.01

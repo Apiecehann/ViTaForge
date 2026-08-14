@@ -310,7 +310,6 @@ task.take_action(action, action_type="delta_ee_rotvec_ik")
 ```yaml
 openpi:
   open_loop_horizon: 20
-  chunk_smoothing_enabled: false
 ```
 
 此时 client 会向 server 请求一个 action chunk，要求 server 返回至少 `[20, 8]`。
@@ -320,10 +319,10 @@ openpi:
 
 ```yaml
 openpi:
-  open_loop_horizon: 20
-  chunk_smoothing_enabled: true
-  chunk_smoothing_k: 0.01
-  chunk_smoothing_max_history: 10
+  open_loop_horizon: 1
+  temporal_ensemble: true
+  chunk_first_n: 20
+  ensemble_K: 0.01
 ```
 
 此时 client 每个 env step 都会重新 query server 一次。每次返回的 chunk 会保留下来：
@@ -339,17 +338,17 @@ actions[19] 预测 step s+19
 对于当前 step，如果多个历史 chunk 都预测过这个 step，client 会做指数加权平均：
 
 ```text
-weights = exp(-chunk_smoothing_k * arange(num_predictions))
+weights = exp(-ensemble_K * arange(num_predictions))
 ```
 
-然后执行平滑后的 8D abs_joint action。
+然后执行平滑后的 action。该逻辑同时支持 7D delta EEF 和 8D abs joint。
 
 简要区别：
 
 | 模式 | server query 频率 | 执行动作 | 适合场景 |
 | --- | --- | --- | --- |
-| `chunk_smoothing_enabled: false` | 每 `open_loop_horizon` 步 query 一次 | 直接顺序执行 chunk | 快、稳定，默认先用 |
-| `chunk_smoothing_enabled: true` | 每步 query 一次 | 对重叠 chunk 做 ACT 风格平滑 | 想降低 action 抖动时使用 |
+| `temporal_ensemble: false` 或未配置 | 每 `open_loop_horizon` 步 query 一次 | 直接顺序执行 chunk | 快、稳定，默认先用 |
+| `temporal_ensemble: true` | 每步 query 一次 | 对最近 20 个重叠 chunk 做 ACT 风格平滑 | 想降低 action 抖动时使用 |
 
 ## EEF Delta 约定
 
@@ -539,7 +538,8 @@ debug/openpi_obs/
 
 ## Smooth + Horizon 20 示例
 
-如果要开启 ACT 风格 chunk 平滑，并且使用 horizon 20，把 `policy/openpi/abs_joint/deploy.yml` 里的 OpenPI 部分设置成：
+如果要开启 ACT 风格 temporal ensemble，并且使用 20 步窗口，可以直接使用
+`policy/openpi/abs_joint/deploy_vision_tactile_step_smooth.yml`，或设置：
 
 ```yaml
 openpi:
@@ -558,10 +558,10 @@ openpi:
   debug_dump_first_n_obs: 1
   debug_dump_dir: "debug/openpi_obs"
   debug_dump_bgr_interpretation: true
-  open_loop_horizon: 20
-  chunk_smoothing_enabled: true
-  chunk_smoothing_k: 0.01
-  chunk_smoothing_max_history: 10
+  open_loop_horizon: 1
+  temporal_ensemble: true
+  chunk_first_n: 20
+  ensemble_K: 0.01
 ```
 
 然后运行同一条测评命令：

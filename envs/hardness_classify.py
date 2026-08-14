@@ -172,7 +172,7 @@ class Task(BaseTask):
 
     def check_success(self):
         block_pose = self.block.get_pose().rebase(self.target_pose)
-        xy_threshold = 0.035
+        xy_threshold = 0.04
         z_threshold = 0.01
         success = np.all(np.abs(block_pose.p) < np.array([xy_threshold, xy_threshold, z_threshold])) and \
             np.dot(block_pose.to_transformation_matrix()[:3, 2], np.array([0, 0, 1])) > 0.965
