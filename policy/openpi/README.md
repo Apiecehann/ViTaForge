@@ -179,7 +179,7 @@ server 对一次 `infer(obs)` 的返回必须是 dict，并包含：
 
 ```python
 {
-    "actions": np.ndarray  # abs_joint: [T,8], delta_eef: [T,7]
+    "actions": np.ndarray  # abs_joint/relative_joint: [T,8], delta_eef: [T,7]
 }
 ```
 
@@ -223,7 +223,7 @@ openpi:
 | 字段 | 要求 |
 | --- | --- |
 | `actions.ndim` | 必须是 2 |
-| `actions.shape` | `abs_joint` 为 `[T,8]`；`delta_eef` 为 `[T,7]` |
+| `actions.shape` | `abs_joint`/`relative_joint` 为 `[T,8]`；`delta_eef` 为 `[T,7]` |
 | `T` | 必须大于等于 `open_loop_horizon` |
 | 值域 | 不能包含 `NaN` 或 `Inf` |
 | 语义 | 由 `control_mode` 决定 |
@@ -241,6 +241,28 @@ actions[t] = [
   panda_joint7,
   gripper_qpos,
 ]
+```
+
+`relative_joint` 的 8 维 action 语义：
+
+```text
+actions[t] = [
+  target_panda_joint1 - observation/state[0],
+  target_panda_joint2 - observation/state[1],
+  target_panda_joint3 - observation/state[2],
+  target_panda_joint4 - observation/state[3],
+  target_panda_joint5 - observation/state[4],
+  target_panda_joint6 - observation/state[5],
+  target_panda_joint7 - observation/state[6],
+  gripper_abs_qpos,
+]
+```
+
+这里的 relative 是“相对本次 infer 的 `observation/state`”，不是相邻两帧之间的 delta。client 会用本次 infer 时发送的 `observation/state` 作为 base，将整个 chunk 转成 absolute qpos8 后再缓存、temporal ensemble 和执行：
+
+```text
+target_qpos[:7] = observation/state[:7] + actions[t][:7]
+target_qpos[7] = actions[t][7]
 ```
 
 `delta_eef` 的 7 维 action 语义：

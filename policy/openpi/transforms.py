@@ -183,7 +183,9 @@ def openpi_obs_from_univtac(
             自动选择，兼容 gelsight/xense/neote。
         image_color_order: 发送给 server 的图像通道顺序。"rgb" 表示保持 RGB；
             "bgr" 表示在发送前交换 R/B 通道，用于和 BGR 训练数据临时对齐。
-        control_mode: "abs_joint" 或 "delta_eef"。决定 observation/state 的表达。
+        control_mode: "abs_joint"、"relative_joint" 或 "delta_eef"。
+            "relative_joint" 和 "abs_joint" 发送相同的 8D absolute joint state。
+            区别只在 server 返回 action 的解释方式。
         eef_state_mode: delta_eef state 表达，支持 "quat_xyzw_8" 或 "rot6d_10"。
 
     输出:
@@ -196,7 +198,7 @@ def openpi_obs_from_univtac(
             prompt: str
     """
 
-    if control_mode == "abs_joint":
+    if control_mode in ("abs_joint", "relative_joint", "delta_joint"):
         state = state8_from_univtac_observation(observation)
     elif control_mode == "delta_eef":
         if eef_state_mode == "quat_xyzw_8":
@@ -273,6 +275,67 @@ def sanitize_abs_joint_action(action: np.ndarray | torch.Tensor, task: Any) -> t
     gripper_max_qpos = float(getattr(task._robot_manager, "gripper_max_qpos", 0.039))
     action_np[-1] = float(np.clip(action_np[-1], 0.0, gripper_max_qpos))
     return torch.as_tensor(action_np, dtype=torch.float32, device=task.device)
+
+
+def relative_joint_chunk_to_abs_qpos8(
+    chunk: np.ndarray | torch.Tensor,
+    base_qpos8: np.ndarray | torch.Tensor,
+    gripper_max_qpos: float = 0.039,
+    max_joint_delta: float | None = None,
+) -> np.ndarray:
+    """把 server 返回的 relative-joint chunk 转成可执行的 absolute qpos8 chunk。
+
+    输入:
+        chunk: server 返回的 action chunk，shape [T,8]。
+            语义为 [target_joint7 - observation/state[:7], target_gripper_q]。
+        base_qpos8: 这次 infer 时发送的 observation/state，shape [8]。
+            所有 chunk 内的 delta 都相对这个 base，而不是相对执行时的最新状态。
+        gripper_max_qpos: gripper qpos 裁剪上限。
+        max_joint_delta: 可选，relative joint 每一维的绝对值安全裁剪上限，单位 rad。
+
+    输出:
+        np.ndarray，dtype float64，shape [T,8]。
+        语义为 [target_joint7, target_gripper_q]，可按 qpos 下发。
+    """
+
+    chunk_np = _to_numpy(chunk).astype(np.float64)
+    if chunk_np.ndim != 2 or chunk_np.shape[1] != 8:
+        raise ValueError(f"relative_joint chunk 必须是 [T,8]，实际 shape={chunk_np.shape}")
+    if not np.all(np.isfinite(chunk_np)):
+        raise ValueError("relative_joint chunk 中包含 NaN 或 Inf。")
+
+    base_np = _to_numpy(base_qpos8).reshape(-1).astype(np.float64)
+    if base_np.shape[0] != 8:
+        raise ValueError(f"relative_joint base_qpos8 必须是 8D，实际 shape={base_np.shape}")
+    if not np.all(np.isfinite(base_np)):
+        raise ValueError(f"relative_joint base_qpos8 中包含 NaN 或 Inf: {base_np}")
+
+    if max_joint_delta is not None:
+        max_joint_delta = float(max_joint_delta)
+        if max_joint_delta <= 0:
+            raise ValueError(f"max_joint_delta 必须为正数，实际为 {max_joint_delta}")
+        chunk_np[:, :7] = np.clip(chunk_np[:, :7], -max_joint_delta, max_joint_delta)
+
+    qpos_chunk = np.empty_like(chunk_np, dtype=np.float64)
+    qpos_chunk[:, :7] = base_np[:7][None, :] + chunk_np[:, :7]
+    qpos_chunk[:, 7] = np.clip(chunk_np[:, 7], 0.0, float(gripper_max_qpos))
+    return np.ascontiguousarray(qpos_chunk, dtype=np.float64)
+
+
+def delta_joint_chunk_to_abs_qpos8(
+    chunk: np.ndarray | torch.Tensor,
+    base_qpos8: np.ndarray | torch.Tensor,
+    gripper_max_qpos: float = 0.039,
+    max_joint_delta: float | None = None,
+) -> np.ndarray:
+    """Backward-compatible alias for relative_joint_chunk_to_abs_qpos8."""
+
+    return relative_joint_chunk_to_abs_qpos8(
+        chunk,
+        base_qpos8,
+        gripper_max_qpos=gripper_max_qpos,
+        max_joint_delta=max_joint_delta,
+    )
 
 
 def sanitize_delta_eef_action(

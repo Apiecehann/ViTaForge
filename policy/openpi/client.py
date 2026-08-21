@@ -58,13 +58,7 @@ class OpenPiClientRuntime:
             无返回值。成功后 self.client 可用于 infer/reset。
         """
 
-        try:
-            from openpi_client import msgpack_numpy
-        except ImportError as exc:
-            raise RuntimeError(
-                "缺少 openpi_client。请在 UniVTAC 环境中运行: "
-                "bash policy/openpi/install_client.sh"
-            ) from exc
+        msgpack_numpy = _load_msgpack_numpy()
         if _WEBSOCKETS_IMPORT_ERROR is not None:
             raise RuntimeError(
                 "缺少 websockets。请先安装 OpenPI client 依赖，或运行: "
@@ -155,7 +149,7 @@ class OpenPiClientRuntime:
                 "缺少 websockets。请先安装 OpenPI client 依赖，或运行: "
                 "python -m pip install websockets"
             ) from _WEBSOCKETS_IMPORT_ERROR
-        from openpi_client import msgpack_numpy
+        msgpack_numpy = _load_msgpack_numpy()
 
         self.client = _OpenPiWebsocketClient(
             host=self.config.host,
@@ -311,3 +305,16 @@ def _unsupported_connect_kwargs(**kwargs: Any) -> list[str]:
     signature = inspect.signature(websockets.sync.client.connect)
     supported = set(signature.parameters)
     return [key for key, value in kwargs.items() if value is not None and key not in supported]
+
+
+def _load_msgpack_numpy():
+    try:
+        from openpi_client import msgpack_numpy
+
+        return msgpack_numpy
+    except ImportError:
+        # Keep the OpenPI websocket protocol usable in UniVTAC-only envs. This local
+        # implementation is the same msgpack+numpy encoding used by the FTP-1 client.
+        from . import msgpack_numpy
+
+        return msgpack_numpy

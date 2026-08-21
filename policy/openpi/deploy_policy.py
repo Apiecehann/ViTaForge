@@ -6,7 +6,12 @@ import torch
 from .._base_policy import BasePolicy
 from .client import OpenPiClientRuntime, OpenPiServerConfig
 from .debug import save_openpi_observation_images
-from .transforms import openpi_obs_from_univtac, sanitize_abs_joint_action, sanitize_delta_eef_action
+from .transforms import (
+    openpi_obs_from_univtac,
+    relative_joint_chunk_to_abs_qpos8,
+    sanitize_abs_joint_action,
+    sanitize_delta_eef_action,
+)
 
 
 class Policy(BasePolicy):
@@ -20,6 +25,9 @@ class Policy(BasePolicy):
 
     支持模式:
         abs_joint: state/action 都是 [7 arm qpos, gripper qpos]。
+        relative_joint: state 是 [7 arm qpos, gripper qpos]；
+            server action 是 [target_joint7 - state_joint7, gripper qpos]，
+            client 会用本次 infer 的 state 转回 absolute qpos 后执行。
         delta_eef: state 支持 [ee_pos(3), ee_quat_xyzw(4), gripper qpos]
             或 [ee_pos(3), ee_rot6d(6), gripper qpos]；
             action 是 [delta_xyz(3), delta_rotvec(3), gripper_abs_qpos(1)]。
@@ -31,17 +39,21 @@ class Policy(BasePolicy):
         if not openpi_cfg:
             raise KeyError("deploy config 缺少 openpi 配置段。")
 
-        self.control_mode = str(openpi_cfg.get("control_mode", "abs_joint")).lower()
-        if self.control_mode not in ("abs_joint", "delta_eef"):
-            raise ValueError(f"OpenPI control_mode 只支持 'abs_joint' 或 'delta_eef'，实际为 {self.control_mode!r}")
+        requested_control_mode = str(openpi_cfg.get("control_mode", "abs_joint")).lower()
+        self.control_mode = "relative_joint" if requested_control_mode == "delta_joint" else requested_control_mode
+        if self.control_mode not in ("abs_joint", "relative_joint", "delta_eef"):
+            raise ValueError(
+                "OpenPI control_mode 只支持 'abs_joint'、'relative_joint' 或 'delta_eef'，"
+                f"实际为 {requested_control_mode!r}"
+            )
 
         default_state_dim = 8
         default_action_dim = 7 if self.control_mode == "delta_eef" else 8
         self.state_dim = int(openpi_cfg.get("state_dim", default_state_dim))
         self.action_dim = int(openpi_cfg.get("action_dim", default_action_dim))
-        if self.control_mode == "abs_joint" and (self.state_dim != 8 or self.action_dim != 8):
+        if self.control_mode in ("abs_joint", "relative_joint") and (self.state_dim != 8 or self.action_dim != 8):
             raise ValueError(
-                "abs_joint 模式要求 state_dim=8 且 action_dim=8，"
+                f"{self.control_mode} 模式要求 state_dim=8 且 action_dim=8，"
                 f"实际 state_dim={self.state_dim}, action_dim={self.action_dim}"
             )
         self.eef_state_mode = str(openpi_cfg.get("eef_state_mode", "")).lower()
@@ -86,6 +98,7 @@ class Policy(BasePolicy):
         self.debug_dump_dir = str(openpi_cfg.get("debug_dump_dir", "debug/openpi_obs"))
         self.max_position_delta = _optional_float(openpi_cfg.get("max_position_delta", None))
         self.max_rotation_delta = _optional_float(openpi_cfg.get("max_rotation_delta", None))
+        self.max_joint_delta = _optional_float(openpi_cfg.get("max_joint_delta", None))
         self.eef_action_type = str(openpi_cfg.get("eef_action_type", "delta_ee_rotvec_ik"))
         if self.eef_action_type not in ("delta_ee_rotvec_ik", "delta_ee_rotvec"):
             raise ValueError(
@@ -184,9 +197,9 @@ class Policy(BasePolicy):
         if self.temporal_ensemble:
             action = self._temporal_ensemble_action(obs, task)
         else:
-            action = self._open_loop_action(obs)
+            action = self._open_loop_action(obs, task)
 
-        if self.control_mode == "abs_joint":
+        if self.control_mode in ("abs_joint", "relative_joint"):
             torch_action = sanitize_abs_joint_action(action, task)
             result = task.take_action(
                 torch_action,
@@ -251,7 +264,7 @@ class Policy(BasePolicy):
                 return task_instruction
         return self.prompt
 
-    def _open_loop_action(self, obs: dict) -> np.ndarray:
+    def _open_loop_action(self, obs: dict, task) -> np.ndarray:
         """按 open_loop_horizon 消费 server 返回的动作块。
 
         输入:
@@ -262,13 +275,27 @@ class Policy(BasePolicy):
         """
 
         if self._action_chunk is None or self._chunk_step >= self.open_loop_horizon:
-            self._action_chunk = self.client.infer(obs)
+            self._action_chunk = self._normalize_server_chunk(self.client.infer(obs), obs, task)
             self._chunk_step = 0
             print(f"OpenPI action chunk: {self._action_chunk.shape}")
 
         action = np.asarray(self._action_chunk[self._chunk_step], dtype=np.float64)
         self._chunk_step += 1
         return action
+
+    def _normalize_server_chunk(self, chunk: np.ndarray, obs: dict, task) -> np.ndarray:
+        """Convert server action chunk into the action representation used for execution."""
+
+        if self.control_mode != "relative_joint":
+            return chunk
+
+        gripper_max_qpos = float(getattr(task._robot_manager, "gripper_max_qpos", 0.039))
+        return relative_joint_chunk_to_abs_qpos8(
+            chunk,
+            obs["observation/state"],
+            gripper_max_qpos=gripper_max_qpos,
+            max_joint_delta=self.max_joint_delta,
+        )
 
     def _temporal_ensemble_action(self, obs: dict, task) -> np.ndarray:
         """模仿 ACT temporal aggregation，对重叠 action chunks 做指数加权平滑。
@@ -286,7 +313,7 @@ class Policy(BasePolicy):
             exp(-k * arange(num_predictions)) 加权平均。
         """
 
-        chunk = self.client.infer(obs)
+        chunk = self._normalize_server_chunk(self.client.infer(obs), obs, task)
         if self.temporal_ensemble_space == "delta_eef_qpos_rollout":
             chunk = self._delta_eef_chunk_to_qpos_chunk(chunk, task)
         current_step = self._policy_step_index
