@@ -20,7 +20,7 @@ ftp_1:
   temporal_ensemble_k: 0.01
   tactile_image_key: rgb_marker
   debug_dump_first_n_obs: 1
-  debug_dump_dir: "debug/ftp_1_obs_turn_gear_pair"
+  debug_dump_dir: "debug/ftp_1_obs_roughness_classify"
   reconnect_sleep_s: 1
   request_retries: 1
   websocket_open_timeout: 10
