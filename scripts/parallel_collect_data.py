@@ -71,6 +71,8 @@ def worker_run(task_config, task_file_name, base_save_dir: Path, seed_q: Queue,
         env_cfg: 'BaseTaskCfg' = task_module.TaskCfg()
         worker_id = current_process().name.split('-')[-1]
         env_cfg.save_dir = base_save_dir
+        if "background" in task_config:
+            env_cfg.background = str(task_config["background"])
         env_cfg.tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
         env_cfg.dense_gelpad = bool(task_config.get('dense_gelpad', env_cfg.dense_gelpad))
         env_cfg.force_field_grid = tuple(task_config.get('force_field_grid', env_cfg.force_field_grid))
@@ -327,6 +329,12 @@ def main():
     parser.add_argument("--episodes", type=int, default=None, help="Total successful episodes to collect (override config episode_num)")
     parser.add_argument("--gpu", type=str, default=os.environ.get('CUDA_VISIBLE_DEVICES', ''),
                         help="CUDA_VISIBLE_DEVICES list to split among workers")
+    parser.add_argument(
+        "--background",
+        type=str,
+        default=None,
+        help="Override env_cfg.background. Use base0/base1/... or an .exr filename under assets/scene.",
+    )
     args = parser.parse_args()
 
     task_config, task_config_file = get_config(
@@ -334,6 +342,8 @@ def main():
         default_root=Path(__file__).parent.parent / 'task_config',
         type='yaml'
     )
+    if args.background is not None:
+        task_config["background"] = args.background
     target_episodes = args.episodes if args.episodes is not None else task_config.get("episode_num", 10)
 
     # Base save dir with timestamp; per-worker subfolders appended inside worker

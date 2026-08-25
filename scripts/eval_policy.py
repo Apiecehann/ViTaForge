@@ -90,6 +90,12 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--background",
+    type=str,
+    default=None,
+    help="Override env_cfg.background. Use base0/base1/... or an .exr filename under assets/scene.",
+)
+parser.add_argument(
     "--target_block",
     type=str,
     default=None,
@@ -181,6 +187,7 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 
 ENV_CFG_OVERRIDE_KEYS = (
+    "background",
     "target_block",
     "block_base_pose_indices",
     "target_cup",

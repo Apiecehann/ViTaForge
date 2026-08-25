@@ -103,6 +103,25 @@ def _apply_world_rotvec_delta(pose: Pose, delta_xyz, delta_rotvec):
 XENSE_WRIST_Y_ALIGNMENT_OFFSET = -np.pi / 4
 
 
+def resolve_scene_background_texture(background: str | os.PathLike | None) -> Path:
+    text = "base5" if background is None else str(background).strip()
+    if not text:
+        text = "base5"
+
+    candidate = Path(text)
+    if candidate.suffix != ".exr":
+        candidate = SCENE_ASSETS_ROOT / f"{text}.exr"
+    elif not candidate.is_absolute():
+        candidate = SCENE_ASSETS_ROOT / candidate
+
+    if not candidate.exists():
+        available = ", ".join(sorted(path.stem for path in SCENE_ASSETS_ROOT.glob("base*.exr")))
+        raise FileNotFoundError(
+            f"Scene background {text!r} not found at {candidate}. Available backgrounds: {available}"
+        )
+    return candidate
+
+
 def apply_xense_wrist_y_alignment(joint_pos: dict[str, float]) -> dict[str, float]:
     joint_pos = dict(joint_pos)
     if "panda_joint7" in joint_pos:
@@ -219,6 +238,7 @@ class BaseTaskCfg(DirectRLEnvCfg):
             texture_file=str(SCENE_ASSETS_ROOT / 'base5.exr')
         ),
     )
+    background = "base5"
 
     # plate
     plate = RigidObjectCfg(
@@ -392,7 +412,14 @@ class BaseTask(UipcRLEnv):
         PHASE_TERMINAL: 'terminal',
     }
 
+    @staticmethod
+    def apply_scene_background(cfg: BaseTaskCfg) -> None:
+        texture_file = resolve_scene_background_texture(getattr(cfg, "background", "base5"))
+        cfg.background = texture_file.stem
+        cfg.light.spawn.texture_file = str(texture_file)
+
     def __init__(self, cfg: BaseTaskCfg, mode:Literal['collect', 'eval'] = 'collect', render_mode=None, **kwargs):
+        self.apply_scene_background(cfg)
         cfg = self.load_robot_and_sensors(cfg)
         
         self.cfg = cfg

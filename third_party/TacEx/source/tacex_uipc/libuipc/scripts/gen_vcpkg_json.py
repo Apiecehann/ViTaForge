@@ -75,6 +75,13 @@ base_vcpkg_json = {
         {
             'name': 'spdlog',
             'version': '1.12.0',
+        },
+        # vcpkg baseline b2cb0da pins tinygltf 2.9.3 with an obsolete
+        # GitHub archive hash. Use the fixed upstream port.
+        {
+            'name': 'tinygltf',
+            'version': '3.0.0',
+            'port-version': 1,
         }
     ]
 }

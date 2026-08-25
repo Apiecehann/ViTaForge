@@ -272,6 +272,32 @@ class HDF5Handler:
 class VideoHandler:
     def __init__(self):
         self.ffmpeg = None
+
+    @staticmethod
+    def _available_encoders() -> set[str]:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        encoders = set()
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].startswith("V"):
+                encoders.add(parts[1])
+        return encoders
+
+    @classmethod
+    def _encoder_args(cls) -> list[str]:
+        encoders = cls._available_encoders()
+        if "libx264" in encoders:
+            return ["-vcodec", "libx264", "-crf", "23"]
+        if "libopenh264" in encoders:
+            return ["-vcodec", "libopenh264", "-b:v", "4M"]
+        if "mpeg4" in encoders:
+            return ["-vcodec", "mpeg4", "-q:v", "5"]
+        raise RuntimeError("ffmpeg does not provide a supported MP4 video encoder")
         
     def reset(self, video_path, video_size):
         if self.ffmpeg is not None:
@@ -286,10 +312,10 @@ class VideoHandler:
             "-f", "rawvideo", "-pixel_format", "rgb24",
             "-video_size", f"{w}x{h}", "-framerate", "10",
             "-i", "-", "-pix_fmt", "yuv420p",
-            "-vcodec", "libx264", "-crf", "23",
+            *self._encoder_args(),
             "-movflags", "+faststart",
             str(self.video_path)
-        ], stdin=subprocess.PIPE)
+        ], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     
     def __del__(self):
         if self.ffmpeg is not None:
@@ -299,7 +325,17 @@ class VideoHandler:
         frame = frame.cpu().numpy()
         if frame.shape != self.video_size:
             frame = cv2.resize(frame, self.video_size)
-        self.ffmpeg.stdin.write(frame.tobytes())
+        try:
+            self.ffmpeg.stdin.write(frame.tobytes())
+        except BrokenPipeError as exc:
+            proc = self.ffmpeg
+            self.ffmpeg = None
+            stderr = ""
+            if proc is not None:
+                if proc.stderr is not None:
+                    stderr = proc.stderr.read().decode(errors="replace").strip()
+                proc.wait()
+            raise RuntimeError(f"ffmpeg failed while writing {self.video_path}: {stderr}") from exc
         # cv2.putText(frame, f'Streaming [{self.video_path.stem}]', (10, 30),
         #             cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 0, 0), 2)
         # self.stream.stdin.write(frame.tobytes())
@@ -310,15 +346,24 @@ class VideoHandler:
         self.video_path.unlink(missing_ok=True)
  
     def close(self, result:str=None):
-        self.ffmpeg.stdin.close()
-        self.ffmpeg.wait()
-        del self.ffmpeg
+        if self.ffmpeg is None:
+            return
+        proc = self.ffmpeg
+        self.ffmpeg = None
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        proc.wait()
+        if proc.stderr is not None:
+            stderr = proc.stderr.read().decode(errors="replace").strip()
+            if stderr:
+                print(f"ffmpeg warning for {self.video_path}: {stderr}")
 
         # self.stream.stdin.close()
         # self.stream.wait()
         # del self.stream
 
-        if result is not None:
+        if result is not None and self.video_path.exists():
             new_name = self.video_path.parent / f"{self.video_path.stem}_{result}.mp4"
             self.video_path.rename(new_name)
-        self.ffmpeg = None

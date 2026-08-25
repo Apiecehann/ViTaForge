@@ -95,6 +95,12 @@ def worker_run(args, deploy_config, task_config, task_file_name, policy_name,
         eval_case_name = task_config.get("eval_case_name", None)
         if eval_case_name:
             env_cfg.save_dir = env_cfg.save_dir / str(eval_case_name)
+        background = getattr(args, "background", None)
+        if background is None:
+            background = task_config.get("background", None)
+        if background is not None:
+            env_cfg.background = str(background)
+            task_config["background"] = env_cfg.background
         tactile_sensor_type = tactile_sensor_type_from_override(getattr(args, "tactile_sensor", None))
         if tactile_sensor_type is None:
             tactile_sensor_type = task_config.get('sensor_type', 'gsmini')
@@ -367,6 +373,12 @@ def main():
     parser.add_argument("--openpi_host", type=str, default=None)
     parser.add_argument("--openpi_port", type=int, default=None)
     parser.add_argument(
+        "--background",
+        type=str,
+        default=None,
+        help="Override env_cfg.background. Use base0/base1/... or an .exr filename under assets/scene.",
+    )
+    parser.add_argument(
         "--tactile_sensor",
         type=str,
         default=None,
@@ -393,6 +405,8 @@ def main():
         deploy_config.setdefault("openpi", {})["debug_dump_first_n_obs"] = int(
             task_config["openpi_debug_dump_first_n_obs"]
         )
+    if args.background is not None:
+        task_config["background"] = args.background
     policy_name = deploy_config['policy_name']
     deploy_config['task_name'] = args.task_name
     deploy_config['task_config'] = task_config_file.stem

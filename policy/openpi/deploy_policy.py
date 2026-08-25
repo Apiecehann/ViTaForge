@@ -132,6 +132,7 @@ class Policy(BasePolicy):
             )
         if self.temporal_ensemble_space == "delta_eef_qpos_rollout" and self.control_mode != "delta_eef":
             raise ValueError("temporal_ensemble_space='delta_eef_qpos_rollout' 只能用于 delta_eef 模式。")
+        self.temporal_ensemble_query_interval = self.open_loop_horizon
 
         self.client = OpenPiClientRuntime(
             OpenPiServerConfig(
@@ -161,6 +162,7 @@ class Policy(BasePolicy):
             f"open_loop_horizon={self.open_loop_horizon}, "
             f"temporal_ensemble={self.temporal_ensemble}, "
             f"temporal_ensemble_horizon={self.temporal_ensemble_horizon}, "
+            f"temporal_ensemble_query_interval={self.temporal_ensemble_query_interval}, "
             f"ensemble_K={self.temporal_ensemble_k}, "
             f"temporal_ensemble_space={self.temporal_ensemble_space}"
         )
@@ -307,21 +309,35 @@ class Policy(BasePolicy):
             np.ndarray，shape [action_dim]，ensemble 后当前 step 的动作。
 
         行为:
-            每个 env step 都向 server query 一个 action chunk。
+            每 open_loop_horizon 个 env step 向 server query 一个 action chunk。
             chunk[t] 会被登记为对未来 step=current_step+t 的预测。
             当前 step 如果有多个历史 chunk 都预测过它，就按 ACT 风格权重:
             exp(-k * arange(num_predictions)) 加权平均。
         """
 
-        chunk = self._normalize_server_chunk(self.client.infer(obs), obs, task)
-        if self.temporal_ensemble_space == "delta_eef_qpos_rollout":
-            chunk = self._delta_eef_chunk_to_qpos_chunk(chunk, task)
         current_step = self._policy_step_index
-        for offset, action in enumerate(chunk[: self.temporal_ensemble_horizon]):
-            target_step = current_step + offset
-            self._action_predictions.setdefault(target_step, []).append(
-                (current_step, np.asarray(action, dtype=np.float64))
-            )
+        should_query = (
+            current_step == 0
+            or current_step % self.temporal_ensemble_query_interval == 0
+            or current_step not in self._action_predictions
+        )
+        if should_query:
+            chunk = self._normalize_server_chunk(self.client.infer(obs), obs, task)
+            if self.temporal_ensemble_space == "delta_eef_qpos_rollout":
+                chunk = self._delta_eef_chunk_to_qpos_chunk(chunk, task)
+            for offset, action in enumerate(chunk[: self.temporal_ensemble_horizon]):
+                target_step = current_step + offset
+                self._action_predictions.setdefault(target_step, []).append(
+                    (current_step, np.asarray(action, dtype=np.float64))
+                )
+            if current_step == 0:
+                print(
+                    "OpenPI temporal ensemble: "
+                    f"chunk_shape={chunk.shape}, "
+                    f"temporal_ensemble_horizon={self.temporal_ensemble_horizon}, "
+                    f"query_interval={self.temporal_ensemble_query_interval}",
+                    flush=True,
+                )
 
         predictions = self._action_predictions.get(current_step, [])
         predictions = [
@@ -344,14 +360,6 @@ class Policy(BasePolicy):
         for step in list(self._action_predictions):
             if step <= stale_before or step < current_step:
                 self._action_predictions.pop(step, None)
-        if current_step == 0:
-            print(
-                "OpenPI temporal ensemble: "
-                f"chunk_shape={chunk.shape}, "
-                f"temporal_ensemble_horizon={self.temporal_ensemble_horizon}, "
-                f"candidates={len(predictions)}",
-                flush=True,
-            )
         return action
 
     def _delta_eef_chunk_to_qpos_chunk(self, chunk: np.ndarray, task) -> np.ndarray:

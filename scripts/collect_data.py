@@ -46,6 +46,12 @@ parser.add_argument(
     default=None,
 )
 parser.add_argument(
+    "--background",
+    type=str,
+    default=None,
+    help="Override env_cfg.background. Use base0/base1/... or an .exr filename under assets/scene.",
+)
+parser.add_argument(
     "--target_block",
     type=str,
     default=None,
@@ -284,9 +290,13 @@ def main():
         "start_seed": start_seed,
         "max_seed": max_seed,
     })
+    if args_cli.background is not None:
+        task_config["background"] = args_cli.background
 
     task_module = importlib.import_module(f"envs.{task_file_name}")
     env_cfg:'BaseTaskCfg' = task_module.TaskCfg()
+    if "background" in task_config:
+        env_cfg.background = str(task_config["background"])
     if hasattr(env_cfg, "target_block"):
         target_block = args_cli.target_block
         if target_block is None:
