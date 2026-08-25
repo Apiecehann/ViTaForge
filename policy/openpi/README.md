@@ -341,13 +341,13 @@ openpi:
 
 ```yaml
 openpi:
-  open_loop_horizon: 1
+  open_loop_horizon: 5
   temporal_ensemble: true
   chunk_first_n: 20
   ensemble_K: 0.01
 ```
 
-此时 client 每个 env step 都会重新 query server 一次。每次返回的 chunk 会保留下来：
+此时 client 每 `open_loop_horizon` 个 env step 重新 query server 一次。每次返回的 chunk 会保留下来：
 
 ```text
 当前 step s query 得到 actions[0:20]
@@ -370,7 +370,7 @@ weights = exp(-ensemble_K * arange(num_predictions))
 | 模式 | server query 频率 | 执行动作 | 适合场景 |
 | --- | --- | --- | --- |
 | `temporal_ensemble: false` 或未配置 | 每 `open_loop_horizon` 步 query 一次 | 直接顺序执行 chunk | 快、稳定，默认先用 |
-| `temporal_ensemble: true` | 每步 query 一次 | 对最近 20 个重叠 chunk 做 ACT 风格平滑 | 想降低 action 抖动时使用 |
+| `temporal_ensemble: true` | 每 `open_loop_horizon` 步 query 一次 | 对重叠 chunk 做 ACT 风格平滑 | 想降低 action 抖动时使用 |
 
 ## EEF Delta 约定
 
@@ -580,7 +580,7 @@ openpi:
   debug_dump_first_n_obs: 1
   debug_dump_dir: "debug/openpi_obs"
   debug_dump_bgr_interpretation: true
-  open_loop_horizon: 1
+  open_loop_horizon: 5
   temporal_ensemble: true
   chunk_first_n: 20
   ensemble_K: 0.01
@@ -594,6 +594,6 @@ conda activate UniVTAC
 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py insert_USB demo openpi/abs_joint/deploy --start_seed 0 --max_seed 5 --total_num 5
 ```
 
-开启 smoothing 后，server 每个 env step 都会被 query 一次，并且每次仍需要返回至少 `[20, 8]` 的 `actions`。
+开启 smoothing 后，server 每 `open_loop_horizon` 个 env step 会被 query 一次，并且每次最好返回至少 `chunk_first_n` 个 action，保证相邻 chunk 有足够重叠用于平滑。
 
 注意：运行前需要 OpenPI server 已经监听 `deploy.yml` 中的 `host:port`。

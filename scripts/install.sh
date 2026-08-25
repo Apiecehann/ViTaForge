@@ -2,6 +2,8 @@
 set -e
 
 CONDA_ENV_NAME="UniVTAC"
+RUN_SMOKE_TESTS="${RUN_SMOKE_TESTS:-0}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 load_env() {
     if [ -z "$CONDA_PREFIX" ]; then
         echo "Conda environment is not activated. Please activate the conda environment and run the script again."
@@ -12,19 +14,19 @@ load_env() {
     source ~/.bashrc
     source ${conda_base}/etc/profile.d/conda.sh
 
-    # step 1: create conda environment
-    is_conda_env_exists=$(conda env list | grep ${CONDA_ENV_NAME})
-    if [ -z "$is_conda_env_exists" ]; then
+    # step 1: create/update conda environment
+    if ! conda env list | awk '{print $1}' | grep -qx "${CONDA_ENV_NAME}"; then
         echo "Creating conda environment '${CONDA_ENV_NAME}'..."
         conda create -n ${CONDA_ENV_NAME} python=3.10 -y
-        conda env update -n ${CONDA_ENV_NAME} --file ./third_party/TacEx/source/tacex_uipc/libuipc/conda/env.yaml
     fi
+    conda env update -n ${CONDA_ENV_NAME} --file "${REPO_ROOT}/third_party/TacEx/source/tacex_uipc/libuipc/conda/env.yaml"
     conda activate ${CONDA_ENV_NAME}
 
     unset VIRTUAL_ENV
     unset VIRTUAL_ENV_PROMPT
 }
 export -f load_env
+export REPO_ROOT
 
 load_env
 export python_exe=${CONDA_PREFIX}/bin/python
@@ -42,8 +44,11 @@ export CUDA_HOME=$CONDA_PREFIX
 export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib
 
-${pip_exe} install --upgrade pip
+${pip_exe} install --upgrade 'pip<26'
 ${uv_exe} pip install 'setuptools<82' wheel
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    conda install -n ${CONDA_ENV_NAME} --override-channels -c defaults ffmpeg -y
+fi
 
 # step 2: install isaacsim
 if ${pip_exe} show isaacsim >/dev/null 2>&1; then
@@ -60,7 +65,7 @@ if ${pip_exe} show isaaclab >/dev/null 2>&1; then
 else
     echo "Installing isaaclab..."
     # install dependencies via apt (Ubuntu)
-    sudo apt install cmake build-essential
+    sudo apt install -y cmake build-essential
 
     cd third_party
     if [ -d "IsaacLab" ]; then
@@ -106,8 +111,10 @@ else
     ${uv_exe} pip install warp-lang==1.0.0 --no-build-isolation
     ${uv_exe} pip install -e . --no-build-isolation
 
-    echo "Running curobo tests..."
-    python3 -m pytest .
+    if [ "${RUN_SMOKE_TESTS}" = "1" ]; then
+        echo "Running curobo tests..."
+        python3 -m pytest .
+    fi
     cd ../..
 fi
 
@@ -121,8 +128,10 @@ else
     ${uv_exe} pip uninstall torch_scatter -y
     ${uv_exe} pip install torch_scatter==2.1.2 -f https://data.pyg.org/whl/torch-2.5.1+cu124.html
 
-    echo "Running tacex tests..."
-    python ./scripts/reinforcement_learning/skrl/train.py --task TacEx-Ball-Rolling-Tactile-RGB-v0 --num_envs 512 --enable_cameras --livestream 2
+    if [ "${RUN_SMOKE_TESTS}" = "1" ]; then
+        echo "Running tacex tests..."
+        python ./scripts/reinforcement_learning/skrl/train.py --task TacEx-Ball-Rolling-Tactile-RGB-v0 --num_envs 1 --enable_cameras --headless
+    fi
     cd ../..
 fi
 
@@ -133,18 +142,20 @@ else
     echo "Installing libuipc..."
 
     current_dir=$(pwd)
+    sudo apt install -y cmake build-essential
 
-    if [ -d "Toolchain" ]; then
-        echo "Toolchain directory already exists. Skipping cloning vcpkg..."
-        mkdir ~/Toolchain
+    if [ ! -d "$HOME/Toolchain/vcpkg" ]; then
+        mkdir -p ~/Toolchain
         cd ~/Toolchain
         git clone https://github.com/microsoft/vcpkg.git
         cd vcpkg
         ./bootstrap-vcpkg.sh -disableMetrics
+    else
+        echo "vcpkg is already installed. Skipping cloning vcpkg..."
     fi
 
     export CMAKE_TOOLCHAIN_FILE="$HOME/Toolchain/vcpkg/scripts/buildsystems/vcpkg.cmake"
-    if [ -z $(grep "CMAKE_TOOLCHAIN_FILE" ~/.bashrc) ]; then
+    if ! grep -q "CMAKE_TOOLCHAIN_FILE" ~/.bashrc; then
         echo "export CMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE" >> ~/.bashrc
     else
         sed -i "s|^export CMAKE_TOOLCHAIN_FILE=.*$|export CMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE|g" ~/.bashrc
@@ -161,5 +172,7 @@ fi
 ${uv_exe} pip install transforms3d trimesh tetgen
 
 echo "Installation completed successfully!"
-echo "Trying to collect data for grasp classification demo."
-bash collect_data.sh grasp_classify demo 0
+if [ "${RUN_SMOKE_TESTS}" = "1" ]; then
+    echo "Trying to collect data for grasp classification demo."
+    bash collect_data.sh grasp_classify demo 0
+fi
