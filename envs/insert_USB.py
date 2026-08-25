@@ -30,7 +30,7 @@ SLOT_HOLE_BOTTOM = 0.0050
 USB_INSERT_Z = max(SLOT_HOLE_BOTTOM, SLOT_HEIGHT - USB_PLUG_HEIGHT)
 
 # episode 级随机化和脚本动作幅度。xy 噪声只扰动插槽平面位置，不扰动高度。
-SLOT_XY_NOISE = (0.010, 0.010, 0.0)
+SLOT_XY_NOISE = (0.030, 0.030, 0.0)
 LIFT_HEIGHT = 0.0300
 LIFT_HEIGHT_NOISE = 0.0100
 # pre_move 先移到槽口上方 10 mm，并在插槽平面内叠加小幅位置噪声。
@@ -97,7 +97,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1/120,
         )
     ]
-    step_lim = 400
+    step_lim = 300
 
 
 class Task(BaseTask):

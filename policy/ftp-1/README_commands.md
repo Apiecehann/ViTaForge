@@ -2,8 +2,10 @@
 
 ssh -N -L 8000:127.0.0.1:8000 -p 10383 root@42.192.34.154
 
-ssh -N -L 8000:127.0.0.1:8000 -p 10751 root@42.192.34.154
-
+ssh -N -L 8008:127.0.0.1:8008 -p 10751 root@42.192.34.154
+ssh -N -L 8010:127.0.0.1:8010 -p 10751 root@42.192.34.154
+ssh -N -L 8012:127.0.0.1:8012 -p 10751 root@42.192.34.154
+ssh -N -L 8014:127.0.0.1:8014 -p 10751 root@42.192.34.154
 
 cd /data/home/liqin/VLA/ViTaForge
 conda activate UniVTAC
@@ -16,15 +18,33 @@ CUDA_VISIBLE_DEVICES=0 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 100
 
-CUDA_VISIBLE_DEVICES=1 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
-  roughness_regrasp \
+CUDA_VISIBLE_DEVICES=2 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  pull_drawer \
   task_config/gelsight.yml \
-  policy/ftp-1/deploy_roughness_regrasp.yml \
+  policy/ftp-1/deploy_pull_drawer.yml \
   --start_seed 10000 \
   --max_seed 10999 \
   --total_num 100
 
-CUDA_VISIBLE_DEVICES=2 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=1 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  roughness_regrasp \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_roughness_regrasp.yml \
+  --rough_block_side right \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=1 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  roughness_regrasp \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_roughness_regrasp.yml \
+  --rough_block_side left \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=1 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   insert_USB \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_insert_USB.yml \
@@ -36,11 +56,21 @@ CUDA_VISIBLE_DEVICES=3 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   roughness_classify \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_roughness_classify.yml \
+  --roughness_label rough \
   --start_seed 10000 \
   --max_seed 10999 \
-  --total_num 100
+  --total_num 50
 
-CUDA_VISIBLE_DEVICES=4 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=3 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  roughness_classify \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_roughness_classify.yml \
+  --roughness_label smooth \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=0 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   grasp_in_clutter \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_grasp_in_clutter.yml \
@@ -50,7 +80,7 @@ CUDA_VISIBLE_DEVICES=4 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 50
 
-CUDA_VISIBLE_DEVICES=4 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=0 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   grasp_in_clutter \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_grasp_in_clutter.yml \
@@ -60,7 +90,7 @@ CUDA_VISIBLE_DEVICES=4 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 50
 
-CUDA_VISIBLE_DEVICES=4 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=0 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   grasp_in_clutter \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_grasp_in_clutter.yml \
@@ -116,7 +146,7 @@ CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 50
 
-CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=4 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   move_cup \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_move_cup.yml \
@@ -128,7 +158,7 @@ CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 50
 
-CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=6 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   move_cup \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_move_cup.yml \
@@ -164,7 +194,7 @@ CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 50
 
-  CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  CUDA_VISIBLE_DEVICES=4 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   place_cube_on_colored_area \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_place_cube_on_colored_area.yml \
@@ -184,7 +214,7 @@ CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 50
 
- CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=6 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   place_cube_on_colored_area \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_place_cube_on_colored_area.yml \
@@ -194,12 +224,80 @@ CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   --max_seed 10999 \
   --total_num 50
 
- CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+CUDA_VISIBLE_DEVICES=7 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
   place_cube_on_colored_area \
   task_config/gelsight.yml \
   policy/ftp-1/deploy_place_cube_on_colored_area.yml \
   --target_area blue \
   --frame_order blue_left \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=5 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  pour_ball_to_cup \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_pour_ball_to_cup.yml \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 100
+
+CUDA_VISIBLE_DEVICES=0 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  insert_block \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_insert_block.yml \
+  --target_block cube \
+  --block_base_pose_indices 0,1,4 \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=1 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  insert_block \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_insert_block.yml \
+  --target_block cube \
+  --block_base_pose_indices 1,3,2 \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=6 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  insert_block \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_insert_block.yml \
+  --target_block half_cylinder \
+  --block_base_pose_indices 0,1,4 \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=6 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  insert_block \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_insert_block.yml \
+  --target_block half_cylinder \
+  --block_base_pose_indices 1,3,2 \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+  CUDA_VISIBLE_DEVICES=6 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  insert_block \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_insert_block.yml \
+  --target_block hexagon \
+  --block_base_pose_indices 0,1,4 \
+  --start_seed 10000 \
+  --max_seed 10999 \
+  --total_num 50
+
+CUDA_VISIBLE_DEVICES=6 OMNI_KIT_ACCEPT_EULA=yes python scripts/eval_policy.py \
+  insert_block \
+  task_config/gelsight.yml \
+  policy/ftp-1/deploy_insert_block.yml \
+  --target_block hexagon \
+  --block_base_pose_indices 1,3,2 \
   --start_seed 10000 \
   --max_seed 10999 \
   --total_num 50

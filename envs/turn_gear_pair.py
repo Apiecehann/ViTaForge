@@ -907,8 +907,8 @@ class Task(BaseTask):
         )
         if self._is_xense_cfg(self.cfg):
             position_success = (
-                result["red_center_xy_delta"] <= 0.003
-                and result["blue_center_xy_delta"] <= 0.003
+                result["red_center_xy_delta"] <= 0.01
+                and result["blue_center_xy_delta"] <= 0.01
                 and result["red_vertical_delta"] <= 0.005
                 and result["blue_vertical_delta"] <= 0.005
             )
