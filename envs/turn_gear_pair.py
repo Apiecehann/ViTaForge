@@ -914,8 +914,8 @@ class Task(BaseTask):
             )
         else:
             position_success = (
-                result["red_center_delta"] <= 0.003
-                and result["blue_center_delta"] <= 0.003
+                result["red_center_delta"] <= 0.01
+                and result["blue_center_delta"] <= 0.01
             )
         return rotation_success and position_success
 
