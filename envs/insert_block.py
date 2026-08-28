@@ -55,7 +55,9 @@ BLOCK_SPECS = {
 }
 TASK_INSTRUCTION = "Insert the blue half cylinder into the matching hole in the yellow box."
 
-# 盒子局部坐标系下的成功范围。释放后等待若干步，再只检查目标块原点的 y/z。
+# 盒子局部坐标系下的成功范围。释放后等待若干步，再检查目标块原点是否
+# 越过 -X 方向内壁，且 y/z 在盒内有效空间。
+INNER_X_MIN = -BOX_SIZE * 0.5 + BOX_WALL_THICKNESS
 INNER_Y_MIN = -BOX_SIZE * 0.5 + BOX_WALL_THICKNESS
 INNER_Y_MAX = BOX_SIZE * 0.5 - BOX_WALL_THICKNESS
 # The half-cylinder asset pose is near its lower contact/origin rather than the
@@ -114,7 +116,7 @@ class TaskCfg(BaseTaskCfg):
             update_period=1/120,
         ),
     ]
-    step_lim = 400
+    step_lim = 300
 
 
 class Task(BaseTask):
@@ -581,13 +583,14 @@ class Task(BaseTask):
     def _get_success_diagnostics(self):
         box_pose = self.wooden_box.get_pose()
         selected_block_pose = self.selected_block.get_pose()
-        # 将目标块位姿转换到木盒坐标系下，只判断其原点 y/z 是否落在成功范围内。
+        # 将目标块位姿转换到木盒坐标系下。盒口朝 +X，因此 x 只需要
+        # 大于 -X 方向内壁；+X 方向保持无上界，允许物体从开口处掉出。
         selected_block_in_box = selected_block_pose.rebase(box_pose)
 
-        x_ok = True
+        x_ok = bool(INNER_X_MIN <= selected_block_in_box.p[0])
         y_ok = bool(INNER_Y_MIN <= selected_block_in_box.p[1] <= INNER_Y_MAX)
         z_ok = bool(INNER_Z_MIN <= selected_block_in_box.p[2] <= INNER_Z_MAX)
-        target_origin_in_success_range = bool(y_ok and z_ok)
+        target_origin_in_success_range = bool(x_ok and y_ok and z_ok)
 
         return {
             "target_block": self.target_block_key,
@@ -595,8 +598,10 @@ class Task(BaseTask):
             "selected_block_pose": selected_block_pose.tolist(),
             "selected_block_pose_in_box": selected_block_in_box.tolist(),
             "selected_block_xyz_in_box": selected_block_in_box.p.tolist(),
-            "inner_x_range": None,
-            "x_unbounded": True,
+            "inner_x_range": [float(INNER_X_MIN), None],
+            "inner_x_min": float(INNER_X_MIN),
+            "x_unbounded": False,
+            "x_max_unbounded": True,
             "inner_y_range": [float(INNER_Y_MIN), float(INNER_Y_MAX)],
             "inner_z_range": [float(INNER_Z_MIN), float(INNER_Z_MAX)],
             "x_ok": x_ok,
@@ -608,7 +613,8 @@ class Task(BaseTask):
         }
 
     def check_success(self):
-        # 成功要求松爪并等待稳定后，目标物体原点在盒坐标系下的 y/z 落入指定范围。
+        # 成功要求松爪并等待稳定后，目标物体原点在盒坐标系下越过 -X
+        # 方向内壁，且 y/z 落入指定范围。
         diagnostics = self._get_success_diagnostics()
         self.metadata["success_diagnostics"] = diagnostics
         return diagnostics["target_origin_in_success_range"]
