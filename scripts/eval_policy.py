@@ -184,6 +184,13 @@ parser.add_argument(
     choices=("random", "soft", "hard"),
     help="Override env_cfg.hardness_label when the selected task supports it.",
 )
+parser.add_argument(
+    "--empty_can",
+    type=str,
+    default=None,
+    choices=("random", "coke", "fanta", "7up", "pepsi"),
+    help="Override env_cfg.empty_can when the selected task supports it.",
+)
 AppLauncher.add_app_launcher_args(parser)
 
 ENV_CFG_OVERRIDE_KEYS = (
@@ -201,6 +208,7 @@ ENV_CFG_OVERRIDE_KEYS = (
     "weight_label",
     "roughness_label",
     "hardness_label",
+    "empty_can",
 )
 INT_TUPLE_ENV_CFG_KEYS = {
     "block_base_pose_indices",

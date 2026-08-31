@@ -138,6 +138,13 @@ parser.add_argument(
     choices=("random", "soft", "hard"),
     help="Override env_cfg.hardness_label when the selected task supports it.",
 )
+parser.add_argument(
+    "--empty_can",
+    type=str,
+    default=None,
+    choices=("random", "coke", "fanta", "7up", "pepsi"),
+    help="Override env_cfg.empty_can when the selected task supports it.",
+)
 
 args_cli = parser.parse_args()
 if args_cli.gpu is not None:
@@ -323,6 +330,7 @@ def main():
         "weight_label",
         "roughness_label",
         "hardness_label",
+        "empty_can",
     ):
         if hasattr(env_cfg, key):
             value = getattr(args_cli, key)
