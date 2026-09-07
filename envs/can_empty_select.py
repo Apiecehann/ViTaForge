@@ -5,11 +5,9 @@ import numpy as np
 TASK_INSTRUCTION = "Find the empty can by touch and place it in the basket."
 
 ASSET_ROOT = "task_assets/can_empty_select"
-CAN_BRANDS = ("coke", "fanta", "7up", "pepsi")
+CAN_BRANDS = ("fanta", "pepsi")
 CAN_SAFE_NAMES = {
-    "coke": "coke",
     "fanta": "fanta",
-    "7up": "sevenup",
     "pepsi": "pepsi",
 }
 CAN_PHYSICS_ASSET_PATHS = {
@@ -23,38 +21,34 @@ CAN_VISUAL_ASSET_PATHS = {
 BASKET_PHYSICS_ASSET_PATH = f"{ASSET_ROOT}/basket_physics_proxy.usda"
 BASKET_VISUAL_ASSET_PATH = f"{ASSET_ROOT}/basket_visual.usda"
 
-LIGHT_CAN_DENSITY = 50.0
-HEAVY_CAN_DENSITY = 2000.0
+LIGHT_CAN_DENSITY = 100.0
+HEAVY_CAN_DENSITY = 10000.0
 GRIPPER_CLOSE_QPOS_RANGE = (0.027, 0.028)
 GRASP_PRE_DISTANCE = 0.04
 GRASP_HEIGHT_MARGIN = 0.040
 CAN_XY_NOISE = (0.01, 0.01, 0.0)
 TEST_LIFT_HEIGHT = 0.05
-EMPTY_CAN_LIFT_HEIGHT = 0.12
-POST_RETURN_CLEARANCE = 0.12
+EMPTY_CAN_LIFT_HEIGHT = 0.14
+POST_RETURN_CLEARANCE = 0.14
 WRONG_CAN_HOLD_DELAY_STEPS = 10
 AFTER_RELEASE_DELAY_STEPS = 40
 
-BASKET_POSE = Pose([0.5, -0.3, 0.002], [1, 0, 0, 0])
-BASKET_DROP_POSE = Pose([0.5, -0.3, 0.172], [1, 0, 0, 0])
+BASKET_POSE = Pose([0.5, -0.2, 0.002], [1, 0, 0, 0])
+BASKET_DROP_POSE = Pose([0.5, -0.2, 0.172], [1, 0, 0, 0])
 BASKET_CONTAIN_HALF_XY = 0.06108
 BASKET_CONTAIN_Z_RANGE = (0.0, 0.05)
 
 WORK_POSES = {
-    "coke": Pose([0.5,-0.08, 0.002], [1, 0, 0, 0]),
-    "fanta": Pose([0.5, 0.07, 0.002], [1, 0, 0, 0]),
-    "7up": Pose([0.5, 0.23, 0.002], [1, 0, 0, 0]),
-    "pepsi": Pose([0.5, 0.38, 0.002], [1, 0, 0, 0]),
+    "fanta": Pose([0.5, 0.02, 0.002], [1, 0, 0, 0]),
+    "pepsi": Pose([0.5, 0.20, 0.002], [1, 0, 0, 0]),
 }
 STANDBY_POSES = [
-    Pose([1.0, -0.1 + 0.1 * i, 0.004], [1, 0, 0, 0])
+    Pose([1.0, 0.0 + 0.1 * i, 0.004], [1, 0, 0, 0])
     for i in range(len(CAN_BRANDS) * 2)
 ]
 
 CAN_HEIGHTS = {
-    "coke": 0.12299996,
     "fanta": 0.12199997,
-    "7up": 0.12199997,
     "pepsi": 0.12299984,
 }
 
@@ -72,13 +66,13 @@ TASK_INITIAL_JOINT_POS = {
 
 @configclass
 class TaskCfg(BaseTaskCfg):
-    empty_can: Literal["random", "coke", "fanta", "7up", "pepsi"] = "random"
+    empty_can: Literal["random", "fanta", "pepsi"] = "random"
     cameras = [
         CameraCfg(
             name="head",
             prim_path="/World/envs/env_.*/Camera",
             offset=CameraCfg.OffsetCfg(
-                pos=(1.18, 0.02, 0.30),
+                pos=(1.1, 0.02, 0.30),
                 rot=(0.560985, 0.430459, 0.430459, 0.560985),
                 convention="opengl",
             ),
@@ -104,7 +98,7 @@ class TaskCfg(BaseTaskCfg):
         ),
     ]
     use_adaptive_grasp = False
-    step_lim = 800
+    step_lim = 400
 
 
 class Task(BaseTask):
